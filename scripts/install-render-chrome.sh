@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_ROOT="${ROOT_DIR}/.render/chrome"
 VERSION_FILE="${INSTALL_ROOT}/VERSION"
-LATEST_RELEASE_URL="https://storage.googleapis.com/chrome-for-testing-public/LATEST_RELEASE_STABLE"
+LATEST_RELEASE_URL="https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_STABLE"
 
 mkdir -p "${INSTALL_ROOT}"
 
