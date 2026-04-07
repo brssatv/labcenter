@@ -109,6 +109,12 @@ const panelBody = document.getElementById("panel-body");
 const panelHeader = document.getElementById("panel-header");
 
 let csrfToken = "";
+let deploymentFeatures = {
+  reportPdfEnabled: true,
+  scanOcrEnabled: true,
+};
+let deploymentFeaturesReady = false;
+let deploymentFeaturesPromise = null;
 let pendingAuth = false;
 let authMode = "doctor";
 let activeSession = {
@@ -996,6 +1002,34 @@ async function requestJson(url, options = {}) {
   }
 
   return payload || {};
+}
+
+async function loadDeploymentFeatures(options = {}) {
+  const force = Boolean(options.force);
+  if (deploymentFeaturesReady && !force) return deploymentFeatures;
+
+  if (!deploymentFeaturesPromise || force) {
+    deploymentFeaturesPromise = requestJson("/api/health", {
+      headers: {
+        Accept: "application/json",
+      },
+    })
+      .then((payload) => {
+        const features = payload?.features && typeof payload.features === "object" ? payload.features : {};
+        deploymentFeatures = {
+          reportPdfEnabled: features.reportPdfEnabled !== false,
+          scanOcrEnabled: features.scanOcrEnabled !== false,
+        };
+        deploymentFeaturesReady = true;
+        return deploymentFeatures;
+      })
+      .catch((error) => {
+        deploymentFeaturesPromise = null;
+        throw error;
+      });
+  }
+
+  return deploymentFeaturesPromise;
 }
 
 function renderNav() {
@@ -7601,6 +7635,229 @@ function renderOrderHistory() {
     `;
   }
 
+  function writeReportWindowError(reportWindow, { title, heading, message }) {
+    reportWindow.document.open();
+    reportWindow.document.write(`
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <title>${escapeHtml(title || "Report Generation Failed")}</title>
+        <style>
+          html, body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #faf7f7;
+            color: #5a1f1f;
+          }
+          .error-card {
+            max-width: 720px;
+            margin: 42px auto;
+            border: 1px solid #ebc4c4;
+            border-radius: 12px;
+            background: #fff;
+            padding: 20px;
+          }
+          h3 { margin: 0 0 8px; }
+          p { margin: 0; line-height: 1.45; }
+        </style>
+      </head>
+      <body>
+        <article class="error-card">
+          <h3>${escapeHtml(heading || "Unable to generate report")}</h3>
+          <p>${escapeHtml(message || "Unexpected error while generating the report.")}</p>
+        </article>
+      </body>
+      </html>
+    `);
+    reportWindow.document.close();
+  }
+
+  function buildReportBrowserPreviewHtml(html, options = {}) {
+    const previewTitle = escapeHtml(options.previewTitle || "Report Preview");
+    const notice = escapeHtml(
+      options.notice || "Use Print and choose Save as PDF to download this report from your browser."
+    );
+    const details = String(options.details || "").trim();
+    const detailsMarkup = details
+      ? `<p class="labcenter-report-preview-banner__details">${escapeHtml(details)}</p>`
+      : "";
+    const headInjection = `
+      <style>
+        .labcenter-report-preview-banner {
+          position: sticky;
+          top: 0;
+          z-index: 9999;
+          display: flex;
+          gap: 16px;
+          align-items: center;
+          justify-content: space-between;
+          padding: 14px 18px;
+          background: #15314b;
+          color: #f5f8fc;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+          box-shadow: 0 10px 24px rgba(18, 38, 58, 0.18);
+          font-family: Arial, sans-serif;
+        }
+        .labcenter-report-preview-banner__copy {
+          display: grid;
+          gap: 4px;
+        }
+        .labcenter-report-preview-banner__copy strong {
+          font-size: 15px;
+        }
+        .labcenter-report-preview-banner__copy span,
+        .labcenter-report-preview-banner__details {
+          font-size: 13px;
+          line-height: 1.45;
+          opacity: 0.95;
+        }
+        .labcenter-report-preview-banner__details {
+          opacity: 0.82;
+        }
+        .labcenter-report-preview-banner__button {
+          appearance: none;
+          border: 0;
+          border-radius: 999px;
+          background: #f6f9fc;
+          color: #15314b;
+          font: inherit;
+          font-weight: 700;
+          padding: 10px 16px;
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        .labcenter-report-preview-banner__button:hover {
+          background: #ffffff;
+        }
+        @media print {
+          .labcenter-report-preview-banner {
+            display: none !important;
+          }
+        }
+        @media (max-width: 720px) {
+          .labcenter-report-preview-banner {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+        }
+      </style>
+    `;
+    const bannerMarkup = `
+      <aside class="labcenter-report-preview-banner" role="note" aria-label="${previewTitle}">
+        <div class="labcenter-report-preview-banner__copy">
+          <strong>${previewTitle}</strong>
+          <span>${notice}</span>
+          ${detailsMarkup}
+        </div>
+        <button
+          type="button"
+          class="labcenter-report-preview-banner__button"
+          onclick="window.print()"
+        >
+          Print / Save as PDF
+        </button>
+      </aside>
+    `;
+
+    let content = String(html || "");
+    if (/<\/head>/i.test(content)) {
+      content = content.replace(/<\/head>/i, `${headInjection}\n</head>`);
+    } else {
+      content = `${headInjection}\n${content}`;
+    }
+
+    if (/<body[^>]*>/i.test(content)) {
+      return content.replace(/<body([^>]*)>/i, `<body$1>\n${bannerMarkup}`);
+    }
+
+    return `
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <title>${previewTitle}</title>
+        ${headInjection}
+      </head>
+      <body>
+        ${bannerMarkup}
+        ${content}
+      </body>
+      </html>
+    `;
+  }
+
+  async function renderReportPdfOrPreview(reportWindow, options) {
+    const html = String(options?.html || "");
+    const fileName = String(options?.fileName || "").trim() || `Report_${Date.now()}.pdf`;
+    const previewTitle = String(options?.previewTitle || "Report Preview").trim() || "Report Preview";
+    const openPreview = (reason = "") => {
+      const rawReason = String(reason || "").trim();
+      const disabledByDeployment = /disabled on this deployment/i.test(rawReason);
+      const genericPrefix = /^Unable to generate (?:final |summary )?report PDF\.?\s*/i;
+      const details = disabledByDeployment ? "" : rawReason.replace(genericPrefix, "").trim();
+      const notice = disabledByDeployment
+        ? "Server-side PDF export is unavailable on this deployment. Use Print and choose Save as PDF to download this report."
+        : "Automatic PDF export is unavailable right now. Use Print and choose Save as PDF to download this report.";
+      reportWindow.document.open();
+      reportWindow.document.write(buildReportBrowserPreviewHtml(html, {
+        previewTitle,
+        notice,
+        details,
+      }));
+      reportWindow.document.close();
+    };
+
+    const features = await loadDeploymentFeatures().catch(() => null);
+    if (features?.reportPdfEnabled === false) {
+      openPreview("Report PDF rendering is disabled on this deployment.");
+      return;
+    }
+
+    try {
+      if (!csrfToken) await fetchCsrfToken();
+
+      const response = await fetch("/api/orders/render-report-pdf", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "x-csrf-token": csrfToken,
+        },
+        body: JSON.stringify({
+          html,
+          fileName,
+        }),
+      });
+
+      if (!response.ok) {
+        const raw = await response.text();
+        let payload = null;
+        try {
+          payload = raw ? JSON.parse(raw) : null;
+        } catch {
+          payload = null;
+        }
+        throw new Error(payload?.error || raw || "Unable to generate report PDF.");
+      }
+
+      const pdfBlob = await response.blob();
+      const pdfUrl = URL.createObjectURL(pdfBlob);
+      reportWindow.location.href = pdfUrl;
+      setTimeout(() => URL.revokeObjectURL(pdfUrl), 120000);
+    } catch (error) {
+      const message = String(error?.message || "").trim();
+      if (/disabled on this deployment/i.test(message)) {
+        deploymentFeatures = {
+          ...deploymentFeatures,
+          reportPdfEnabled: false,
+        };
+        deploymentFeaturesReady = true;
+      }
+      openPreview(message);
+    }
+  }
+
   async function openGenerateReport(orderId) {
     if (!facilityDataLoaded) {
       try {
@@ -7674,72 +7931,17 @@ function renderOrderHistory() {
     try {
       const assetSources = await getReportTemplateAssetSources();
       const html = buildFinalReportHtml(order, assetSources);
-      if (!csrfToken) await fetchCsrfToken();
-
-      const response = await fetch("/api/orders/render-report-pdf", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Content-Type": "application/json",
-          "x-csrf-token": csrfToken,
-        },
-        body: JSON.stringify({
-          html,
-          fileName: `Order_${order.orderId}_Final_Report.pdf`,
-        }),
+      await renderReportPdfOrPreview(reportWindow, {
+        html,
+        fileName: `Order_${order.orderId}_Final_Report.pdf`,
+        previewTitle: `Final Report Preview #${order.orderId}`,
       });
-
-      if (!response.ok) {
-        const raw = await response.text();
-        let payload = null;
-        try {
-          payload = raw ? JSON.parse(raw) : null;
-        } catch {
-          payload = null;
-        }
-        throw new Error(payload?.error || raw || "Unable to generate report PDF.");
-      }
-
-      const pdfBlob = await response.blob();
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      reportWindow.location.href = pdfUrl;
-      setTimeout(() => URL.revokeObjectURL(pdfUrl), 120000);
     } catch (error) {
-      reportWindow.document.open();
-      reportWindow.document.write(`
-        <!doctype html>
-        <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <title>Report Generation Failed</title>
-          <style>
-            html, body {
-              margin: 0;
-              font-family: Arial, sans-serif;
-              background: #faf7f7;
-              color: #5a1f1f;
-            }
-            .error-card {
-              max-width: 720px;
-              margin: 42px auto;
-              border: 1px solid #ebc4c4;
-              border-radius: 12px;
-              background: #fff;
-              padding: 20px;
-            }
-            h3 { margin: 0 0 8px; }
-            p { margin: 0; line-height: 1.45; }
-          </style>
-        </head>
-        <body>
-          <article class="error-card">
-            <h3>Unable to generate final report PDF</h3>
-            <p>${escapeHtml(error?.message || "Unexpected error while generating report PDF.")}</p>
-          </article>
-        </body>
-        </html>
-      `);
-      reportWindow.document.close();
+      writeReportWindowError(reportWindow, {
+        title: "Report Generation Failed",
+        heading: "Unable to generate final report PDF",
+        message: error?.message || "Unexpected error while generating report PDF.",
+      });
     }
   }
 
@@ -7816,72 +8018,17 @@ function renderOrderHistory() {
     try {
       const assetSources = await getReportTemplateAssetSources();
       const html = buildDetectedSummaryReportHtml(order, assetSources, { variant: "final" });
-      if (!csrfToken) await fetchCsrfToken();
-
-      const response = await fetch("/api/orders/render-report-pdf", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Content-Type": "application/json",
-          "x-csrf-token": csrfToken,
-        },
-        body: JSON.stringify({
-          html,
-          fileName: `Order_${order.orderId}_Final_Report.pdf`,
-        }),
+      await renderReportPdfOrPreview(reportWindow, {
+        html,
+        fileName: `Order_${order.orderId}_Final_Report.pdf`,
+        previewTitle: `Final Report Preview #${order.orderId}`,
       });
-
-      if (!response.ok) {
-        const raw = await response.text();
-        let payload = null;
-        try {
-          payload = raw ? JSON.parse(raw) : null;
-        } catch {
-          payload = null;
-        }
-        throw new Error(payload?.error || raw || "Unable to generate final report PDF.");
-      }
-
-      const pdfBlob = await response.blob();
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      reportWindow.location.href = pdfUrl;
-      setTimeout(() => URL.revokeObjectURL(pdfUrl), 120000);
     } catch (error) {
-      reportWindow.document.open();
-      reportWindow.document.write(`
-        <!doctype html>
-        <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <title>Final Report Generation Failed</title>
-          <style>
-            html, body {
-              margin: 0;
-              font-family: Arial, sans-serif;
-              background: #faf7f7;
-              color: #5a1f1f;
-            }
-            .error-card {
-              max-width: 720px;
-              margin: 42px auto;
-              border: 1px solid #ebc4c4;
-              border-radius: 12px;
-              background: #fff;
-              padding: 20px;
-            }
-            h3 { margin: 0 0 8px; }
-            p { margin: 0; line-height: 1.45; }
-          </style>
-        </head>
-        <body>
-          <article class="error-card">
-            <h3>Unable to generate final report PDF</h3>
-            <p>${escapeHtml(error?.message || "Unexpected error while generating final report PDF.")}</p>
-          </article>
-        </body>
-        </html>
-      `);
-      reportWindow.document.close();
+      writeReportWindowError(reportWindow, {
+        title: "Final Report Generation Failed",
+        heading: "Unable to generate final report PDF",
+        message: error?.message || "Unexpected error while generating final report PDF.",
+      });
     }
   }
 
@@ -7958,72 +8105,17 @@ function renderOrderHistory() {
     try {
       const assetSources = await getReportTemplateAssetSources();
       const html = buildDetectedSummaryReportHtml(order, assetSources);
-      if (!csrfToken) await fetchCsrfToken();
-
-      const response = await fetch("/api/orders/render-report-pdf", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Content-Type": "application/json",
-          "x-csrf-token": csrfToken,
-        },
-        body: JSON.stringify({
-          html,
-          fileName: `Order_${order.orderId}_Summary_Report.pdf`,
-        }),
+      await renderReportPdfOrPreview(reportWindow, {
+        html,
+        fileName: `Order_${order.orderId}_Summary_Report.pdf`,
+        previewTitle: `Summary Report Preview #${order.orderId}`,
       });
-
-      if (!response.ok) {
-        const raw = await response.text();
-        let payload = null;
-        try {
-          payload = raw ? JSON.parse(raw) : null;
-        } catch {
-          payload = null;
-        }
-        throw new Error(payload?.error || raw || "Unable to generate summary report PDF.");
-      }
-
-      const pdfBlob = await response.blob();
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      reportWindow.location.href = pdfUrl;
-      setTimeout(() => URL.revokeObjectURL(pdfUrl), 120000);
     } catch (error) {
-      reportWindow.document.open();
-      reportWindow.document.write(`
-        <!doctype html>
-        <html lang="en">
-        <head>
-          <meta charset="utf-8">
-          <title>Summary Report Generation Failed</title>
-          <style>
-            html, body {
-              margin: 0;
-              font-family: Arial, sans-serif;
-              background: #faf7f7;
-              color: #5a1f1f;
-            }
-            .error-card {
-              max-width: 720px;
-              margin: 42px auto;
-              border: 1px solid #ebc4c4;
-              border-radius: 12px;
-              background: #fff;
-              padding: 20px;
-            }
-            h3 { margin: 0 0 8px; }
-            p { margin: 0; line-height: 1.45; }
-          </style>
-        </head>
-        <body>
-          <article class="error-card">
-            <h3>Unable to generate summary report PDF</h3>
-            <p>${escapeHtml(error?.message || "Unexpected error while generating summary report PDF.")}</p>
-          </article>
-        </body>
-        </html>
-      `);
-      reportWindow.document.close();
+      writeReportWindowError(reportWindow, {
+        title: "Summary Report Generation Failed",
+        heading: "Unable to generate summary report PDF",
+        message: error?.message || "Unexpected error while generating summary report PDF.",
+      });
     }
   }
 
@@ -10819,6 +10911,7 @@ function mountApp() {
   document.body.classList.add("app-mode");
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
+  loadDeploymentFeatures().catch(() => {});
   renderNav();
   renderView();
   if (getVisibleViews().some((item) => item.key === "facility")) {

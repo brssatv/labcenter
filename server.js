@@ -3,7 +3,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
 
 const express = require("express");
@@ -1421,7 +1421,20 @@ function renderReportPdfFromHtml(htmlMarkup) {
 
     const resolveHeadlessBrowserPath = () => {
       const envPath = String(process.env.LABCENTER_PDF_BROWSER || "").trim();
-      if (envPath && fs.existsSync(envPath)) return envPath;
+      const commandExists = (command) => {
+        if (!command) return false;
+        const lookupCommand = process.platform === "win32" ? "where" : "which";
+        try {
+          const result = spawnSync(lookupCommand, [command], { stdio: "ignore" });
+          return result.status === 0;
+        } catch {
+          return false;
+        }
+      };
+      if (envPath) {
+        if ((envPath.includes(path.sep) || process.platform === "win32") && fs.existsSync(envPath)) return envPath;
+        if (commandExists(envPath)) return envPath;
+      }
 
       const candidates = process.platform === "win32"
         ? [
@@ -1441,7 +1454,7 @@ function renderReportPdfFromHtml(htmlMarkup) {
         if (candidate.includes(path.sep)) {
           if (fs.existsSync(candidate)) return candidate;
         } else {
-          return candidate;
+          if (commandExists(candidate)) return candidate;
         }
       }
       return "";
