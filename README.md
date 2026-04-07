@@ -54,8 +54,8 @@ In the DNS settings for `mindbodyheal.co`, create the record Render asks for whe
 - The server no longer exposes the whole project directory as public static files.
 - Facility data is now served through an authenticated API instead of `/data/facility.json`.
 - Runtime data can be stored outside the repo via `DATA_DIR` and `SESSION_DIR`.
-- Native PDF rendering and OCR are disabled by default on non-macOS hosts. Render deployments start with:
-  - `LABCENTER_ENABLE_REPORT_PDF=false`
+- Render deployments install Chrome for Testing during the build so server-side report PDFs can render on Linux.
+- Requisition scan OCR remains disabled by default on Render:
   - `LABCENTER_ENABLE_SCAN_OCR=false`
 
 ## Default bootstrap login (change immediately)

@@ -1476,8 +1476,11 @@ function renderReportPdfFromHtml(htmlMarkup) {
       const args = [
         "--headless=new",
         "--disable-gpu",
+        "--disable-dev-shm-usage",
         "--no-first-run",
         "--no-default-browser-check",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
         "--allow-file-access-from-files",
         `--print-to-pdf=${pdfPath}`,
         htmlUrl,

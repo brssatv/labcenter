@@ -3,7 +3,7 @@ services:
     name: mindbodyheal-portal
     runtime: node
     plan: starter
-    buildCommand: npm ci --omit=dev
+    buildCommand: npm ci --omit=dev && bash scripts/install-render-chrome.sh
     startCommand: npm start
     healthCheckPath: /healthz
     domains:
@@ -22,6 +22,8 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: LABCENTER_ENABLE_REPORT_PDF
-        value: "false"
+        value: "true"
+      - key: LABCENTER_PDF_BROWSER
+        value: /opt/render/project/src/.render/chrome/chrome-linux64/chrome
       - key: LABCENTER_ENABLE_SCAN_OCR
         value: "false"
