@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: mindbodyheal-portal
+    runtime: node
+    plan: starter
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    domains:
+      - portal.mindbodyheal.co
+    disk:
+      name: portal-data
+      mountPath: /opt/render/project/src/runtime-data
+      sizeGB: 5
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /opt/render/project/src/runtime-data
+      - key: SESSION_DIR
+        value: /opt/render/project/src/runtime-data/sessions
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: LABCENTER_ENABLE_REPORT_PDF
+        value: "false"
+      - key: LABCENTER_ENABLE_SCAN_OCR
+        value: "false"

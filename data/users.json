@@ -1,0 +1,11 @@
+{
+  "users": [
+    {
+      "id": "doctor-001",
+      "email": "admin@clinic.local",
+      "displayName": "Clinic Admin",
+      "role": "doctor",
+      "passwordHash": "scrypt$16384$8$1$149285dc2e3722f45b7bc645866caded$ec49b81e2a49b270fdbc4dfb26ddb4ec251ffce4b61b45b6a47d3648bbd7d7e2a19f5489de59ce2a52d2bd6e45465b1f02f2a1f274688b7051f708056648d65c"
+    }
+  ]
+}

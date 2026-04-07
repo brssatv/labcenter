@@ -1,0 +1,66 @@
+{
+  "name": "labcenter-secure-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LabCenter secure login portal scaffold",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js",
+    "hash-password": "node scripts/hash-password.js",
+    "desktop": "electron .",
+    "dist:win": "electron-builder --win nsis",
+    "dist:win-portable": "electron-builder --win portable"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "express-session": "^1.18.1",
+    "helmet": "^8.0.0",
+    "session-file-store": "^1.5.0",
+    "zipcodes": "^8.0.0"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.innovexlab.labcenter",
+    "productName": "LabCenter",
+    "directories": {
+      "output": "dist-desktop",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "app.js",
+      "electron-main.js",
+      "index.html",
+      "styles.css",
+      "server.js",
+      "assets/**/*",
+      "data/**/*",
+      "scripts/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build-resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LabCenter"
+    }
+  }
+}
