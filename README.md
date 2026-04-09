@@ -18,10 +18,21 @@ This project now includes a server-backed login portal with security controls th
 2. Set environment variables:
    - `cp .env.example .env`
    - Update `SESSION_SECRET` in `.env`.
+   - If you want shared order history + file persistence, also set:
+     - `LABCENTER_S3_BUCKET`
+     - `LABCENTER_S3_REGION`
+     - optional: `LABCENTER_S3_PREFIX`
+     - optional: `LABCENTER_S3_ENDPOINT`
+     - optional: `LABCENTER_S3_FORCE_PATH_STYLE=true`
+     - plus your AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and if needed `AWS_SESSION_TOKEN`)
 3. Start the server:
    - `npm run dev`
 4. Open:
    - `http://localhost:3000`
+
+## SOP
+
+Operational instructions for using the app are documented in [SOP.md](/Users/greyhouse/Documents/LabCenter/SOP.md).
 
 ## Deploying to `portal.mindbodyheal.co`
 
@@ -32,6 +43,8 @@ This repo now includes a [render.yaml](/Users/greyhouse/Documents/LabCenter/rend
 - Keep `mindbodyheal.co` for the public website.
 - Host this authenticated app at `portal.mindbodyheal.co`.
 - Use a persistent disk and set `DATA_DIR` to that mounted path so sessions, audit logs, and facility data survive deploys.
+- The shared SQLite database is stored in `DATA_DIR/labcenter.sqlite`.
+- Store uploaded workbooks and generated PDFs in S3 instead of the Render disk.
 
 ### Render steps
 
@@ -43,7 +56,12 @@ This repo now includes a [render.yaml](/Users/greyhouse/Documents/LabCenter/rend
    - Health check path: `/healthz`
 4. Add a persistent disk mounted at `/opt/render/project/src/runtime-data`.
 5. Set `SESSION_SECRET` to a strong random value if you are not using the generated one.
-6. Add `portal.mindbodyheal.co` as the custom domain on the Render service.
+6. Add S3 settings on the service:
+   - `LABCENTER_S3_BUCKET`
+   - `LABCENTER_S3_REGION`
+   - optional `LABCENTER_S3_PREFIX` such as `portal-prod`
+   - your AWS credentials, unless you are supplying them through another trusted mechanism
+7. Add `portal.mindbodyheal.co` as the custom domain on the Render service.
 
 ### DNS steps
 
@@ -54,6 +72,8 @@ In the DNS settings for `mindbodyheal.co`, create the record Render asks for whe
 - The server no longer exposes the whole project directory as public static files.
 - Facility data is now served through an authenticated API instead of `/data/facility.json`.
 - Runtime data can be stored outside the repo via `DATA_DIR` and `SESSION_DIR`.
+- Orders, registrations, and upload activity are now persisted in SQLite under `DATA_DIR/labcenter.sqlite`, so they are shared across browsers and survive deploys.
+- Uploaded raw result workbooks and generated report PDFs can be pushed to S3 when the `LABCENTER_S3_*` environment variables are configured.
 - Render deployments install Chrome for Testing during the build so server-side report PDFs can render on Linux.
 - Requisition scan OCR remains disabled by default on Render:
   - `LABCENTER_ENABLE_SCAN_OCR=false`

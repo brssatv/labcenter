@@ -137,24 +137,16 @@ let facilityData = {
 const registrationsStorageKey = "labcenter.registrations";
 const ordersStorageKey = "labcenter.orders";
 const uploadResultsLogStorageKey = "labcenter.upload-results-log.v1";
-const orderIdSequenceResetStorageKey = "labcenter.order-id-sequence-reset.v1";
+const portalDataMigrationStorageKey = "labcenter.server-data-migrated.v1";
 const panelCatalogStorageKey = "labcenter.panel-catalog.v1";
 const masterRegistryStorageKey = "labcenter.master-registry.v1";
 const orderIdPadLength = 5;
 const orderIdStartNumber = 1;
-
-function resetOrdersForPaddedOrderIdsOnce() {
-  try {
-    if (localStorage.getItem(orderIdSequenceResetStorageKey) === "done") return;
-    localStorage.setItem(ordersStorageKey, "[]");
-    localStorage.setItem(uploadResultsLogStorageKey, "[]");
-    localStorage.setItem(orderIdSequenceResetStorageKey, "done");
-  } catch {
-    // Ignore storage failures and continue with in-memory behavior.
-  }
-}
-
-resetOrdersForPaddedOrderIdsOnce();
+let registrationsState = [];
+let ordersState = [];
+let uploadResultsLogState = [];
+let portalDataReady = false;
+let portalDataPromise = null;
 
 function escapeHtml(value) {
   return String(value === null || value === undefined ? "" : value)
@@ -998,6 +990,95 @@ async function requestJson(url, options = {}) {
   return payload || {};
 }
 
+function readLegacyLocalArray(storageKey) {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function applyPortalDataPayload(payload) {
+  registrationsState = Array.isArray(payload?.registrations) ? payload.registrations : [];
+  ordersState = Array.isArray(payload?.orders) ? payload.orders : [];
+  uploadResultsLogState = Array.isArray(payload?.uploadResultsLog) ? payload.uploadResultsLog : [];
+}
+
+function getLegacyPortalData() {
+  return {
+    registrations: readLegacyLocalArray(registrationsStorageKey),
+    orders: readLegacyLocalArray(ordersStorageKey),
+    uploadResultsLog: readLegacyLocalArray(uploadResultsLogStorageKey),
+  };
+}
+
+function hasLegacyPortalData(payload) {
+  return Boolean(
+    payload.registrations.length
+    || payload.orders.length
+    || payload.uploadResultsLog.length
+  );
+}
+
+async function maybeImportLegacyPortalData() {
+  try {
+    if (localStorage.getItem(portalDataMigrationStorageKey) === "done") return false;
+  } catch {
+    return false;
+  }
+
+  const legacyPayload = getLegacyPortalData();
+  if (!hasLegacyPortalData(legacyPayload)) {
+    try {
+      localStorage.setItem(portalDataMigrationStorageKey, "done");
+    } catch {
+      // Ignore storage failures.
+    }
+    return false;
+  }
+
+  if (!csrfToken) await fetchCsrfToken();
+  await requestJson("/api/portal/import-local", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify(legacyPayload),
+  });
+  try {
+    localStorage.setItem(portalDataMigrationStorageKey, "done");
+  } catch {
+    // Ignore storage failures.
+  }
+  return true;
+}
+
+async function ensurePortalDataLoaded(options = {}) {
+  const force = Boolean(options.force);
+  if (portalDataReady && !force) return;
+
+  if (!portalDataPromise || force) {
+    portalDataPromise = (async () => {
+      let payload = await requestJson("/api/portal/data");
+      const imported = await maybeImportLegacyPortalData().catch(() => false);
+      if (imported) {
+        payload = await requestJson("/api/portal/data");
+      }
+      applyPortalDataPayload(payload);
+      portalDataReady = true;
+      return payload;
+    })().catch((error) => {
+      portalDataPromise = null;
+      throw error;
+    });
+  }
+
+  await portalDataPromise;
+}
+
 function renderNav() {
   const visibleViews = getVisibleViews();
   if (!visibleViews.length) {
@@ -1728,25 +1809,32 @@ function renderDashboard() {
 }
 
 function readRegistrations() {
-  try {
-    return JSON.parse(localStorage.getItem(registrationsStorageKey) || "[]");
-  } catch {
-    return [];
-  }
+  return Array.isArray(registrationsState) ? registrationsState.slice() : [];
 }
 
 function writeRegistrations(items) {
-  localStorage.setItem(registrationsStorageKey, JSON.stringify(items));
+  registrationsState = Array.isArray(items) ? items.slice() : [];
 }
 
-function saveRegistrationData(data) {
-  const records = readRegistrations();
-  records.unshift({
-    ...data,
-    createdAt: new Date().toISOString(),
+async function saveRegistrationData(data) {
+  if (!csrfToken) await fetchCsrfToken();
+  const payload = await requestJson("/api/portal/registrations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify({
+      registration: {
+        ...data,
+        createdAt: data?.createdAt || new Date().toISOString(),
+      },
+    }),
   });
-  writeRegistrations(records);
-  return records.length;
+  const nextRecords = readRegistrations().filter((row) => String(row?.createdAt || "") !== String(payload?.registration?.createdAt || ""));
+  nextRecords.unshift(payload.registration);
+  writeRegistrations(nextRecords);
+  return Number(payload?.totalCount || nextRecords.length);
 }
 
 function normalizePatientText(value) {
@@ -1823,36 +1911,34 @@ function resolvePatientId(candidate, displayedId = "") {
 }
 
 function readOrders() {
-  try {
-    return JSON.parse(localStorage.getItem(ordersStorageKey) || "[]");
-  } catch {
-    return [];
-  }
+  return Array.isArray(ordersState) ? ordersState.slice() : [];
 }
 
 function writeOrders(items) {
-  localStorage.setItem(ordersStorageKey, JSON.stringify(items));
+  ordersState = Array.isArray(items) ? items.slice() : [];
 }
 
 function readUploadResultsLog() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(uploadResultsLogStorageKey) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return Array.isArray(uploadResultsLogState) ? uploadResultsLogState.slice() : [];
 }
 
 function writeUploadResultsLog(items) {
-  localStorage.setItem(uploadResultsLogStorageKey, JSON.stringify(items));
+  uploadResultsLogState = Array.isArray(items) ? items.slice() : [];
 }
 
-function appendUploadResultsLog(entries) {
-  const existing = readUploadResultsLog();
+async function appendUploadResultsLog(entries) {
   const nextEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
   if (!nextEntries.length) return;
-  const merged = [...nextEntries, ...existing].slice(0, 200);
-  writeUploadResultsLog(merged);
+  if (!csrfToken) await fetchCsrfToken();
+  const payload = await requestJson("/api/portal/upload-log", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify({ entries: nextEntries }),
+  });
+  applyPortalDataPayload(payload);
 }
 
 function parseOrderIdNumber(value) {
@@ -1884,11 +1970,35 @@ function getNextOrderId() {
   return formatOrderId(maxId + 1);
 }
 
-function saveOrderRecord(record) {
-  const orders = readOrders();
-  orders.unshift(record);
-  writeOrders(orders);
-  return orders.length;
+async function allocateOrderIds(count) {
+  const requestedCount = Math.max(1, Math.floor(Number(count || 0)));
+  if (!csrfToken) await fetchCsrfToken();
+  const payload = await requestJson("/api/portal/order-ids", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify({ count: requestedCount }),
+  });
+  return Array.isArray(payload?.orderIds) ? payload.orderIds : [];
+}
+
+async function saveOrderRecords(records) {
+  const nextRecords = Array.isArray(records) ? records.filter(Boolean) : [];
+  if (!nextRecords.length) return 0;
+  if (!csrfToken) await fetchCsrfToken();
+  const payload = await requestJson("/api/portal/orders/bulk", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify({ orders: nextRecords }),
+  });
+  const existing = readOrders().filter((row) => !payload.orders.some((saved) => String(saved?.orderId || "") === String(row?.orderId || "")));
+  writeOrders([...(Array.isArray(payload.orders) ? payload.orders : []), ...existing]);
+  return readOrders().length;
 }
 
 function toDateTimeLocal(isoString) {
@@ -2998,29 +3108,37 @@ function renderRegistration(prefillData = null) {
     status.textContent = "Form cleared.";
   });
 
-  form.addEventListener("submit", (event) => {
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
     patientIdNode.textContent = data.patientId;
-    const count = saveRegistrationData(data);
-    status.textContent = `Requisition saved for Patient ID ${data.patientId}. Total records: ${count}`;
-    form.reset();
-    clearCustomAllergies();
-    syncSpecimenTypeDependentFields();
-    syncAgeFromDob();
-    refreshFacilitySelectOptions();
-    refreshPatientIdPreview();
+    try {
+      const count = await saveRegistrationData(data);
+      status.textContent = `Requisition saved for Patient ID ${data.patientId}. Total records: ${count}`;
+      form.reset();
+      clearCustomAllergies();
+      syncSpecimenTypeDependentFields();
+      syncAgeFromDob();
+      refreshFacilitySelectOptions();
+      refreshPatientIdPreview();
+    } catch (error) {
+      status.textContent = error?.message || "Unable to save requisition.";
+    }
   });
 
-  registerAndOrderBtn.addEventListener("click", () => {
+  registerAndOrderBtn.addEventListener("click", async () => {
     if (!form.reportValidity()) return;
     const data = Object.fromEntries(new FormData(form).entries());
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
     patientIdNode.textContent = data.patientId;
-    const count = saveRegistrationData(data);
-    status.textContent = `Requisition saved for Patient ID ${data.patientId}. Total records: ${count}`;
-    renderOrderPatient(data);
+    try {
+      const count = await saveRegistrationData(data);
+      status.textContent = `Requisition saved for Patient ID ${data.patientId}. Total records: ${count}`;
+      renderOrderPatient(data);
+    } catch (error) {
+      status.textContent = error?.message || "Unable to save requisition.";
+    }
   });
 }
 
@@ -3263,7 +3381,7 @@ function renderOrderPatient(patient) {
     return active ? active.textContent.trim() : "None (Default)";
   }
 
-  function commitOrder() {
+  async function commitOrder() {
     const sampleCollectTime = document.getElementById("sample-collect-time")?.value || "";
     const orderBookingTime = document.getElementById("order-booking-time")?.value || "";
     const preparedRows = orderState.rows
@@ -3302,11 +3420,22 @@ function renderOrderPatient(patient) {
       status: "Pending",
     };
 
-    // Each service row becomes an independent order history record.
-    preparedRows.forEach((serviceRow) => {
-      const orderId = getNextOrderId();
+    let reservedOrderIds = [];
+    try {
+      reservedOrderIds = await allocateOrderIds(preparedRows.length);
+    } catch (error) {
+      alert(error?.message || "Unable to reserve order IDs.");
+      return;
+    }
+    if (reservedOrderIds.length !== preparedRows.length || reservedOrderIds.some((value) => !String(value || "").trim())) {
+      alert("Unable to reserve order IDs.");
+      return;
+    }
+
+    const nextOrderRecords = preparedRows.map((serviceRow, index) => {
+      const orderId = String(reservedOrderIds[index] || "").trim();
       const createdAt = new Date().toISOString();
-      const orderRecord = {
+      return {
         orderId,
         accessionNo: buildAccessionNumber({
           serviceLine: serviceRow,
@@ -3320,12 +3449,15 @@ function renderOrderPatient(patient) {
         due: serviceRow.due,
         createdAt,
       };
-      saveOrderRecord(orderRecord);
     });
-
-    currentView = "order-history";
-    renderNav();
-    renderView();
+    try {
+      await saveOrderRecords(nextOrderRecords);
+      currentView = "order-history";
+      renderNav();
+      renderView();
+    } catch (error) {
+      alert(error?.message || "Unable to save order.");
+    }
   }
 
   orderState.rows = [createServiceRow(1)];
@@ -5601,12 +5733,22 @@ function renderOrderHistory() {
     status: "",
   };
 
-  function updateOrderById(orderId, mutator) {
+  async function updateOrderById(orderId, mutator) {
     const orders = readOrders();
     const idx = orders.findIndex((row) => Number(row.orderId) === Number(orderId));
     if (idx < 0) return false;
     const updated = mutator({ ...orders[idx] });
-    orders[idx] = updated;
+    if (!updated) return false;
+    if (!csrfToken) await fetchCsrfToken();
+    const payload = await requestJson(`/api/portal/orders/${encodeURIComponent(orderId)}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({ order: updated }),
+    });
+    orders[idx] = payload.order;
     writeOrders(orders);
     return true;
   }
@@ -7642,6 +7784,8 @@ function renderOrderHistory() {
   async function renderReportPdf(reportWindow, options) {
     const html = String(options?.html || "");
     const fileName = String(options?.fileName || "").trim() || `Report_${Date.now()}.pdf`;
+    const orderId = String(options?.orderId || "").trim();
+    const reportType = String(options?.reportType || "final").trim() || "final";
     if (!csrfToken) await fetchCsrfToken();
 
     const response = await fetch("/api/orders/render-report-pdf", {
@@ -7654,6 +7798,8 @@ function renderOrderHistory() {
       body: JSON.stringify({
         html,
         fileName,
+        orderId,
+        reportType,
       }),
     });
 
@@ -7749,7 +7895,9 @@ function renderOrderHistory() {
       const html = buildFinalReportHtml(order, assetSources);
       await renderReportPdf(reportWindow, {
         html,
+        orderId: order.orderId,
         fileName: `Order_${order.orderId}_Final_Report.pdf`,
+        reportType: "report",
       });
     } catch (error) {
       writeReportWindowError(reportWindow, {
@@ -7835,7 +7983,9 @@ function renderOrderHistory() {
       const html = buildDetectedSummaryReportHtml(order, assetSources, { variant: "final" });
       await renderReportPdf(reportWindow, {
         html,
+        orderId: order.orderId,
         fileName: `Order_${order.orderId}_Final_Report.pdf`,
+        reportType: "final",
       });
     } catch (error) {
       writeReportWindowError(reportWindow, {
@@ -7921,7 +8071,9 @@ function renderOrderHistory() {
       const html = buildDetectedSummaryReportHtml(order, assetSources);
       await renderReportPdf(reportWindow, {
         html,
+        orderId: order.orderId,
         fileName: `Order_${order.orderId}_Summary_Report.pdf`,
+        reportType: "summary",
       });
     } catch (error) {
       writeReportWindowError(reportWindow, {
@@ -7977,7 +8129,7 @@ function renderOrderHistory() {
       .filter(Boolean))];
   }
 
-async function requestRawWorkbookProcessing(file, panelName = "Lab Panel", expectedSampleId = "") {
+async function requestRawWorkbookProcessing(file, panelName = "Lab Panel", expectedSampleId = "", orderId = "") {
   if (!csrfToken) await fetchCsrfToken();
   const contentBase64 = await fileToBase64(file);
   try {
@@ -7992,6 +8144,7 @@ async function requestRawWorkbookProcessing(file, panelName = "Lab Panel", expec
           contentBase64,
           panelName,
           expectedSampleId: String(expectedSampleId || "").trim(),
+          orderId: String(orderId || "").trim(),
         }),
       });
     } catch (error) {
@@ -8037,7 +8190,8 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       || (await requestRawWorkbookProcessing(
         file,
         panelName,
-        expectedSampleId && expectedSampleId !== "-" ? expectedSampleId : ""
+        expectedSampleId && expectedSampleId !== "-" ? expectedSampleId : "",
+        order?.orderId || ""
       ));
 
     const normalizedReport =
@@ -8055,7 +8209,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       report: normalizedReport,
     };
 
-    const updated = updateOrderById(order.orderId, (row) => ({
+    const updated = await updateOrderById(order.orderId, (row) => ({
       ...row,
       status: "Processed",
       processedAt: response.processedAt,
@@ -8063,6 +8217,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         fileName: response.fileName,
         uploadedAt,
         notes,
+        storage: response.rawFile || row?.rawUpload?.storage || null,
       },
       processedResult: response,
     }));
@@ -8195,7 +8350,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         if (statusNode) statusNode.textContent = uploadStatusMessage;
         const notes = notesInput?.value?.trim() || "";
         const result = await processRawWorkbook(selectedOrder, file, notes);
-        appendUploadResultsLog([
+        await appendUploadResultsLog([
           {
             fileName: result?.response?.fileName || file.name,
             uploadedAt: result?.uploadedAt || new Date().toISOString(),
@@ -8210,7 +8365,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         renderUploadPanel();
         renderTable();
       } catch (error) {
-        appendUploadResultsLog([
+        await appendUploadResultsLog([
           {
             fileName: file.name,
             uploadedAt: new Date().toISOString(),
@@ -8315,7 +8470,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         }
       }
 
-      appendUploadResultsLog(logEntries);
+      await appendUploadResultsLog(logEntries);
       uploadStatusMessage = totalUpdatedOrders
         ? `Bulk upload complete. Updated ${totalUpdatedOrders} pending order(s).`
         : "Bulk upload complete. No pending orders matched the uploaded accession numbers.";
@@ -8693,7 +8848,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     }
   }
 
-  function saveValidation(orderId) {
+  async function saveValidation(orderId) {
     const orderKey = String(orderId);
     const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
     const baseReport = validationDraftReports.get(orderKey) || order?.processedResult?.report;
@@ -9071,7 +9226,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     }
   });
 
-  previewModalNode?.addEventListener("click", (event) => {
+  previewModalNode?.addEventListener("click", async (event) => {
     const removeRowBtn = event.target.closest("[data-remove-validate-row]");
     if (removeRowBtn) {
       const orderId = removeRowBtn.getAttribute("data-order-id");
@@ -9130,7 +9285,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (saveBtn) {
       const orderId = saveBtn.getAttribute("data-save-validate");
       if (!orderId) return;
-      const updated = saveValidation(orderId);
+      const updated = await saveValidation(orderId);
       if (!updated) {
         alert("Unable to save validation values.");
         return;
@@ -10720,10 +10875,17 @@ function renderView() {
   }
 }
 
-function mountApp() {
+async function mountApp() {
   document.body.classList.add("app-mode");
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
+  panelBody.innerHTML = `
+    <section class="card starter-card">
+      <p class="badge">Loading</p>
+      <h3>Syncing portal data...</h3>
+    </section>
+  `;
+  await ensurePortalDataLoaded();
   renderNav();
   renderView();
   if (getVisibleViews().some((item) => item.key === "facility")) {
@@ -10732,6 +10894,13 @@ function mountApp() {
 }
 
 function mountAuth() {
+  portalDataReady = false;
+  portalDataPromise = null;
+  applyPortalDataPayload({
+    registrations: [],
+    orders: [],
+    uploadResultsLog: [],
+  });
   activeSession = {
     type: "doctor",
     accessType: "full",
@@ -10814,7 +10983,7 @@ loginForm.addEventListener("submit", (event) => {
         };
       }
       loginError.textContent = "";
-      mountApp();
+      await mountApp();
     } catch (error) {
       loginError.textContent = error.message || "Unable to sign in.";
       await fetchCsrfToken().catch(() => {});
@@ -10857,7 +11026,7 @@ logoutBtn.addEventListener("click", () => {
         accountName: "",
         username: "",
       };
-      mountApp();
+      await mountApp();
       return;
     }
   } catch {
@@ -10874,7 +11043,7 @@ logoutBtn.addEventListener("click", () => {
         accountName: clientState?.clientUser?.accountName || "",
         username: clientState?.clientUser?.username || "",
       };
-      mountApp();
+      await mountApp();
       return;
     }
   } catch {

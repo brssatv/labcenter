@@ -16,6 +16,8 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1026.0",
+    "better-sqlite3": "^12.8.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
@@ -41,6 +43,7 @@
       "index.html",
       "styles.css",
       "server.js",
+      "lib/**/*",
       "assets/**/*",
       "data/**/*",
       "scripts/**/*",

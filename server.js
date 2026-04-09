@@ -11,6 +11,8 @@ const session = require("express-session");
 const FileStore = require("session-file-store")(session);
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const { createPortalStore } = require("./lib/portal-store");
+const { createS3Storage, sanitizeS3PathSegment } = require("./lib/s3-storage");
 require("dotenv").config();
 
 const app = express();
@@ -33,6 +35,8 @@ const auditPath = path.join(dataDir, "audit.log");
 const zipCodesPath = path.join(sourceDataDir, "us-zips.json");
 const reportPdfRendererPath = path.join(__dirname, "scripts", "render-html-to-pdf.swift");
 const requisitionScanOcrPath = path.join(__dirname, "scripts", "ocr-requisition-scan.swift");
+const orderIdPadLength = 5;
+const orderIdStartNumber = 1;
 const reportPdfEnabled = String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").trim()
   ? /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").trim())
   : process.platform === "darwin";
@@ -98,6 +102,15 @@ function ensureRuntimeData() {
 
 ensureRuntimeData();
 
+const portalStore = createPortalStore({ dataDir });
+const s3Storage = createS3Storage({
+  bucket: process.env.LABCENTER_S3_BUCKET,
+  region: process.env.LABCENTER_S3_REGION,
+  endpoint: process.env.LABCENTER_S3_ENDPOINT,
+  keyPrefix: process.env.LABCENTER_S3_PREFIX || "labcenter",
+  forcePathStyle: /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_S3_FORCE_PATH_STYLE || "").trim()),
+});
+
 if (SESSION_SECRET === "dev-only-change-me") {
   console.warn("[security] SESSION_SECRET is using the default value. Set a strong value in production.");
 }
@@ -109,6 +122,9 @@ if (!reportPdfEnabled) {
 }
 if (!scanOcrEnabled) {
   console.warn("[runtime] Requisition scan OCR is disabled for this deployment.");
+}
+if (!s3Storage.enabled) {
+  console.warn("[runtime] S3 file storage is disabled. Raw uploads and generated PDFs will not be persisted externally.");
 }
 
 app.disable("x-powered-by");
@@ -452,6 +468,79 @@ function getFacilityDataForSession(req) {
   return { accounts, providers };
 }
 
+function getPortalAccessScope(req) {
+  if (req?.session?.user) {
+    return {
+      matchesOrder: () => true,
+      matchesRegistration: () => true,
+      matchesUploadLog: () => true,
+    };
+  }
+
+  const scopedFacilityData = getFacilityDataForSession(req);
+  const accountKeys = new Set(
+    (Array.isArray(scopedFacilityData?.accounts) ? scopedFacilityData.accounts : [])
+      .flatMap((row) => [row?.id, row?.name, row?.account_code])
+      .map(normalizeMatchKey)
+      .filter(Boolean)
+  );
+  const providerKeys = new Set(
+    (Array.isArray(scopedFacilityData?.providers) ? scopedFacilityData.providers : [])
+      .flatMap((row) => [row?.provider_id, row?.provider_name, row?.validator_name, row?.display_name, row?.account])
+      .map(normalizeMatchKey)
+      .filter(Boolean)
+  );
+
+  const matchAny = (values, keys) => values.some((value) => {
+    const normalized = normalizeMatchKey(value);
+    return normalized && keys.has(normalized);
+  });
+
+  return {
+    matchesOrder(order) {
+      if (!order) return false;
+      return (
+        matchAny([order?.facilityName, order?.accountId, order?.accountName], accountKeys)
+        || matchAny([order?.provider, order?.providerId], providerKeys)
+      );
+    },
+    matchesRegistration(registration) {
+      if (!registration) return false;
+      return (
+        matchAny([registration?.facilityName, registration?.accountId, registration?.accountName], accountKeys)
+        || matchAny([registration?.provider, registration?.providerId], providerKeys)
+      );
+    },
+    matchesUploadLog(entry, visibleOrderIds) {
+      const ids = Array.isArray(entry?.updatedOrderIds)
+        ? entry.updatedOrderIds.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      if (!ids.length) return false;
+      return ids.some((value) => visibleOrderIds.has(value));
+    },
+  };
+}
+
+function canAccessOrderRecord(req, order) {
+  return getPortalAccessScope(req).matchesOrder(order);
+}
+
+function getPortalDataForSession(req) {
+  const scope = getPortalAccessScope(req);
+  const orders = portalStore.listOrders().filter((order) => scope.matchesOrder(order));
+  const visibleOrderIds = new Set(orders.map((order) => String(order?.orderId || "").trim()).filter(Boolean));
+  const registrations = portalStore.listRegistrations().filter((registration) => scope.matchesRegistration(registration));
+  const uploadResultsLog = req?.session?.user
+    ? portalStore.listUploadLogs()
+    : portalStore.listUploadLogs().filter((entry) => scope.matchesUploadLog(entry, visibleOrderIds));
+
+  return {
+    registrations,
+    orders,
+    uploadResultsLog: uploadResultsLog.slice(0, 200),
+  };
+}
+
 function resolveAccountIndex(accounts, identifier) {
   const raw = String(identifier || "").trim();
   if (!raw) return -1;
@@ -777,6 +866,24 @@ function sanitizeReportPdfFileName(value) {
     .slice(0, 120);
   if (!cleaned) return `Final_Report_${Date.now()}.pdf`;
   return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : `${cleaned}.pdf`;
+}
+
+function inferMimeTypeFromFileName(fileName) {
+  const ext = path.extname(String(fileName || "").trim()).toLowerCase();
+  if (ext === ".pdf") return "application/pdf";
+  if (ext === ".csv") return "text/csv";
+  if (ext === ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (ext === ".xls") return "application/vnd.ms-excel";
+  if (ext === ".xlsm") return "application/vnd.ms-excel.sheet.macroEnabled.12";
+  return "application/octet-stream";
+}
+
+function buildStoredFileKey(...segments) {
+  return segments
+    .flat()
+    .map((segment) => sanitizeS3PathSegment(segment))
+    .filter(Boolean)
+    .join("/");
 }
 
 function resolveUploadedScanExtension(fileName, mimeType = "") {
@@ -1752,6 +1859,179 @@ app.post("/api/client-auth/logout", (req, res) => {
   });
 });
 
+app.get("/api/portal/data", requireAuthenticatedUser, (req, res) => {
+  try {
+    return res.json(getPortalDataForSession(req));
+  } catch (error) {
+    auditLog(req, "portal_data_load", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to load portal data." });
+  }
+});
+
+app.post("/api/portal/import-local", requireDoctorAuth, (req, res) => {
+  try {
+    const payload = {
+      registrations: Array.isArray(req.body?.registrations) ? req.body.registrations : [],
+      orders: Array.isArray(req.body?.orders) ? req.body.orders : [],
+      uploadResultsLog: Array.isArray(req.body?.uploadResultsLog) ? req.body.uploadResultsLog : [],
+    };
+    const imported = portalStore.importLocalData(payload);
+    auditLog(req, "portal_local_import", "success", imported);
+    return res.json({
+      imported,
+      ...getPortalDataForSession(req),
+    });
+  } catch (error) {
+    auditLog(req, "portal_local_import", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to import existing browser data." });
+  }
+});
+
+app.post("/api/portal/order-ids", requireAuthenticatedUser, (req, res) => {
+  if (!hasRequisitionAccess(req)) {
+    return res.status(401).json({ error: "Order creation access is not enabled for this account." });
+  }
+
+  try {
+    const requestedCount = Number(req.body?.count || 0);
+    const count = Math.max(1, Math.min(100, Math.floor(requestedCount || 1)));
+    const orderIds = portalStore.reserveOrderIds({
+      count,
+      startAt: orderIdStartNumber,
+      padLength: orderIdPadLength,
+    });
+    auditLog(req, "order_id_reserve", "success", { count });
+    return res.json({ orderIds });
+  } catch (error) {
+    auditLog(req, "order_id_reserve", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to reserve order IDs." });
+  }
+});
+
+app.post("/api/portal/registrations", requireAuthenticatedUser, (req, res) => {
+  if (!hasRequisitionAccess(req)) {
+    return res.status(401).json({ error: "Registration access is not enabled for this account." });
+  }
+
+  try {
+    const registration = req.body?.registration && typeof req.body.registration === "object" ? req.body.registration : null;
+    if (!registration) {
+      return res.status(400).json({ error: "Registration payload is required." });
+    }
+
+    const saved = portalStore.upsertRegistration({
+      ...registration,
+      createdAt: registration.createdAt || new Date().toISOString(),
+    });
+
+    auditLog(req, "registration_save", "success", {
+      patientId: saved.patientId || "",
+    });
+    return res.json({
+      registration: saved,
+      totalCount: portalStore.countRegistrations(),
+    });
+  } catch (error) {
+    auditLog(req, "registration_save", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to save registration." });
+  }
+});
+
+app.post("/api/portal/orders/bulk", requireAuthenticatedUser, (req, res) => {
+  if (!hasRequisitionAccess(req)) {
+    return res.status(401).json({ error: "Order creation access is not enabled for this account." });
+  }
+
+  try {
+    const orders = Array.isArray(req.body?.orders) ? req.body.orders : [];
+    if (!orders.length) {
+      return res.status(400).json({ error: "One or more orders are required." });
+    }
+    const nowIso = new Date().toISOString();
+    const savedOrders = portalStore.upsertOrders(orders.map((order) => ({
+      ...order,
+      createdAt: order?.createdAt || nowIso,
+      updatedAt: order?.updatedAt || nowIso,
+    })));
+    auditLog(req, "orders_bulk_save", "success", {
+      count: savedOrders.length,
+    });
+    return res.json({ orders: savedOrders });
+  } catch (error) {
+    auditLog(req, "orders_bulk_save", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to save orders." });
+  }
+});
+
+app.put("/api/portal/orders/:orderId", requireAuthenticatedUser, (req, res) => {
+  try {
+    const current = portalStore.getOrderById(req.params.orderId);
+    if (!current) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+    if (!canAccessOrderRecord(req, current)) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    const order = req.body?.order && typeof req.body.order === "object" ? req.body.order : null;
+    if (!order) {
+      return res.status(400).json({ error: "Order payload is required." });
+    }
+
+    const nowIso = new Date().toISOString();
+    const saved = portalStore.upsertOrders([
+      {
+        ...current,
+        ...order,
+        orderId: String(req.params.orderId || current.orderId || "").trim(),
+        createdAt: order?.createdAt || current.createdAt || nowIso,
+        updatedAt: nowIso,
+      },
+    ])[0];
+
+    auditLog(req, "order_update", "success", {
+      orderId: saved.orderId,
+      status: saved.status,
+    });
+    return res.json({ order: saved });
+  } catch (error) {
+    auditLog(req, "order_update", "failed", {
+      orderId: String(req.params.orderId || ""),
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to update order." });
+  }
+});
+
+app.post("/api/portal/upload-log", requireAuthenticatedUser, (req, res) => {
+  try {
+    const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+    if (!entries.length) {
+      return res.status(400).json({ error: "One or more upload log entries are required." });
+    }
+    portalStore.appendUploadLogs(entries);
+    auditLog(req, "upload_log_append", "success", {
+      count: entries.length,
+    });
+    return res.json(getPortalDataForSession(req));
+  } catch (error) {
+    auditLog(req, "upload_log_append", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to save upload activity." });
+  }
+});
+
 app.get("/api/facility/data", requireAuthenticatedUser, (req, res) => {
   return res.json(getFacilityDataForSession(req));
 });
@@ -2410,11 +2690,68 @@ app.post("/api/orders/render-report-pdf", async (req, res) => {
   }
 
   const fileName = sanitizeReportPdfFileName(req.body?.fileName || "");
+  const orderId = String(req.body?.orderId || "").trim();
+  const reportType = String(req.body?.reportType || "final").trim() || "final";
   try {
+    const existingOrder = orderId ? portalStore.getOrderById(orderId) : null;
+    if (orderId && (!existingOrder || !canAccessOrderRecord(req, existingOrder))) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
     const pdfBuffer = await renderReportPdfFromHtml(html);
+    const generatedAt = new Date().toISOString();
+    if (s3Storage.enabled) {
+      const storedReport = await s3Storage.uploadBuffer({
+        key: buildStoredFileKey("reports", reportType, orderId || "unassigned", `${generatedAt}-${fileName}`),
+        body: pdfBuffer,
+        contentType: "application/pdf",
+        metadata: {
+          orderid: orderId,
+          reporttype: reportType,
+          filename: fileName,
+        },
+        contentDisposition: `inline; filename="${fileName}"`,
+        cacheControl: "private, max-age=0, no-store",
+      });
+      portalStore.saveOrderFile({
+        orderId,
+        fileRole: "report_pdf",
+        reportType,
+        bucket: storedReport.bucket,
+        key: storedReport.key,
+        fileName,
+        mimeType: "application/pdf",
+        sizeBytes: storedReport.sizeBytes,
+        createdAt: generatedAt,
+        metadata: {
+          generatedAt,
+        },
+      });
+      if (existingOrder) {
+        portalStore.upsertOrders([
+          {
+            ...existingOrder,
+            generatedReports: {
+              ...(existingOrder.generatedReports || {}),
+              [reportType]: {
+                bucket: storedReport.bucket,
+                key: storedReport.key,
+                fileName,
+                mimeType: "application/pdf",
+                sizeBytes: storedReport.sizeBytes,
+                generatedAt,
+              },
+            },
+            updatedAt: generatedAt,
+          },
+        ]);
+      }
+    }
     auditLog(req, "render_final_report_pdf", "success", {
       bytes: pdfBuffer.length,
       fileName,
+      orderId,
+      reportType,
     });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
@@ -2431,8 +2768,8 @@ app.post("/api/orders/render-report-pdf", async (req, res) => {
   }
 });
 
-app.post("/api/orders/process-raw", (req, res) => {
-  if (!req.session.user) {
+app.post("/api/orders/process-raw", async (req, res) => {
+  if (!hasRequisitionAccess(req)) {
     return res.status(401).json({ error: "Authentication required." });
   }
 
@@ -2441,9 +2778,14 @@ app.post("/api/orders/process-raw", (req, res) => {
     const contentBase64 = String(req.body?.contentBase64 || "").trim();
     const panelName = String(req.body?.panelName || "Lab Panel").trim() || "Lab Panel";
     const expectedSampleId = String(req.body?.expectedSampleId || "").trim();
+    const orderId = String(req.body?.orderId || "").trim();
+    const existingOrder = orderId ? portalStore.getOrderById(orderId) : null;
 
     if (!fileName || !contentBase64) {
       return res.status(400).json({ error: "fileName and contentBase64 are required." });
+    }
+    if (orderId && (!existingOrder || !canAccessOrderRecord(req, existingOrder))) {
+      return res.status(404).json({ error: "Order not found." });
     }
 
     const fileBuffer = Buffer.from(contentBase64, "base64");
@@ -2458,23 +2800,55 @@ app.post("/api/orders/process-raw", (req, res) => {
         error: `No records matched Sample ID "${expectedSampleId}" in the uploaded file.`,
       });
     }
+    const processedAt = new Date().toISOString();
+    let rawFile = null;
+    if (s3Storage.enabled) {
+      rawFile = await s3Storage.uploadBuffer({
+        key: buildStoredFileKey("uploads", "raw", orderId || expectedSampleId || "unassigned", `${processedAt}-${fileName}`),
+        body: fileBuffer,
+        contentType: inferMimeTypeFromFileName(fileName),
+        metadata: {
+          orderid: orderId,
+          expectedsampleid: expectedSampleId,
+          panelname: panelName,
+          filename: fileName,
+        },
+      });
+      portalStore.saveOrderFile({
+        orderId,
+        fileRole: "raw_result_upload",
+        reportType: panelName,
+        bucket: rawFile.bucket,
+        key: rawFile.key,
+        fileName,
+        mimeType: inferMimeTypeFromFileName(fileName),
+        sizeBytes: rawFile.sizeBytes,
+        createdAt: processedAt,
+        metadata: {
+          expectedSampleId,
+          panelName,
+        },
+      });
+    }
     auditLog(req, "process_raw_lab_excel", "success", {
       fileName,
       bytes: fileBuffer.length,
       detected: report.summary.detectedCount,
       rows: report.summary.totalRows,
       expectedSampleId: expectedSampleId || null,
+      orderId: orderId || null,
     });
     return res.json({
       fileName,
-      processedAt: new Date().toISOString(),
+      processedAt,
       report,
+      rawFile,
     });
   } catch (error) {
     auditLog(req, "process_raw_lab_excel", "failed", {
       reason: error?.message || "parse_error",
     });
-    return res.status(400).json({ error: "Unable to parse excel workbook." });
+    return res.status(400).json({ error: error?.message || "Unable to parse excel workbook." });
   }
 });
 
