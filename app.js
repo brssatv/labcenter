@@ -839,7 +839,10 @@ function sanitizeResistanceGeneRecord(raw) {
 }
 
 function sanitizeIcdCatalogRecord(raw) {
-  const code = String(raw?.code || "").trim();
+  const code = String(raw?.code || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
   if (!code) return null;
   return {
     code,
@@ -2256,6 +2259,209 @@ function buildFacilityProviderOptionMarkup(selectedValue = "", facilityName = ""
   `;
 }
 
+const requisitionScanReviewSections = [
+  {
+    title: "Facility Information",
+    description: "Review the ordering location and provider details we found in the scan.",
+    fields: [
+      { key: "referenceLab", label: "Reference Lab" },
+      { key: "facilityName", label: "Facility" },
+      { key: "provider", label: "Provider" },
+      { key: "providerNpi", label: "Provider NPI", inputMode: "numeric" },
+    ],
+  },
+  {
+    title: "Patient Information",
+    description: "Patient demographics and contact details extracted from the requisition.",
+    fields: [
+      { key: "firstName", label: "First Name" },
+      { key: "middleName", label: "Middle Name" },
+      { key: "lastName", label: "Last Name" },
+      { key: "suffix", label: "Suffix" },
+      { key: "dob", label: "Patient DOB", type: "date" },
+      {
+        key: "sex",
+        label: "Sex",
+        type: "select",
+        options: [
+          { value: "", label: "Select Sex" },
+          { value: "Male", label: "Male" },
+          { value: "Female", label: "Female" },
+          { value: "Other", label: "Other" },
+        ],
+      },
+      { key: "mrn", label: "Patient ID (MRN)" },
+      { key: "phone", label: "Contact Number", inputMode: "tel" },
+      {
+        key: "phoneBelongsTo",
+        label: "Phone Belongs To",
+        type: "select",
+        options: [
+          { value: "", label: "Select owner" },
+          { value: "Patient", label: "Patient" },
+          { value: "Relative/Guardian", label: "Relative/Guardian" },
+        ],
+      },
+      { key: "address", label: "Address 1", full: true },
+      { key: "address2", label: "Address 2", full: true },
+      { key: "city", label: "City" },
+      { key: "state", label: "State" },
+      { key: "zipcode", label: "Zip Code", inputMode: "numeric" },
+      { key: "county", label: "County" },
+      { key: "country", label: "Country" },
+      { key: "email", label: "Email", type: "email", inputMode: "email" },
+      { key: "ethnicity", label: "Ethnicity" },
+      { key: "race", label: "Race" },
+    ],
+  },
+  {
+    title: "Specimen Information",
+    description: "Collection timing and specimen details recognized from the uploaded scan.",
+    fields: [
+      { key: "collectionDate", label: "Date Of Collection", type: "date" },
+      { key: "collectionTime", label: "Time Of Collection", type: "time" },
+      { key: "receivedDate", label: "Date Received", type: "date" },
+      { key: "specimenTypeSwab", label: "Swab specimen selected", type: "checkbox", checkboxValue: "Swab" },
+      { key: "specimenTypeWound", label: "Wound specimen selected", type: "checkbox", checkboxValue: "Wound" },
+      { key: "specimenTypeWoundLocation", label: "Wound Location", full: true, dependsOn: "specimenTypeWound" },
+      { key: "specimenTypeOther", label: "Other specimen selected", type: "checkbox", checkboxValue: "Others" },
+      { key: "specimenTypeOtherText", label: "Specify Other Specimen", full: true, dependsOn: "specimenTypeOther" },
+      { key: "additionalInformation", label: "Additional Information", type: "textarea", rows: 4, full: true },
+    ],
+  },
+  {
+    title: "Billing Information",
+    description: "Insurance and billing selections extracted from the requisition.",
+    fields: [
+      {
+        key: "billingType",
+        label: "Billing Type",
+        type: "select",
+        options: [
+          { value: "", label: "Select Billing Type" },
+          { value: "selfPay", label: "Self Pay" },
+          { value: "commercial", label: "Commercial" },
+          { value: "medicare", label: "Medicare" },
+          { value: "medicaid", label: "Medicaid" },
+          { value: "workersComp", label: "Workers Comp" },
+          { value: "clientBill", label: "Client Bill" },
+          { value: "uninsured", label: "Uninsured" },
+        ],
+      },
+      { key: "primaryInsurance", label: "Primary Insurance Provider" },
+      { key: "primaryMemberPolicy", label: "Primary Policy ID" },
+      { key: "primaryGroup", label: "Primary Group ID" },
+      { key: "insurancePhone", label: "Insurance Phone #", inputMode: "tel" },
+      { key: "secondaryInsurance", label: "Secondary Insurance" },
+      { key: "secondaryMemberPolicy", label: "Secondary Policy ID" },
+      { key: "tertiaryInsurance", label: "Tertiary Insurance" },
+      { key: "tertiaryMemberPolicy", label: "Tertiary Policy ID" },
+      { key: "workersCompensation", label: "Workers Compensation" },
+      { key: "workersMemberPolicy", label: "Member Policy" },
+      { key: "compensationManager", label: "Compensation Manager" },
+      { key: "injuryDate", label: "Injury Date", type: "date" },
+    ],
+  },
+];
+
+const requisitionScanReviewFieldIndex = new Map(
+  requisitionScanReviewSections.flatMap((section) => section.fields.map((field) => [field.key, field]))
+);
+
+function renderRequisitionScanReviewField(field, values) {
+  const rawValue = values?.[field.key];
+  const value = rawValue == null ? "" : String(rawValue);
+  const escapedName = escapeHtml(field.key);
+  const placeholder = escapeHtml(field.placeholder || field.label);
+
+  if (field.type === "checkbox") {
+    const checked = value === String(field.checkboxValue || "on");
+    return `
+      <div class="scan-review-field scan-review-checkbox-wrap ${field.full ? "full" : ""}" data-scan-review-field="${escapedName}">
+        <label class="scan-review-check">
+          <input type="checkbox" name="${escapedName}" value="${escapeHtml(field.checkboxValue || "on")}" ${checked ? "checked" : ""}>
+          <span class="scan-review-check-mark" aria-hidden="true"></span>
+          <span>${escapeHtml(field.label)}</span>
+        </label>
+      </div>
+    `;
+  }
+
+  const dependentAttr = field.dependsOn ? ` data-scan-review-depends-on="${escapeHtml(field.dependsOn)}"` : "";
+  const visibilityClass = field.dependsOn && !values?.[field.dependsOn] ? " hidden" : "";
+  const fieldClass = `scan-review-field${field.full ? " full" : ""}${visibilityClass}`;
+
+  if (field.type === "textarea") {
+    return `
+      <label class="${fieldClass}" data-scan-review-field="${escapedName}"${dependentAttr}>
+        <span>${escapeHtml(field.label)}</span>
+        <textarea name="${escapedName}" rows="${Number(field.rows || 3)}" placeholder="${placeholder}">${escapeHtml(value)}</textarea>
+      </label>
+    `;
+  }
+
+  if (field.type === "select") {
+    const options = Array.isArray(field.options) ? field.options : [];
+    const optionMarkup = options
+      .map((option) => {
+        const optionValue = String(option?.value || "");
+        return `<option value="${escapeHtml(optionValue)}"${optionValue === value ? " selected" : ""}>${escapeHtml(option?.label || optionValue)}</option>`;
+      })
+      .join("");
+    return `
+      <label class="${fieldClass}" data-scan-review-field="${escapedName}"${dependentAttr}>
+        <span>${escapeHtml(field.label)}</span>
+        <select name="${escapedName}">
+          ${optionMarkup}
+        </select>
+      </label>
+    `;
+  }
+
+  const inputType = field.type || "text";
+  const inputModeAttr = field.inputMode ? ` inputmode="${escapeHtml(field.inputMode)}"` : "";
+  return `
+    <label class="${fieldClass}" data-scan-review-field="${escapedName}"${dependentAttr}>
+      <span>${escapeHtml(field.label)}</span>
+      <input type="${escapeHtml(inputType)}" name="${escapedName}" value="${escapeHtml(value)}" placeholder="${placeholder}"${inputModeAttr}>
+    </label>
+  `;
+}
+
+function buildRequisitionScanReviewMarkup(values = {}, matchedFields = []) {
+  const matchedSet = new Set(
+    (Array.isArray(matchedFields) && matchedFields.length ? matchedFields : Object.keys(values || {}))
+      .map((key) => String(key || "").trim())
+      .filter(Boolean)
+  );
+  const includedFieldKeys = [];
+
+  const markup = requisitionScanReviewSections
+    .map((section) => {
+      const visibleFields = section.fields.filter((field) => matchedSet.has(field.key));
+      if (!visibleFields.length) return "";
+      includedFieldKeys.push(...visibleFields.map((field) => field.key));
+      return `
+        <section class="scan-review-section">
+          <div class="scan-review-section-head">
+            <h4>${escapeHtml(section.title)}</h4>
+            <p>${escapeHtml(section.description)}</p>
+          </div>
+          <div class="scan-review-grid">
+            ${visibleFields.map((field) => renderRequisitionScanReviewField(field, values)).join("")}
+          </div>
+        </section>
+      `;
+    })
+    .filter(Boolean)
+    .join("");
+
+  return {
+    markup: markup || '<p class="scan-review-empty">No extracted requisition fields were available to review.</p>',
+    fieldKeys: Array.from(new Set(includedFieldKeys)),
+  };
+}
+
 function renderRegistration(prefillData = null) {
   if (prefillData) requisitionSubtab = "create";
   if (requisitionSubtab === "view") {
@@ -2272,7 +2478,6 @@ function renderRegistration(prefillData = null) {
           <p class="requisition-scan-hint">Import a scanned requisition PDF or image and autofill the form fields we can recognize. Review the result before saving.</p>
         </div>
         <div class="requisition-scan-actions">
-          <input id="requisition-scan-file" class="hidden" type="file" accept=".pdf,image/png,image/jpeg,image/jpg,image/heic,image/heif,image/tiff">
           <button type="button" id="requisition-scan-trigger" class="btn-ghost">Upload Scan Copy</button>
         </div>
       </div>
@@ -2309,12 +2514,41 @@ function renderRegistration(prefillData = null) {
             </div>
             <div class="field-grid two-col">
               <label><span>Provider *</span>
-                <select name="provider" id="req-provider-name" required>
-                  ${buildFacilityProviderOptionMarkup(prefillData?.provider, prefillData?.facilityName)}
-                </select>
+                <div id="req-provider-combobox" class="provider-combobox" role="combobox" aria-haspopup="listbox" aria-owns="req-provider-results" aria-expanded="false">
+                  <div class="search-input-row provider-input-row">
+                    <input
+                      name="provider"
+                      id="req-provider-name"
+                      type="text"
+                      value="${escapeHtml(prefillData?.provider || "")}"
+                      placeholder="Type provider name or NPI"
+                      autocomplete="off"
+                      spellcheck="false"
+                      aria-autocomplete="list"
+                      aria-controls="req-provider-results"
+                      aria-expanded="false"
+                      required
+                    >
+                    <button type="button" id="req-provider-toggle" class="search-icon-btn provider-toggle-btn" aria-label="Show matching providers">⌕</button>
+                  </div>
+                  <div id="req-provider-results" class="provider-results hidden" role="listbox" aria-label="Matching providers"></div>
+                </div>
               </label>
               <label><span>Provider NPI</span><input name="providerNpi" id="req-provider-npi" placeholder="Provider NPI" readonly></label>
             </div>
+            ${
+              activeSession.type === "doctor"
+                ? `
+                  <div class="field-grid one-col">
+                    <button type="button" id="req-add-provider" class="quick-add-inline-btn">
+                      <span class="quick-add-inline-badge">New</span>
+                      <strong>Add custom provider</strong>
+                      <span>Save a provider that is missing from this list and use it in this requisition.</span>
+                    </button>
+                  </div>
+                `
+                : ""
+            }
           </section>
 
           <section class="requisition-card">
@@ -2569,6 +2803,94 @@ function renderRegistration(prefillData = null) {
         </div>
       </div>
     </form>
+    <div id="custom-provider-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="custom-provider-title">
+      <div class="custom-icd-dialog">
+        <div class="custom-icd-head">
+          <div>
+            <p class="badge">Provider Directory</p>
+            <h3 id="custom-provider-title">Add Custom Provider</h3>
+          </div>
+          <button type="button" class="custom-icd-close" data-custom-provider-cancel aria-label="Close">×</button>
+        </div>
+        <form id="custom-provider-form" class="custom-icd-body" novalidate>
+          <p class="subtle custom-icd-copy">Add a provider that is missing from the current list. The provider will be saved to the directory and selected for this requisition immediately.</p>
+          <div class="custom-icd-code-card">
+            <span class="custom-icd-code-label">Linked Facility</span>
+            <strong id="custom-provider-facility" class="custom-icd-code-value"></strong>
+          </div>
+          <div class="field-grid two-col custom-provider-grid">
+            <label class="custom-icd-field">
+              <span>Provider Name *</span>
+              <input id="custom-provider-name" type="text" placeholder="Enter provider name" maxlength="120">
+            </label>
+            <label class="custom-icd-field">
+              <span>Provider NPI</span>
+              <input id="custom-provider-npi" type="text" inputmode="numeric" placeholder="10 digit NPI" maxlength="20">
+            </label>
+          </div>
+          <p id="custom-provider-error" class="error hidden" aria-live="polite"></p>
+          <div class="custom-icd-footer">
+            <button type="button" class="btn-ghost" data-custom-provider-cancel>Cancel</button>
+            <button type="submit" class="btn-primary">Save Provider</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <div id="scan-review-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="scan-review-title">
+      <div class="custom-icd-dialog scan-review-dialog">
+        <div class="custom-icd-head">
+          <div>
+            <p class="badge">Scan Review</p>
+            <h3 id="scan-review-title">Validate Extracted Requisition Data</h3>
+          </div>
+          <button type="button" class="custom-icd-close" data-scan-review-cancel aria-label="Close">×</button>
+        </div>
+        <form id="scan-review-form" class="custom-icd-body scan-review-body" novalidate>
+          <div class="scan-review-content">
+            <div class="scan-review-summary">
+              <div class="scan-review-summary-card">
+                <span>Source File</span>
+                <strong id="scan-review-file">Scanned requisition</strong>
+              </div>
+              <div class="scan-review-summary-card">
+                <span>Detected Fields</span>
+                <strong id="scan-review-count">0 fields</strong>
+              </div>
+            </div>
+            <p class="subtle scan-review-copy">Review and edit the extracted values below. Nothing will be copied into the requisition form until you click Validate.</p>
+            <div id="scan-review-sections" class="scan-review-sections"></div>
+            <p id="scan-review-error" class="error hidden" aria-live="polite"></p>
+          </div>
+          <div class="custom-icd-footer scan-review-footer">
+            <button type="button" class="btn-ghost" data-scan-review-cancel>Cancel</button>
+            <button type="submit" class="btn-primary">Validate And Autofill</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <div id="scan-upload-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="scan-upload-title">
+      <div class="custom-icd-dialog scan-upload-dialog">
+        <div class="custom-icd-head">
+          <div>
+            <p class="badge">Scan Import</p>
+            <h3 id="scan-upload-title">Upload Scan Copy</h3>
+          </div>
+          <button type="button" class="custom-icd-close" data-scan-upload-cancel aria-label="Close">×</button>
+        </div>
+        <div class="custom-icd-body scan-upload-body">
+          <p class="subtle scan-upload-copy">Upload a scanned requisition PDF or image. We will extract the data first, then show you a validation popup before anything is copied into the requisition form.</p>
+          <div class="scan-upload-panel">
+            <input id="scan-upload-file" class="hidden" type="file" accept=".pdf,image/png,image/jpeg,image/jpg,image/heic,image/heif,image/tiff">
+            <button type="button" id="scan-upload-select" class="btn-primary">Upload PDF Scan Copy</button>
+            <p class="subtle">Supported files: PDF, PNG, JPG, HEIC, HEIF, TIFF.</p>
+            <p id="scan-upload-status" class="subtle hidden" aria-live="polite"></p>
+          </div>
+          <div class="custom-icd-footer scan-upload-footer">
+            <button type="button" class="btn-ghost" data-scan-upload-cancel>Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <p id="registration-status" class="subtle"></p>
   `;
 
@@ -2577,8 +2899,29 @@ function renderRegistration(prefillData = null) {
   const status = document.getElementById("registration-status");
   const registerAndOrderBtn = document.getElementById("register-and-order");
   const facilityNameSelect = document.getElementById("req-facility-name");
-  const providerNameSelect = document.getElementById("req-provider-name");
+  const providerComboboxNode = document.getElementById("req-provider-combobox");
+  const providerNameInput = document.getElementById("req-provider-name");
+  const providerToggleBtn = document.getElementById("req-provider-toggle");
+  const providerResultsNode = document.getElementById("req-provider-results");
   const providerNpiInput = document.getElementById("req-provider-npi");
+  const addProviderBtn = document.getElementById("req-add-provider");
+  const customProviderModalNode = document.getElementById("custom-provider-modal");
+  const customProviderForm = document.getElementById("custom-provider-form");
+  const customProviderFacilityNode = document.getElementById("custom-provider-facility");
+  const customProviderNameInput = document.getElementById("custom-provider-name");
+  const customProviderNpiInput = document.getElementById("custom-provider-npi");
+  const customProviderErrorNode = document.getElementById("custom-provider-error");
+  const scanReviewModalNode = document.getElementById("scan-review-modal");
+  const scanReviewForm = document.getElementById("scan-review-form");
+  const scanReviewFileNode = document.getElementById("scan-review-file");
+  const scanReviewCountNode = document.getElementById("scan-review-count");
+  const scanReviewSectionsNode = document.getElementById("scan-review-sections");
+  const scanReviewErrorNode = document.getElementById("scan-review-error");
+  const scanUploadModalNode = document.getElementById("scan-upload-modal");
+  const scanUploadFileInput = document.getElementById("scan-upload-file");
+  const scanUploadSelectBtn = document.getElementById("scan-upload-select");
+  const scanUploadStatusNode = document.getElementById("scan-upload-status");
+  const scanUploadCancelButtons = Array.from(panelBody.querySelectorAll("[data-scan-upload-cancel]"));
   const searchInput = document.getElementById("patient-search");
   const searchClear = document.getElementById("search-clear");
   const searchResults = document.getElementById("search-results");
@@ -2593,12 +2936,17 @@ function renderRegistration(prefillData = null) {
   const specimenTypeOtherCheckbox = document.getElementById("specimen-type-other");
   const specimenTypeOtherWrap = document.getElementById("specimen-type-other-wrap");
   const specimenTypeOtherText = document.getElementById("specimen-type-other-text");
-  const requisitionScanFileInput = document.getElementById("requisition-scan-file");
   const requisitionScanTrigger = document.getElementById("requisition-scan-trigger");
   const sectionCollapseToggles = Array.from(form.querySelectorAll("[data-collapse-target]"));
   const allPatients = getSearchablePatients();
   let activeResults = [];
   let selectedIndex = -1;
+  let activeCustomProviderResolver = null;
+  let activeScanReviewResolver = null;
+  let scanUploadInFlight = false;
+  let activeScanReviewFieldKeys = [];
+  let providerMatchResults = [];
+  let activeProviderMatchIndex = -1;
 
   attachRequisitionTabEvents();
 
@@ -2782,9 +3130,10 @@ function renderRegistration(prefillData = null) {
       }
       facilityNameSelect.value = nextFacility;
     }
-    const matchedProvider = refreshProviderSelectOptions(nextFacility, nextProvider);
-    if (!matchedProvider && providerNpiInput) providerNpiInput.value = "";
-    if (matchedProvider && normalizedValues.providerNpi && providerNpiInput) providerNpiInput.value = normalizedValues.providerNpi;
+    const matchedProvider = refreshProviderAutocomplete(nextFacility, nextProvider);
+    if (providerNpiInput) {
+      providerNpiInput.value = String(matchedProvider?.npi || normalizedValues.providerNpi || "").trim();
+    }
 
     const billingTypeInputs = Array.from(form.querySelectorAll('input[name="billingType"]'));
     if ("billingType" in normalizedValues && billingTypeInputs.length) {
@@ -2826,34 +3175,489 @@ function renderRegistration(prefillData = null) {
     return String(raw || "").replace(/\D/g, "").slice(0, 5);
   }
 
-  function syncProviderNpiFromSelection() {
-    if (!providerNameSelect || !providerNpiInput) return;
-    const selectedOption = providerNameSelect.options[providerNameSelect.selectedIndex];
-    const selectedNpi = selectedOption?.getAttribute("data-provider-npi") || "";
-    providerNpiInput.value = selectedNpi;
+  function normalizeProviderSearch(value) {
+    return String(value || "").trim().toLowerCase();
   }
 
-  function syncProviderSelectDisplayText() {
-    if (!providerNameSelect) return;
-    const selectedValue = providerNameSelect.value;
-    Array.from(providerNameSelect.options).forEach((option) => {
-      const fullLabel = option.getAttribute("data-provider-label");
-      const providerName = option.getAttribute("data-provider-name");
-      if (!fullLabel || !providerName) return;
-      option.textContent = option.value === selectedValue ? providerName : fullLabel;
+  function setProviderResultsExpanded(isExpanded) {
+    const expanded = Boolean(isExpanded);
+    providerComboboxNode?.setAttribute("aria-expanded", String(expanded));
+    providerNameInput?.setAttribute("aria-expanded", String(expanded));
+  }
+
+  function getProviderSearchOptions(selectedFacility = "", preferredProvider = "") {
+    const nextFacility = String(selectedFacility || "").trim();
+    const selectedProvider = String(preferredProvider || "").trim();
+    const options = getFacilityProviderOptions(nextFacility).map((item) => ({ ...item }));
+    const includeSelectedFallback =
+      !nextFacility && selectedProvider && !options.some((item) => item.value === selectedProvider);
+    if (includeSelectedFallback) {
+      options.unshift({
+        value: selectedProvider,
+        label: selectedProvider,
+        npi: "",
+        isLinked: true,
+        isFallback: true,
+      });
+    }
+    return options;
+  }
+
+  function findExactProviderMatch(value, selectedFacility = "") {
+    const needle = normalizeProviderSearch(value);
+    if (!needle) return null;
+    return (
+      getProviderSearchOptions(selectedFacility, value).find((item) => {
+        const candidates = [item.value, item.label, item.npi].map(normalizeProviderSearch).filter(Boolean);
+        return candidates.includes(needle);
+      }) || null
+    );
+  }
+
+  function resolveProviderMatchFromInput(value, selectedFacility = "") {
+    const rawValue = String(value || "").trim();
+    if (!rawValue) return null;
+
+    const exactMatch = findExactProviderMatch(rawValue, selectedFacility);
+    if (exactMatch) return exactMatch;
+
+    const query = normalizeProviderSearch(rawValue);
+    const matches = getProviderSearchOptions(selectedFacility, value).filter((item) =>
+      `${item.value} ${item.label} ${item.npi}`.toLowerCase().includes(query)
+    );
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function getFilteredProviderMatches(query = "", selectedFacility = "") {
+    const needle = normalizeProviderSearch(query);
+    const options = getProviderSearchOptions(selectedFacility, providerNameInput?.value || "");
+    const matches = needle
+      ? options.filter((item) => `${item.value} ${item.label} ${item.npi}`.toLowerCase().includes(needle))
+      : options;
+    return matches.slice(0, 8);
+  }
+
+  function hideProviderResults() {
+    providerMatchResults = [];
+    activeProviderMatchIndex = -1;
+    if (providerResultsNode) {
+      providerResultsNode.innerHTML = "";
+      providerResultsNode.classList.add("hidden");
+    }
+    setProviderResultsExpanded(false);
+  }
+
+  function getCustomProviderDraft(query = providerNameInput?.value || "") {
+    const rawValue = String(query || "").trim();
+    const digits = rawValue.replace(/\D/g, "").slice(0, 10);
+    const hasLetters = /[A-Za-z]/.test(rawValue);
+    return {
+      providerName: hasLetters ? rawValue : "",
+      providerNpi: !hasLetters && digits.length === 10 ? digits : "",
+    };
+  }
+
+  function renderProviderResults(query = providerNameInput?.value || "", { forceOpen = false } = {}) {
+    if (!providerResultsNode || !providerNameInput) return;
+
+    const rawQuery = String(query || "");
+    const trimmedQuery = rawQuery.trim();
+    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    const exactMatch = findExactProviderMatch(trimmedQuery, selectedFacility);
+    const matches = getFilteredProviderMatches(trimmedQuery, selectedFacility);
+    const showCustomAdd = activeSession.type === "doctor" && Boolean(trimmedQuery) && !exactMatch;
+    const shouldShow = forceOpen || Boolean(trimmedQuery) || document.activeElement === providerNameInput;
+
+    providerMatchResults = matches;
+    if (!matches.length) {
+      activeProviderMatchIndex = -1;
+    } else if (activeProviderMatchIndex < 0 || activeProviderMatchIndex >= matches.length) {
+      activeProviderMatchIndex = 0;
+    }
+
+    if (!shouldShow) {
+      hideProviderResults();
+      return;
+    }
+
+    const resultMarkup = matches
+      .map((item, index) => {
+        const isActive = index === activeProviderMatchIndex;
+        return `
+          <button
+            type="button"
+            class="provider-result-btn ${isActive ? "active" : ""}"
+            data-provider-match-index="${index}"
+            role="option"
+            aria-selected="${isActive ? "true" : "false"}"
+          >
+            <div class="provider-result-top">
+              <strong>${escapeHtml(item.value)}</strong>
+              <span>${escapeHtml(item.npi ? `NPI ${item.npi}` : "NPI not set")}</span>
+            </div>
+            <span class="provider-result-meta">${escapeHtml(item.isLinked ? "Linked to selected facility" : "Available in provider directory")}</span>
+          </button>
+        `;
+      })
+      .join("");
+
+    const emptyMarkup =
+      !matches.length
+        ? `<p class="provider-results-empty">${escapeHtml(trimmedQuery ? "No matching providers found." : "No providers available yet.")}</p>`
+        : "";
+
+    const customAddMarkup =
+      showCustomAdd
+        ? `
+            <button type="button" class="picker-custom-add-btn provider-custom-add-btn" data-provider-add-custom>
+              <span class="picker-custom-add-badge">New</span>
+              <strong>Add custom provider ${escapeHtml(trimmedQuery)}</strong>
+              <span>Save this provider to the directory and use it in this requisition.</span>
+            </button>
+          `
+        : "";
+
+    providerResultsNode.innerHTML = `${resultMarkup}${emptyMarkup}${customAddMarkup}`;
+    providerResultsNode.classList.remove("hidden");
+    setProviderResultsExpanded(true);
+  }
+
+  function selectProviderMatch(match, { hideResultsAfterSelect = true } = {}) {
+    if (!providerNameInput || !match) return false;
+    providerNameInput.value = String(match.value || "").trim();
+    if (providerNpiInput) providerNpiInput.value = String(match.npi || "").trim();
+    if (hideResultsAfterSelect) {
+      hideProviderResults();
+    } else {
+      renderProviderResults(providerNameInput.value, { forceOpen: true });
+    }
+    return true;
+  }
+
+  function syncProviderNpiFromInput({ allowLooseResolve = false } = {}) {
+    if (!providerNameInput || !providerNpiInput) return null;
+    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    const match = allowLooseResolve
+      ? resolveProviderMatchFromInput(providerNameInput.value, selectedFacility)
+      : findExactProviderMatch(providerNameInput.value, selectedFacility);
+    providerNpiInput.value = match?.npi || "";
+    return match;
+  }
+
+  function refreshProviderAutocomplete(selectedFacility = "", preferredProvider = "") {
+    if (!providerNameInput) return null;
+    const nextFacility = String(selectedFacility || "").trim();
+    const nextProvider = String(preferredProvider || "").trim();
+    const match = nextProvider ? findExactProviderMatch(nextProvider, nextFacility) : null;
+    const shouldKeepFallback = !nextFacility && nextProvider;
+    providerNameInput.value = match ? match.value : shouldKeepFallback ? nextProvider : "";
+    if (providerNpiInput) providerNpiInput.value = match?.npi || "";
+    hideProviderResults();
+    return match;
+  }
+
+  function setCustomProviderModalError(message) {
+    if (!customProviderErrorNode) return;
+    const text = String(message || "").trim();
+    customProviderErrorNode.textContent = text;
+    customProviderErrorNode.classList.toggle("hidden", !text);
+  }
+
+  function closeCustomProviderModal(result = null) {
+    if (!activeCustomProviderResolver) return;
+    const resolve = activeCustomProviderResolver;
+    activeCustomProviderResolver = null;
+    customProviderModalNode?.classList.add("hidden");
+    document.body.classList.remove("modal-open");
+    setCustomProviderModalError("");
+    if (customProviderNameInput) customProviderNameInput.value = "";
+    if (customProviderNpiInput) customProviderNpiInput.value = "";
+    resolve(result);
+  }
+
+  function openCustomProviderModal(defaultValues = {}) {
+    if (!customProviderModalNode || !customProviderNameInput || !customProviderFacilityNode) {
+      return Promise.resolve(null);
+    }
+
+    if (activeCustomProviderResolver) {
+      closeCustomProviderModal(null);
+    }
+
+    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    customProviderFacilityNode.textContent = selectedFacility || "Not linked to a specific facility";
+    customProviderNameInput.value = String(defaultValues.providerName || "").trim();
+    if (customProviderNpiInput) {
+      customProviderNpiInput.value = String(defaultValues.providerNpi || "").replace(/\D/g, "").slice(0, 10);
+    }
+    setCustomProviderModalError("");
+    customProviderModalNode.classList.remove("hidden");
+    document.body.classList.add("modal-open");
+
+    return new Promise((resolve) => {
+      activeCustomProviderResolver = resolve;
+      requestAnimationFrame(() => {
+        customProviderNameInput.focus();
+        customProviderNameInput.select();
+      });
     });
   }
 
-  function refreshProviderSelectOptions(selectedFacility = "", preferredProvider = "") {
-    if (!providerNameSelect) return false;
-    const nextFacility = String(selectedFacility || "").trim();
-    const nextProvider = String(preferredProvider || "").trim();
-    providerNameSelect.innerHTML = buildFacilityProviderOptionMarkup(nextProvider, nextFacility);
-    const hasMatchingProvider = Array.from(providerNameSelect.options).some((option) => option.value === nextProvider);
-    providerNameSelect.value = hasMatchingProvider ? nextProvider : "";
-    syncProviderNpiFromSelection();
-    syncProviderSelectDisplayText();
-    return hasMatchingProvider;
+  async function createCustomProvider(payload) {
+    if (!csrfToken) await fetchCsrfToken();
+    return requestJson("/api/facility/providers", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  function fileToBase64ForRegistration(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const payload = String(reader.result || "");
+        const encoded = payload.includes(",") ? payload.split(",")[1] : payload;
+        resolve(encoded || "");
+      };
+      reader.onerror = () => reject(new Error("Unable to read the selected scan copy."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function requestRequisitionScanAutofillForRegistration(file) {
+    if (!csrfToken) await fetchCsrfToken();
+    const contentBase64 = await fileToBase64ForRegistration(file);
+    try {
+      return await requestJson("/api/requisitions/extract-scan", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-csrf-token": csrfToken,
+        },
+        body: JSON.stringify({
+          fileName: file.name,
+          mimeType: file.type || "",
+          contentBase64,
+        }),
+      });
+    } catch (error) {
+      const msg = String(error?.message || "");
+      if (msg.includes("404")) {
+        throw new Error("Scan import endpoint not found. Restart the server and try again.");
+      }
+      throw error;
+    }
+  }
+
+  async function promptForCustomProvider(defaultValues = {}) {
+    const submitted = await openCustomProviderModal(defaultValues);
+    if (!submitted) return false;
+
+    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    const providerName = String(submitted.providerName || "").trim();
+    const providerNpi = String(submitted.providerNpi || "").trim();
+
+    const duplicate = getFacilityProviderOptions(selectedFacility).find((item) => {
+      const sameName = String(item.value || "").trim().toLowerCase() === providerName.toLowerCase();
+      const sameNpi = providerNpi && String(item.npi || "").trim() === providerNpi;
+      return sameName || sameNpi;
+    });
+    if (duplicate) {
+      selectProviderMatch(duplicate);
+      return true;
+    }
+
+    try {
+      const result = await createCustomProvider({
+        providerInfo: {
+          providerName,
+          displayName: providerName,
+          npi: providerNpi,
+        },
+        configuration: {
+          accounts: selectedFacility,
+          source: "None (Default)",
+        },
+        signature: {
+          fileName: "",
+        },
+        loginAccess: {
+          accessType: "no_login",
+        },
+      });
+
+      if (result?.provider) {
+        facilityData.providers = [result.provider, ...(facilityData.providers || [])];
+        facilityDataLoaded = true;
+        refreshProviderAutocomplete(selectedFacility, result.provider.provider_name || providerName);
+        if (providerNpiInput) {
+          providerNpiInput.value = String(result.provider.npi || providerNpi || "").trim();
+        }
+        return true;
+      }
+    } catch (error) {
+      status.textContent = error?.message || "Unable to add provider.";
+      return false;
+    }
+
+    status.textContent = "Unable to add provider.";
+    return false;
+  }
+
+  function setScanUploadModalStatus(message = "", tone = "neutral") {
+    if (!scanUploadStatusNode) return;
+    const text = String(message || "").trim();
+    scanUploadStatusNode.textContent = text;
+    scanUploadStatusNode.classList.toggle("hidden", !text);
+    scanUploadStatusNode.classList.toggle("is-error", tone === "error" && Boolean(text));
+    scanUploadStatusNode.classList.toggle("is-success", tone === "success" && Boolean(text));
+  }
+
+  function setScanUploadModalBusy(isBusy) {
+    scanUploadInFlight = Boolean(isBusy);
+    scanUploadModalNode?.classList.toggle("is-busy", scanUploadInFlight);
+    if (scanUploadSelectBtn) {
+      scanUploadSelectBtn.disabled = scanUploadInFlight;
+      scanUploadSelectBtn.textContent = scanUploadInFlight ? "Processing Scan..." : "Upload PDF Scan Copy";
+    }
+    scanUploadCancelButtons.forEach((button) => {
+      button.disabled = scanUploadInFlight;
+    });
+  }
+
+  function closeScanUploadModal() {
+    scanUploadModalNode?.classList.add("hidden");
+    document.body.classList.remove("modal-open");
+    if (scanUploadFileInput) scanUploadFileInput.value = "";
+    setScanUploadModalBusy(false);
+    setScanUploadModalStatus("");
+  }
+
+  function openScanUploadModal() {
+    if (!scanUploadModalNode) return;
+    if (scanUploadInFlight) return;
+    if (scanUploadFileInput) scanUploadFileInput.value = "";
+    setScanUploadModalBusy(false);
+    setScanUploadModalStatus("");
+    scanUploadModalNode.classList.remove("hidden");
+    document.body.classList.add("modal-open");
+    requestAnimationFrame(() => {
+      scanUploadSelectBtn?.focus();
+    });
+  }
+
+  function setScanReviewModalError(message) {
+    if (!scanReviewErrorNode) return;
+    const text = String(message || "").trim();
+    scanReviewErrorNode.textContent = text;
+    scanReviewErrorNode.classList.toggle("hidden", !text);
+  }
+
+  function syncScanReviewDependentFields() {
+    if (!scanReviewForm) return;
+    activeScanReviewFieldKeys.forEach((fieldKey) => {
+      const field = requisitionScanReviewFieldIndex.get(fieldKey);
+      if (!field?.dependsOn) return;
+      const wrapper = scanReviewForm.querySelector(`[data-scan-review-field="${field.key}"]`);
+      if (!wrapper) return;
+
+      const controller = scanReviewForm.elements[field.dependsOn];
+      const isVisible =
+        controller instanceof HTMLInputElement && controller.type === "checkbox"
+          ? controller.checked
+          : Boolean(controller && "value" in controller ? controller.value : controller);
+
+      wrapper.classList.toggle("hidden", !isVisible);
+      wrapper.querySelectorAll("input, select, textarea").forEach((element) => {
+        element.disabled = !isVisible;
+      });
+    });
+  }
+
+  function collectScanReviewValues() {
+    const values = {};
+    if (!scanReviewForm) return values;
+
+    activeScanReviewFieldKeys.forEach((fieldKey) => {
+      const control = scanReviewForm.elements[fieldKey];
+      if (!control) return;
+
+      if (control instanceof RadioNodeList) {
+        values[fieldKey] = String(control.value || "");
+        return;
+      }
+
+      if (control instanceof HTMLInputElement && control.type === "checkbox") {
+        values[fieldKey] = control.checked ? String(control.value || "on") : "";
+        return;
+      }
+
+      if (
+        (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement)
+        && control.disabled
+      ) {
+        values[fieldKey] = "";
+        return;
+      }
+
+      values[fieldKey] = String(control.value || "");
+    });
+
+    return values;
+  }
+
+  function closeScanReviewModal(result = null) {
+    if (!activeScanReviewResolver) return;
+    const resolve = activeScanReviewResolver;
+    activeScanReviewResolver = null;
+    activeScanReviewFieldKeys = [];
+    scanReviewModalNode?.classList.add("hidden");
+    document.body.classList.remove("modal-open");
+    if (scanReviewSectionsNode) scanReviewSectionsNode.innerHTML = "";
+    if (scanReviewFileNode) scanReviewFileNode.textContent = "Scanned requisition";
+    if (scanReviewCountNode) scanReviewCountNode.textContent = "0 fields";
+    setScanReviewModalError("");
+    resolve(result);
+  }
+
+  function openScanReviewModal(fileName, payload) {
+    if (!scanReviewModalNode || !scanReviewForm || !scanReviewSectionsNode) {
+      return Promise.resolve(null);
+    }
+
+    if (activeScanReviewResolver) {
+      closeScanReviewModal(null);
+    }
+
+    const reviewValues = payload?.values && typeof payload.values === "object" ? payload.values : {};
+    const reviewMatches = Array.isArray(payload?.matchedFields) ? payload.matchedFields : Object.keys(reviewValues);
+    const { markup, fieldKeys } = buildRequisitionScanReviewMarkup(reviewValues, reviewMatches);
+    activeScanReviewFieldKeys = fieldKeys;
+    scanReviewSectionsNode.innerHTML = markup;
+    if (scanReviewFileNode) scanReviewFileNode.textContent = fileName || "Scanned requisition";
+    if (scanReviewCountNode) {
+      scanReviewCountNode.textContent = `${fieldKeys.length} field${fieldKeys.length === 1 ? "" : "s"}`;
+    }
+    setScanReviewModalError("");
+    scanReviewModalNode.classList.remove("hidden");
+    document.body.classList.add("modal-open");
+    syncScanReviewDependentFields();
+
+    return new Promise((resolve) => {
+      activeScanReviewResolver = resolve;
+      requestAnimationFrame(() => {
+        const firstField = scanReviewForm.querySelector("input, select, textarea, button");
+        if (!firstField) return;
+        firstField.focus();
+        if (firstField instanceof HTMLInputElement || firstField instanceof HTMLTextAreaElement) {
+          firstField.select();
+        }
+      });
+    });
   }
 
   function tryAutoFillFromZip() {
@@ -2879,31 +3683,59 @@ function renderRegistration(prefillData = null) {
 
   async function handleRequisitionScanUpload(file) {
     if (!file) return;
+    const launchedFromUploadModal = Boolean(scanUploadModalNode && !scanUploadModalNode.classList.contains("hidden"));
     if (requisitionScanTrigger) requisitionScanTrigger.disabled = true;
     status.textContent = `Reading scan copy ${file.name}...`;
+    if (launchedFromUploadModal) {
+      setScanUploadModalBusy(true);
+      setScanUploadModalStatus(`Processing ${file.name}... This can take a few seconds.`, "neutral");
+    }
 
     try {
-      const payload = await requestRequisitionScanAutofill(file);
+      const payload = await requestRequisitionScanAutofillForRegistration(file);
       const nextValues = payload?.values || {};
       const matchedCount = Array.isArray(payload?.matchedFields)
         ? payload.matchedFields.length
         : Object.keys(nextValues).length;
 
       if (!matchedCount) {
-        status.textContent = payload?.message || "No recognizable requisition fields were found in the scan.";
+        const emptyMessage = payload?.message || "No recognizable requisition fields were found in the scan.";
+        status.textContent = emptyMessage;
+        if (launchedFromUploadModal) {
+          setScanUploadModalStatus(`${emptyMessage} Please try another scan copy.`, "error");
+        }
         return;
       }
 
-      applyFormData(nextValues);
+      if (launchedFromUploadModal) {
+        setScanUploadModalStatus(`Extracted ${matchedCount} field${matchedCount === 1 ? "" : "s"}. Opening validation review...`, "success");
+        closeScanUploadModal();
+      }
+
+      status.textContent = `${file.name} processed. Review the extracted values in the popup and validate them before autofill.`;
+      const reviewedValues = await openScanReviewModal(file.name, payload);
+      if (reviewedValues == null) {
+        status.textContent = `${file.name} processed, but the scan review was canceled. The requisition form was left unchanged.`;
+        return;
+      }
+
+      applyFormData(reviewedValues);
       syncAgeFromDob();
       tryAutoFillFromZip();
       refreshPatientIdPreview();
-      status.textContent = `${file.name} processed. Filled ${matchedCount} field${matchedCount === 1 ? "" : "s"}. Review the form before saving.`;
+      status.textContent = `${file.name} validated. Updated ${matchedCount} scanned field${matchedCount === 1 ? "" : "s"} in the requisition form.`;
     } catch (error) {
-      status.textContent = error?.message || "Unable to read the uploaded scan copy.";
+      const message = error?.message || "Unable to read the uploaded scan copy.";
+      status.textContent = message;
+      if (launchedFromUploadModal) {
+        setScanUploadModalStatus(message, "error");
+      }
     } finally {
       if (requisitionScanTrigger) requisitionScanTrigger.disabled = false;
-      if (requisitionScanFileInput) requisitionScanFileInput.value = "";
+      if (launchedFromUploadModal && !scanUploadModalNode?.classList.contains("hidden")) {
+        setScanUploadModalBusy(false);
+        if (scanUploadFileInput) scanUploadFileInput.value = "";
+      }
     }
   }
 
@@ -3033,12 +3865,7 @@ function renderRegistration(prefillData = null) {
   currentSearchInput = searchInput;
 
   requisitionScanTrigger?.addEventListener("click", () => {
-    requisitionScanFileInput?.click();
-  });
-  requisitionScanFileInput?.addEventListener("change", () => {
-    const file = requisitionScanFileInput.files?.[0];
-    if (!file) return;
-    handleRequisitionScanUpload(file);
+    openScanUploadModal();
   });
 
   if (form.elements.zipcode) {
@@ -3061,18 +3888,170 @@ function renderRegistration(prefillData = null) {
       facilityNameSelect.innerHTML = buildFacilityAccountOptionMarkup(currentFacilityValue);
       if (currentFacilityValue) facilityNameSelect.value = currentFacilityValue;
     }
-    const currentProviderValue = providerNameSelect ? providerNameSelect.value : "";
-    refreshProviderSelectOptions(currentFacilityValue, currentProviderValue);
+    const currentProviderValue = providerNameInput ? providerNameInput.value : "";
+    refreshProviderAutocomplete(currentFacilityValue, currentProviderValue);
   };
 
   facilityNameSelect?.addEventListener("change", () => {
-    refreshProviderSelectOptions(facilityNameSelect.value, providerNameSelect?.value || "");
+    refreshProviderAutocomplete(facilityNameSelect.value, providerNameInput?.value || "");
   });
-  providerNameSelect?.addEventListener("change", () => {
-    syncProviderNpiFromSelection();
-    syncProviderSelectDisplayText();
+  providerNameInput?.addEventListener("focus", () => {
+    renderProviderResults(providerNameInput.value, { forceOpen: true });
   });
-  refreshProviderSelectOptions(facilityNameSelect?.value || "", providerNameSelect?.value || "");
+  providerNameInput?.addEventListener("input", () => {
+    activeProviderMatchIndex = 0;
+    syncProviderNpiFromInput();
+    renderProviderResults(providerNameInput.value, { forceOpen: true });
+  });
+  providerNameInput?.addEventListener("keydown", async (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (providerResultsNode?.classList.contains("hidden")) {
+        renderProviderResults(providerNameInput.value, { forceOpen: true });
+        return;
+      }
+      if (!providerMatchResults.length) return;
+      activeProviderMatchIndex = Math.min(activeProviderMatchIndex + 1, providerMatchResults.length - 1);
+      renderProviderResults(providerNameInput.value, { forceOpen: true });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!providerMatchResults.length) return;
+      activeProviderMatchIndex = Math.max(activeProviderMatchIndex - 1, 0);
+      renderProviderResults(providerNameInput.value, { forceOpen: true });
+    } else if (event.key === "Enter") {
+      if (!providerResultsNode?.classList.contains("hidden")) {
+        event.preventDefault();
+        if (providerMatchResults[activeProviderMatchIndex]) {
+          selectProviderMatch(providerMatchResults[activeProviderMatchIndex]);
+          return;
+        }
+        const resolved = resolveProviderMatchFromInput(providerNameInput.value, facilityNameSelect?.value || "");
+        if (resolved) {
+          selectProviderMatch(resolved);
+        }
+      }
+    } else if (event.key === "Escape") {
+      hideProviderResults();
+    }
+  });
+  providerNameInput?.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      const resolved = syncProviderNpiFromInput({ allowLooseResolve: true });
+      if (resolved) {
+        selectProviderMatch(resolved);
+        return;
+      }
+      hideProviderResults();
+    }, 120);
+  });
+  providerToggleBtn?.addEventListener("click", () => {
+    if (providerResultsNode?.classList.contains("hidden")) {
+      providerNameInput?.focus();
+      renderProviderResults(providerNameInput?.value || "", { forceOpen: true });
+      return;
+    }
+    hideProviderResults();
+    providerNameInput?.focus();
+  });
+  providerResultsNode?.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+  providerResultsNode?.addEventListener("click", async (event) => {
+    const matchButton = event.target.closest("[data-provider-match-index]");
+    if (matchButton) {
+      const index = Number(matchButton.getAttribute("data-provider-match-index"));
+      if (Number.isInteger(index) && providerMatchResults[index]) {
+        selectProviderMatch(providerMatchResults[index]);
+      }
+      return;
+    }
+
+    if (event.target.closest("[data-provider-add-custom]")) {
+      await promptForCustomProvider(getCustomProviderDraft(providerNameInput?.value || ""));
+    }
+  });
+  addProviderBtn?.addEventListener("click", async () => {
+    await promptForCustomProvider(getCustomProviderDraft(providerNameInput?.value || ""));
+  });
+  customProviderModalNode?.addEventListener("click", (event) => {
+    if (event.target === customProviderModalNode || event.target.closest("[data-custom-provider-cancel]")) {
+      closeCustomProviderModal(null);
+    }
+  });
+  customProviderModalNode?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCustomProviderModal(null);
+    }
+  });
+  customProviderForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const providerName = String(customProviderNameInput?.value || "").trim();
+    const providerNpi = String(customProviderNpiInput?.value || "").replace(/\D/g, "").slice(0, 10);
+    if (!providerName) {
+      setCustomProviderModalError("Provider name is required.");
+      customProviderNameInput?.focus();
+      return;
+    }
+    if (providerNpi && providerNpi.length !== 10) {
+      setCustomProviderModalError("Provider NPI must be 10 digits.");
+      customProviderNpiInput?.focus();
+      return;
+    }
+    closeCustomProviderModal({
+      providerName,
+      providerNpi,
+    });
+  });
+  scanReviewModalNode?.addEventListener("click", (event) => {
+    if (event.target === scanReviewModalNode || event.target.closest("[data-scan-review-cancel]")) {
+      closeScanReviewModal(null);
+    }
+  });
+  scanReviewModalNode?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeScanReviewModal(null);
+    }
+  });
+  scanReviewForm?.addEventListener("change", (event) => {
+    if (!(event.target instanceof HTMLElement)) return;
+    if (event.target instanceof HTMLInputElement && event.target.type === "checkbox") {
+      syncScanReviewDependentFields();
+    }
+  });
+  scanReviewForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!activeScanReviewFieldKeys.length) {
+      setScanReviewModalError("No extracted fields are available to validate.");
+      return;
+    }
+    closeScanReviewModal(collectScanReviewValues());
+  });
+  scanUploadModalNode?.addEventListener("click", (event) => {
+    if (scanUploadInFlight) return;
+    if (event.target === scanUploadModalNode || event.target.closest("[data-scan-upload-cancel]")) {
+      closeScanUploadModal();
+    }
+  });
+  scanUploadModalNode?.addEventListener("keydown", (event) => {
+    if (scanUploadInFlight) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeScanUploadModal();
+    }
+  });
+  scanUploadSelectBtn?.addEventListener("click", () => {
+    if (scanUploadInFlight) return;
+    setScanUploadModalStatus("");
+    scanUploadFileInput?.click();
+  });
+  scanUploadFileInput?.addEventListener("change", async () => {
+    const file = scanUploadFileInput?.files?.[0];
+    if (!file) return;
+    await handleRequisitionScanUpload(file);
+  });
+  refreshProviderAutocomplete(facilityNameSelect?.value || "", providerNameInput?.value || "");
 
   if (facilityDataLoaded) {
     refreshFacilitySelectOptions();
@@ -3217,6 +4196,34 @@ function renderOrderPatient(patient) {
         </div>
       </footer>
     </section>
+
+    <div id="custom-icd-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="custom-icd-title">
+      <div class="custom-icd-dialog">
+        <div class="custom-icd-head">
+          <div>
+            <p class="badge">ICD Catalog</p>
+            <h3 id="custom-icd-title">Add Custom ICD Code</h3>
+          </div>
+          <button type="button" class="custom-icd-close" data-custom-icd-cancel aria-label="Close">×</button>
+        </div>
+        <form id="custom-icd-form" class="custom-icd-body" novalidate>
+          <p class="subtle custom-icd-copy">This code is not in the current ICD catalog yet. Add a description to save it and use it for this order.</p>
+          <div class="custom-icd-code-card">
+            <span class="custom-icd-code-label">Code</span>
+            <strong id="custom-icd-code-value" class="custom-icd-code-value"></strong>
+          </div>
+          <label class="custom-icd-field">
+            <span>Description</span>
+            <textarea id="custom-icd-description" rows="3" placeholder="Enter ICD description"></textarea>
+          </label>
+          <p id="custom-icd-error" class="error hidden" aria-live="polite"></p>
+          <div class="custom-icd-footer">
+            <button type="button" class="btn-ghost" data-custom-icd-cancel>Cancel</button>
+            <button type="submit" class="btn-primary">Save ICD Code</button>
+          </div>
+        </form>
+      </div>
+    </div>
   `;
 
   function backToRegistration() {
@@ -3228,11 +4235,17 @@ function renderOrderPatient(patient) {
   const orderPageNode = panelBody.querySelector(".order-page");
   const orderServiceRowsNode = document.getElementById("order-service-rows");
   const addServiceBtn = document.getElementById("order-add-service");
+  const customIcdModalNode = document.getElementById("custom-icd-modal");
+  const customIcdForm = document.getElementById("custom-icd-form");
+  const customIcdCodeValueNode = document.getElementById("custom-icd-code-value");
+  const customIcdDescriptionInput = document.getElementById("custom-icd-description");
+  const customIcdErrorNode = document.getElementById("custom-icd-error");
   const icdLookup = new Map(icdCatalog.map((item) => [item.code, item]));
   const orderState = {
     rows: [],
     openPicker: null,
   };
+  let activeCustomIcdResolver = null;
 
   function createServiceRow(id) {
     const row = {
@@ -3306,11 +4319,43 @@ function renderOrderPatient(patient) {
 
   function renderIcdOptions(row) {
     const rows = getAvailableIcdsForRow(row);
-    if (!rows.length) return `<p class="picker-empty">Select at least one panel first.</p>`;
+    const exactQueryCode = sanitizeIcdCatalogRecord({ code: row.icdQuery || "" })?.code || "";
+    const canOfferCustomAdd = isLikelyCustomIcdCode(exactQueryCode) && !icdLookup.has(exactQueryCode);
+    if (!rows.length) {
+      return `
+        <p class="picker-empty">Select at least one panel first.</p>
+        ${
+          canOfferCustomAdd
+            ? `
+              <button type="button" class="picker-custom-add-btn" data-row-id="${row.id}" data-add-custom-icd="${escapeHtml(exactQueryCode)}">
+                <span class="picker-custom-add-badge">New</span>
+                <strong>Add custom ICD code ${escapeHtml(exactQueryCode)}</strong>
+                <span>Save this code to the ICD catalog and use it for this order.</span>
+              </button>
+            `
+            : ""
+        }
+      `;
+    }
 
     const q = row.icdQuery.trim().toLowerCase();
     const filtered = rows.filter((item) => `${item.code} ${item.description}`.toLowerCase().includes(q));
-    if (!filtered.length) return `<p class="picker-empty">No matching ICD codes.</p>`;
+    if (!filtered.length) {
+      return `
+        <p class="picker-empty">No matching ICD codes.</p>
+        ${
+          canOfferCustomAdd
+            ? `
+              <button type="button" class="picker-custom-add-btn" data-row-id="${row.id}" data-add-custom-icd="${escapeHtml(exactQueryCode)}">
+                <span class="picker-custom-add-badge">New</span>
+                <strong>Add custom ICD code ${escapeHtml(exactQueryCode)}</strong>
+                <span>Save this code to the ICD catalog and use it for this order.</span>
+              </button>
+            `
+            : ""
+        }
+      `;
+    }
 
     return filtered
       .map((icd) => {
@@ -3326,6 +4371,152 @@ function renderOrderPatient(patient) {
         `;
       })
       .join("");
+  }
+
+  function focusPickerSearchInput(rowId, type) {
+    requestAnimationFrame(() => {
+      const input = orderServiceRowsNode?.querySelector(
+        `input[data-row-id="${rowId}"][data-picker-search="${type}"]`
+      );
+      if (!input) return;
+      input.focus();
+      const end = input.value.length;
+      try {
+        input.setSelectionRange(end, end);
+      } catch {
+        // Some browsers may not support selection range for all input modes.
+      }
+    });
+  }
+
+  function resolveRowIcdCodeFromInput(row, input) {
+    const token = String(input || "").trim();
+    if (!token) return "";
+
+    const availableIcds = getAvailableIcdsForRow(row);
+    const exactMatch = availableIcds.find((item) => String(item.code || "").trim().toLowerCase() === token.toLowerCase());
+    if (exactMatch) return exactMatch.code;
+
+    const prefixMatches = availableIcds.filter((item) =>
+      String(item.code || "").trim().toLowerCase().startsWith(token.toLowerCase())
+    );
+    if (prefixMatches.length === 1) return prefixMatches[0].code;
+
+    const fuzzyMatches = availableIcds.filter((item) =>
+      `${item.code} ${item.description}`.toLowerCase().includes(token.toLowerCase())
+    );
+    return fuzzyMatches.length === 1 ? fuzzyMatches[0].code : "";
+  }
+
+  function isLikelyCustomIcdCode(value) {
+    const token = String(value || "").trim();
+    return /^[A-Z][A-Z0-9.-]{1,15}$/i.test(token);
+  }
+
+  function registerCustomIcdCode(code, description) {
+    const nextIcdRecord = sanitizeIcdCatalogRecord({ code, description });
+    if (!nextIcdRecord) return null;
+
+    const existing = icdCatalog.find((record) => normalizePanelKey(record.code) === normalizePanelKey(nextIcdRecord.code));
+    if (existing) return existing;
+
+    icdCatalog.push(nextIcdRecord);
+    icdCatalog.sort((a, b) => String(a.code || "").localeCompare(String(b.code || "")));
+    icdLookup.set(nextIcdRecord.code, nextIcdRecord);
+    saveMasterRegistryState();
+    syncAllPanelsToCatalogIcdCodes({ persist: true });
+    return nextIcdRecord;
+  }
+
+  function setCustomIcdModalError(message) {
+    if (!customIcdErrorNode) return;
+    const text = String(message || "").trim();
+    customIcdErrorNode.textContent = text;
+    customIcdErrorNode.classList.toggle("hidden", !text);
+  }
+
+  function closeCustomIcdModal(result = "") {
+    if (!activeCustomIcdResolver) return;
+    const resolve = activeCustomIcdResolver;
+    activeCustomIcdResolver = null;
+    customIcdModalNode?.classList.add("hidden");
+    document.body.classList.remove("modal-open");
+    setCustomIcdModalError("");
+    if (customIcdDescriptionInput) customIcdDescriptionInput.value = "";
+    resolve(result);
+  }
+
+  function openCustomIcdModal(code) {
+    if (!customIcdModalNode || !customIcdDescriptionInput || !customIcdCodeValueNode) {
+      return Promise.resolve("");
+    }
+
+    if (activeCustomIcdResolver) {
+      closeCustomIcdModal("");
+    }
+
+    customIcdCodeValueNode.textContent = code;
+    customIcdDescriptionInput.value = "";
+    setCustomIcdModalError("");
+    customIcdModalNode.classList.remove("hidden");
+    document.body.classList.add("modal-open");
+
+    return new Promise((resolve) => {
+      activeCustomIcdResolver = resolve;
+      requestAnimationFrame(() => {
+        customIcdDescriptionInput.focus();
+        customIcdDescriptionInput.select();
+      });
+    });
+  }
+
+  async function promptForCustomIcdCode(rawCode) {
+    const normalizedCode = sanitizeIcdCatalogRecord({ code: rawCode })?.code || "";
+    if (!normalizedCode) return "";
+    if (!isLikelyCustomIcdCode(normalizedCode)) return "";
+
+    const existing = icdCatalog.find((record) => normalizePanelKey(record.code) === normalizePanelKey(normalizedCode));
+    if (existing?.code) return existing.code;
+
+    const description = await openCustomIcdModal(normalizedCode);
+    const trimmedDescription = String(description || "").trim();
+    if (!trimmedDescription) {
+      return "";
+    }
+
+    const created = registerCustomIcdCode(normalizedCode, trimmedDescription);
+    if (!created?.code) {
+      alert("Unable to add custom ICD code.");
+      return "";
+    }
+    return created.code;
+  }
+
+  async function applyTypedIcdCodes(row, rawInput) {
+    const tokens = String(rawInput || "")
+      .split(/[\n,;]+/)
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+
+    if (!tokens.length) return false;
+
+    let added = false;
+    const unresolved = [];
+    for (const token of tokens) {
+      let resolvedCode = resolveRowIcdCodeFromInput(row, token);
+      if (!resolvedCode) {
+        resolvedCode = await promptForCustomIcdCode(token);
+      }
+      if (resolvedCode) {
+        row.icds.add(resolvedCode);
+        added = true;
+      } else {
+        unresolved.push(token);
+      }
+    }
+
+    row.icdQuery = unresolved.join(", ");
+    return added;
   }
 
   function renderServiceRows() {
@@ -3362,8 +4553,9 @@ function renderOrderPatient(patient) {
               </div>
               <div class="picker-dropdown ${icdOpen ? "is-open" : ""}" role="listbox" aria-label="ICD list">
                 <div class="picker-search-wrap">
-                  <input data-row-id="${row.id}" data-picker-search="icd" placeholder="Search ICD code or description" value="${row.icdQuery}">
+                  <input data-row-id="${row.id}" data-picker-search="icd" placeholder="Type ICD code or search description, then press Enter" value="${row.icdQuery}">
                 </div>
+                <p class="subtle picker-empty">Type an exact ICD code and press Enter to add it quickly.</p>
                 <div class="picker-options">${renderIcdOptions(row)}</div>
               </div>
             </div>
@@ -3481,6 +4673,7 @@ function renderOrderPatient(patient) {
         orderState.openPicker = { rowId, type };
       }
       renderServiceRows();
+      if (orderState.openPicker) focusPickerSearchInput(rowId, type);
       return;
     }
 
@@ -3490,6 +4683,7 @@ function renderOrderPatient(patient) {
       const type = displayField.classList.contains("service-name-field") ? "panel" : "icd";
       orderState.openPicker = { rowId, type };
       renderServiceRows();
+      focusPickerSearchInput(rowId, type);
       return;
     }
 
@@ -3517,6 +4711,48 @@ function renderOrderPatient(patient) {
       else row.icds.delete(code);
       renderServiceRows();
     }
+
+    const customIcdBtn = event.target.closest("[data-add-custom-icd]");
+    if (customIcdBtn) {
+      const rowId = Number(customIcdBtn.getAttribute("data-row-id"));
+      const row = orderState.rows.find((item) => item.id === rowId);
+      const rawCode = customIcdBtn.getAttribute("data-add-custom-icd");
+      if (!row || !rawCode) return;
+      (async () => {
+        const createdCode = await promptForCustomIcdCode(rawCode);
+        if (createdCode) {
+          row.icds.add(createdCode);
+          row.icdQuery = "";
+        }
+        renderServiceRows();
+        focusPickerSearchInput(rowId, "icd");
+      })();
+      return;
+    }
+  });
+
+  customIcdModalNode?.addEventListener("click", (event) => {
+    if (event.target === customIcdModalNode || event.target.closest("[data-custom-icd-cancel]")) {
+      closeCustomIcdModal("");
+    }
+  });
+
+  customIcdModalNode?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCustomIcdModal("");
+    }
+  });
+
+  customIcdForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const description = String(customIcdDescriptionInput?.value || "").trim();
+    if (!description) {
+      setCustomIcdModalError("Description is required.");
+      customIcdDescriptionInput?.focus();
+      return;
+    }
+    closeCustomIcdModal(description);
   });
 
   orderServiceRowsNode.addEventListener("input", (event) => {
@@ -3527,11 +4763,13 @@ function renderOrderPatient(patient) {
     if (event.target.matches("[data-picker-search='panel']")) {
       row.panelQuery = event.target.value;
       renderServiceRows();
+      focusPickerSearchInput(rowId, "panel");
       return;
     }
     if (event.target.matches("[data-picker-search='icd']")) {
       row.icdQuery = event.target.value;
       renderServiceRows();
+      focusPickerSearchInput(rowId, "icd");
       return;
     }
     if (event.target.matches("[data-price-input]")) {
@@ -3543,6 +4781,20 @@ function renderOrderPatient(patient) {
       row.concession = Number(event.target.value) || 0;
       updateOrderSummary();
     }
+  });
+
+  orderServiceRowsNode.addEventListener("keydown", async (event) => {
+    if (!event.target.matches("[data-picker-search='icd']")) return;
+    if (event.key !== "Enter") return;
+
+    const rowId = Number(event.target.getAttribute("data-row-id"));
+    const row = orderState.rows.find((item) => item.id === rowId);
+    if (!row) return;
+
+    event.preventDefault();
+    await applyTypedIcdCodes(row, event.target.value);
+    renderServiceRows();
+    focusPickerSearchInput(rowId, "icd");
   });
 
   orderPageNode?.addEventListener("click", (event) => {

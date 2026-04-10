@@ -13,6 +13,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { createPortalStore } = require("./lib/portal-store");
 const { createS3Storage, sanitizeS3PathSegment } = require("./lib/s3-storage");
+const { extractRequisitionScanData } = require("./lib/requisition-scan");
 require("dotenv").config();
 
 const app = express();
@@ -34,7 +35,7 @@ const facilityPath = path.join(dataDir, "facility.json");
 const auditPath = path.join(dataDir, "audit.log");
 const zipCodesPath = path.join(sourceDataDir, "us-zips.json");
 const reportPdfRendererPath = path.join(__dirname, "scripts", "render-html-to-pdf.swift");
-const requisitionScanOcrPath = path.join(__dirname, "scripts", "ocr-requisition-scan.swift");
+const requisitionScanOcrPath = path.join(__dirname, "scripts", "ocr-helper.js");
 const orderIdPadLength = 5;
 const orderIdStartNumber = 1;
 const reportPdfEnabled = String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").trim()
@@ -42,7 +43,7 @@ const reportPdfEnabled = String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").t
   : process.platform === "darwin";
 const scanOcrEnabled = String(process.env.LABCENTER_ENABLE_SCAN_OCR || "").trim()
   ? /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_ENABLE_SCAN_OCR || "").trim())
-  : process.platform === "darwin";
+  : true;
 
 function ensureDir(targetPath) {
   fs.mkdirSync(targetPath, { recursive: true });
@@ -858,6 +859,25 @@ function hasReportPdfAccess(req) {
   return Boolean(req?.session?.user || req?.session?.clientUser);
 }
 
+function isLoopbackHostname(hostname) {
+  const normalized = String(hostname || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  return normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "::ffff:127.0.0.1";
+}
+
+function shouldUseS3ForRequest(req) {
+  if (!s3Storage.enabled) return false;
+  const requestHost = String(req?.hostname || req?.headers?.host || "")
+    .trim()
+    .split(":")[0];
+  return !isLoopbackHostname(requestHost);
+}
+
 function sanitizeReportPdfFileName(value) {
   const raw = String(value || "").trim();
   const cleaned = raw
@@ -919,10 +939,7 @@ function extractRequisitionScanText(fileBuffer, fileName, mimeType = "") {
       reject(new Error("Scan OCR is disabled on this deployment."));
       return;
     }
-    if (process.platform !== "darwin") {
-      reject(new Error("Scan OCR is currently available only on macOS hosts."));
-      return;
-    }
+    // Cross-platform OCR via Node.js helper
     if (!fs.existsSync(requisitionScanOcrPath)) {
       reject(new Error("Scan OCR helper is unavailable."));
       return;
@@ -961,7 +978,7 @@ function extractRequisitionScanText(fileBuffer, fileName, mimeType = "") {
       return;
     }
 
-    const child = spawn("swift", [requisitionScanOcrPath, inputPath], {
+    const child = spawn(process.execPath, [requisitionScanOcrPath, inputPath], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -1143,7 +1160,7 @@ function extractInlineLabeledValue(line, labels) {
   if (!source) return "";
 
   for (const label of labels) {
-    const pattern = new RegExp(`^${escapeRegexPattern(label)}\\s*(?:[:\\-]|\\s)\\s*(.+)$`, "i");
+    const pattern = new RegExp(`(?:^|\\s+)${escapeRegexPattern(label)}\\s*(?:[:\\-]|\\s)\\s*(.+)$`, "i");
     const match = source.match(pattern);
     if (match?.[1]) {
       const candidate = trimValueBeforeKnownLabel(match[1]);
@@ -1430,6 +1447,21 @@ function parseRequisitionScanText(text) {
 
   if (!values.country && (values.address || values.city || values.state || values.zipcode)) {
     setValue("country", "United States of America");
+  }
+
+  // --- Enhanced Fallbacks for Tesseract tabular skew ---
+  if (!values.dob) {
+    const rawMatch = text.match(/(?:dob|date of birth|birth|d\.o\.b\.?)[\s:|-]*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{8})/i);
+    if (rawMatch) setValue("dob", normalizeScanDateValue(rawMatch[1]));
+  }
+
+  if (!values.firstName && !values.lastName) {
+    const nameMatch = text.match(/(?:patient(?:\s*'?s)?\s*name|name\s*:|patient\s*:)\s*([A-Za-z]+(?:\s+[A-Za-z]+){1,2})/i);
+    if (nameMatch) {
+      const parts = splitPatientFullName(nameMatch[1]);
+      if (parts.firstName && !values.firstName) setValue("firstName", parts.firstName);
+      if (parts.lastName && !values.lastName) setValue("lastName", parts.lastName);
+    }
   }
 
   return {
@@ -2693,6 +2725,7 @@ app.post("/api/orders/render-report-pdf", async (req, res) => {
   const orderId = String(req.body?.orderId || "").trim();
   const reportType = String(req.body?.reportType || "final").trim() || "final";
   try {
+    const persistToS3 = shouldUseS3ForRequest(req);
     const existingOrder = orderId ? portalStore.getOrderById(orderId) : null;
     if (orderId && (!existingOrder || !canAccessOrderRecord(req, existingOrder))) {
       return res.status(404).json({ error: "Order not found." });
@@ -2700,7 +2733,7 @@ app.post("/api/orders/render-report-pdf", async (req, res) => {
 
     const pdfBuffer = await renderReportPdfFromHtml(html);
     const generatedAt = new Date().toISOString();
-    if (s3Storage.enabled) {
+    if (persistToS3) {
       const storedReport = await s3Storage.uploadBuffer({
         key: buildStoredFileKey("reports", reportType, orderId || "unassigned", `${generatedAt}-${fileName}`),
         body: pdfBuffer,
@@ -2802,7 +2835,7 @@ app.post("/api/orders/process-raw", async (req, res) => {
     }
     const processedAt = new Date().toISOString();
     let rawFile = null;
-    if (s3Storage.enabled) {
+    if (shouldUseS3ForRequest(req)) {
       rawFile = await s3Storage.uploadBuffer({
         key: buildStoredFileKey("uploads", "raw", orderId || expectedSampleId || "unassigned", `${processedAt}-${fileName}`),
         body: fileBuffer,
@@ -2879,24 +2912,25 @@ app.post("/api/requisitions/extract-scan", async (req, res) => {
       return res.status(413).json({ error: "Scan too large. Maximum size is 8MB." });
     }
 
-    const ocrPayload = await extractRequisitionScanText(fileBuffer, fileName, mimeType);
-    const parsed = parseRequisitionScanText(ocrPayload.text);
+    const extraction = await extractRequisitionScanData(fileBuffer, fileName, mimeType);
 
     auditLog(req, "extract_requisition_scan", "success", {
       fileName,
       bytes: fileBuffer.length,
-      pageCount: ocrPayload.pageCount,
-      matchedFields: parsed.matchedFields.length,
+      pageCount: extraction.pageCount,
+      matchedFields: extraction.matchedFields.length,
+      engine: extraction.engine,
     });
 
     return res.json({
       fileName,
       processedAt: new Date().toISOString(),
-      pageCount: ocrPayload.pageCount,
-      values: parsed.values,
-      matchedFields: parsed.matchedFields,
-      message: parsed.matchedFields.length
-        ? `Extracted ${parsed.matchedFields.length} form field${parsed.matchedFields.length === 1 ? "" : "s"}.`
+      pageCount: extraction.pageCount,
+      values: extraction.values,
+      matchedFields: extraction.matchedFields,
+      engine: extraction.engine,
+      message: extraction.matchedFields.length
+        ? `Extracted ${extraction.matchedFields.length} form field${extraction.matchedFields.length === 1 ? "" : "s"}.`
         : "No recognizable requisition fields were found in the scan.",
     });
   } catch (error) {
@@ -2915,16 +2949,23 @@ app.get("/data/us-zips.json", (_req, res) => {
   return res.sendFile(zipCodesPath);
 });
 
+function sendClientFile(res, filePath) {
+  if (!isProd) {
+    res.setHeader("Cache-Control", "no-store");
+  }
+  return res.sendFile(filePath);
+}
+
 app.get(["/", "/index.html"], (_req, res) => {
-  return res.sendFile(path.join(__dirname, "index.html"));
+  return sendClientFile(res, path.join(__dirname, "index.html"));
 });
 
 app.get("/app.js", (_req, res) => {
-  return res.sendFile(path.join(__dirname, "app.js"));
+  return sendClientFile(res, path.join(__dirname, "app.js"));
 });
 
 app.get("/styles.css", (_req, res) => {
-  return res.sendFile(path.join(__dirname, "styles.css"));
+  return sendClientFile(res, path.join(__dirname, "styles.css"));
 });
 
 app.listen(PORT, () => {

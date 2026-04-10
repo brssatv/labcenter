@@ -2,4 +2,10 @@
 node_modules/
 .env
 data/audit.log
+data/ocr-cache/
+data/sessions/
+data/tessdata/
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
 runtime-data/
