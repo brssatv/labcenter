@@ -28,6 +28,7 @@ const resolveRuntimePath = (value, fallback) => {
   if (!raw) return fallback;
   return path.isAbsolute(raw) ? raw : path.join(__dirname, raw);
 };
+const normalizeUrlEnv = (value) => String(value || "").trim().replace(/\/+$/, "");
 const dataDir = resolveRuntimePath(process.env.DATA_DIR, defaultDataDir);
 const sessionDir = resolveRuntimePath(process.env.SESSION_DIR, path.join(dataDir, "sessions"));
 const usersPath = path.join(dataDir, "users.json");
@@ -38,6 +39,17 @@ const reportPdfRendererPath = path.join(__dirname, "scripts", "render-html-to-pd
 const requisitionScanOcrPath = path.join(__dirname, "scripts", "ocr-helper.js");
 const orderIdPadLength = 5;
 const orderIdStartNumber = 1;
+const APP_BASE_URL = normalizeUrlEnv(process.env.APP_BASE_URL);
+const OIDC_ISSUER = normalizeUrlEnv(process.env.OIDC_ISSUER);
+const OIDC_CLIENT_ID = String(process.env.OIDC_CLIENT_ID || "").trim();
+const OIDC_CLIENT_SECRET = String(process.env.OIDC_CLIENT_SECRET || "").trim();
+const OIDC_SCOPE = String(process.env.OIDC_SCOPE || "openid profile email").trim() || "openid profile email";
+const OIDC_REDIRECT_URI = String(process.env.OIDC_REDIRECT_URI || "").trim();
+const OIDC_POST_LOGOUT_REDIRECT_URI = String(process.env.OIDC_POST_LOGOUT_REDIRECT_URI || "").trim();
+const OIDC_REQUIRED_ROLE = String(process.env.OIDC_REQUIRED_ROLE || "").trim();
+const OIDC_ENABLED = Boolean(OIDC_ISSUER && OIDC_CLIENT_ID);
+const OIDC_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
+const OIDC_CLOCK_TOLERANCE_SEC = 60;
 const reportPdfEnabled = String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").trim()
   ? /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").trim())
   : process.platform === "darwin";
@@ -111,12 +123,19 @@ const s3Storage = createS3Storage({
   keyPrefix: process.env.LABCENTER_S3_PREFIX || "labcenter",
   forcePathStyle: /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_S3_FORCE_PATH_STYLE || "").trim()),
 });
+let oidcDiscoveryCache = null;
+let oidcDiscoveryPromise = null;
+let oidcJwksCache = null;
+let oidcJwksPromise = null;
 
 if (SESSION_SECRET === "dev-only-change-me") {
   console.warn("[security] SESSION_SECRET is using the default value. Set a strong value in production.");
 }
 if (isProd && SESSION_SECRET === "dev-only-change-me") {
   throw new Error("SESSION_SECRET must be set to a strong custom value in production.");
+}
+if ((OIDC_ISSUER && !OIDC_CLIENT_ID) || (!OIDC_ISSUER && OIDC_CLIENT_ID)) {
+  console.warn("[auth] OIDC is partially configured. Set both OIDC_ISSUER and OIDC_CLIENT_ID to enable admin SSO.");
 }
 if (!reportPdfEnabled) {
   console.warn("[runtime] Report PDF rendering is disabled for this deployment.");
@@ -168,7 +187,8 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: "strict",
+      // OIDC callback redirects need the session cookie on the top-level cross-site return from the IdP.
+      sameSite: OIDC_ENABLED ? "lax" : "strict",
       secure: isProd,
       maxAge: 15 * 60 * 1000,
     },
@@ -281,6 +301,341 @@ function hashPassword(password) {
 
 function randomToken() {
   return crypto.randomBytes(32).toString("hex");
+}
+
+function randomBase64Url(size = 32) {
+  return crypto.randomBytes(size).toString("base64url");
+}
+
+function toCodeChallenge(codeVerifier) {
+  return crypto.createHash("sha256").update(String(codeVerifier || "")).digest("base64url");
+}
+
+function getPublicBaseUrl(req) {
+  if (APP_BASE_URL) return APP_BASE_URL;
+  const protocol = String(req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim();
+  const host = String(req.get("x-forwarded-host") || req.get("host") || `localhost:${PORT}`).split(",")[0].trim();
+  return `${protocol}://${host}`.replace(/\/+$/, "");
+}
+
+function getOidcRedirectUri(req) {
+  return OIDC_REDIRECT_URI || `${getPublicBaseUrl(req)}/auth/oidc/callback`;
+}
+
+function getOidcPostLogoutRedirectUri(req) {
+  return OIDC_POST_LOGOUT_REDIRECT_URI || `${getPublicBaseUrl(req)}/`;
+}
+
+function getOidcDiscoveryUrl() {
+  if (!OIDC_ISSUER) {
+    throw new Error("OIDC issuer is not configured.");
+  }
+
+  if (OIDC_ISSUER.includes("/.well-known/openid-configuration")) {
+    return OIDC_ISSUER;
+  }
+
+  return `${OIDC_ISSUER}/.well-known/openid-configuration`;
+}
+
+async function fetchJsonWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        accept: "application/json",
+        ...(options.headers || {}),
+      },
+      signal: controller.signal,
+    });
+
+    const raw = await response.text();
+    let payload = null;
+
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        throw new Error(`Unexpected response from ${url}.`);
+      }
+    }
+
+    if (!response.ok) {
+      const message = payload?.error_description || payload?.error || response.statusText || "Request failed.";
+      throw new Error(message);
+    }
+
+    return payload || {};
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Request to ${url} timed out.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getOidcDiscovery(forceRefresh = false) {
+  if (!OIDC_ENABLED) {
+    throw new Error("Admin SSO is not configured.");
+  }
+
+  if (oidcDiscoveryCache && !forceRefresh) {
+    return oidcDiscoveryCache;
+  }
+
+  if (!oidcDiscoveryPromise || forceRefresh) {
+    oidcDiscoveryPromise = fetchJsonWithTimeout(getOidcDiscoveryUrl())
+      .then((payload) => {
+        if (!payload.authorization_endpoint || !payload.token_endpoint || !payload.jwks_uri) {
+          throw new Error("OIDC discovery document is missing required endpoints.");
+        }
+        oidcDiscoveryCache = payload;
+        return payload;
+      })
+      .finally(() => {
+        oidcDiscoveryPromise = null;
+      });
+  }
+
+  return oidcDiscoveryPromise;
+}
+
+async function getOidcJwks(forceRefresh = false) {
+  const discovery = await getOidcDiscovery(forceRefresh);
+
+  if (oidcJwksCache && !forceRefresh) {
+    return oidcJwksCache;
+  }
+
+  if (!oidcJwksPromise || forceRefresh) {
+    oidcJwksPromise = fetchJsonWithTimeout(discovery.jwks_uri)
+      .then((payload) => {
+        if (!Array.isArray(payload.keys)) {
+          throw new Error("OIDC JWKS response is missing signing keys.");
+        }
+        oidcJwksCache = payload;
+        return payload;
+      })
+      .finally(() => {
+        oidcJwksPromise = null;
+      });
+  }
+
+  return oidcJwksPromise;
+}
+
+function parseJwt(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) {
+    throw new Error("OIDC ID token is malformed.");
+  }
+
+  try {
+    return {
+      header: JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")),
+      payload: JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")),
+      signature: Buffer.from(parts[2], "base64url"),
+      signingInput: `${parts[0]}.${parts[1]}`,
+    };
+  } catch {
+    throw new Error("OIDC ID token could not be parsed.");
+  }
+}
+
+function findOidcJwk(jwks, jwtHeader) {
+  const keys = Array.isArray(jwks?.keys) ? jwks.keys : [];
+  const rsaKeys = keys.filter((item) => item?.kty === "RSA");
+
+  if (jwtHeader?.kid) {
+    const exactMatch = rsaKeys.find((item) => item.kid === jwtHeader.kid);
+    if (exactMatch) return exactMatch;
+  }
+
+  if (rsaKeys.length === 1) {
+    return rsaKeys[0];
+  }
+
+  return null;
+}
+
+function verifyOidcJwtSignature(parsedToken, jwk) {
+  const supportedAlgorithms = {
+    RS256: "RSA-SHA256",
+    RS384: "RSA-SHA384",
+    RS512: "RSA-SHA512",
+    PS256: "RSA-SHA256",
+    PS384: "RSA-SHA384",
+    PS512: "RSA-SHA512",
+  };
+
+  const nodeAlgorithm = supportedAlgorithms[parsedToken?.header?.alg];
+  if (!nodeAlgorithm) {
+    throw new Error(`OIDC signing algorithm ${String(parsedToken?.header?.alg || "unknown")} is not supported.`);
+  }
+
+  if (!jwk || jwk.kty !== "RSA") {
+    throw new Error("OIDC signing key is unavailable.");
+  }
+
+  const publicKey = crypto.createPublicKey({ key: jwk, format: "jwk" });
+  const verifyOptions = String(parsedToken.header.alg).startsWith("PS")
+    ? {
+        key: publicKey,
+        padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+        saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
+      }
+    : publicKey;
+
+  return crypto.verify(nodeAlgorithm, Buffer.from(parsedToken.signingInput, "utf8"), verifyOptions, parsedToken.signature);
+}
+
+function getTokenAudienceList(audience) {
+  if (Array.isArray(audience)) {
+    return audience.map((item) => String(item));
+  }
+
+  if (audience === undefined || audience === null || audience === "") {
+    return [];
+  }
+
+  return [String(audience)];
+}
+
+async function validateOidcIdToken(idToken, expectedNonce, discovery) {
+  const parsedToken = parseJwt(idToken);
+
+  let jwks = await getOidcJwks();
+  let jwk = findOidcJwk(jwks, parsedToken.header);
+
+  if (!jwk) {
+    jwks = await getOidcJwks(true);
+    jwk = findOidcJwk(jwks, parsedToken.header);
+  }
+
+  if (!jwk) {
+    throw new Error("Unable to find an OIDC signing key for this token.");
+  }
+
+  if (!verifyOidcJwtSignature(parsedToken, jwk)) {
+    throw new Error("Unable to verify the OIDC ID token signature.");
+  }
+
+  const payload = parsedToken.payload || {};
+  const now = Math.floor(Date.now() / 1000);
+  const issuer = normalizeUrlEnv(payload.iss);
+  const expectedIssuer = normalizeUrlEnv(discovery?.issuer || OIDC_ISSUER);
+
+  if (!issuer || issuer !== expectedIssuer) {
+    throw new Error("OIDC issuer mismatch.");
+  }
+
+  const audiences = getTokenAudienceList(payload.aud);
+  if (!audiences.includes(OIDC_CLIENT_ID)) {
+    throw new Error("OIDC audience mismatch.");
+  }
+
+  if (payload.azp && String(payload.azp) !== OIDC_CLIENT_ID) {
+    throw new Error("OIDC authorized party mismatch.");
+  }
+
+  if (expectedNonce && String(payload.nonce || "") !== String(expectedNonce)) {
+    throw new Error("OIDC nonce mismatch.");
+  }
+
+  if (!payload.exp || Number(payload.exp) + OIDC_CLOCK_TOLERANCE_SEC < now) {
+    throw new Error("OIDC ID token has expired.");
+  }
+
+  if (payload.nbf && Number(payload.nbf) - OIDC_CLOCK_TOLERANCE_SEC > now) {
+    throw new Error("OIDC ID token is not active yet.");
+  }
+
+  if (payload.iat && Number(payload.iat) - OIDC_CLOCK_TOLERANCE_SEC > now) {
+    throw new Error("OIDC ID token issue time is invalid.");
+  }
+
+  return payload;
+}
+
+function extractOidcRoles(claims) {
+  const roles = new Set();
+  const realmRoles = Array.isArray(claims?.realm_access?.roles) ? claims.realm_access.roles : [];
+  const resourceAccess = claims?.resource_access && typeof claims.resource_access === "object" ? claims.resource_access : {};
+
+  realmRoles.forEach((role) => roles.add(String(role)));
+
+  Object.values(resourceAccess).forEach((entry) => {
+    if (!Array.isArray(entry?.roles)) return;
+    entry.roles.forEach((role) => roles.add(String(role)));
+  });
+
+  return Array.from(roles);
+}
+
+function getOidcDisplayName(claims) {
+  const fullName = String(claims?.name || "").trim();
+  if (fullName) return fullName;
+
+  const givenName = String(claims?.given_name || "").trim();
+  const familyName = String(claims?.family_name || "").trim();
+  const joined = [givenName, familyName].filter(Boolean).join(" ").trim();
+  if (joined) return joined;
+
+  return String(claims?.preferred_username || claims?.email || claims?.sub || "LabCenter Admin");
+}
+
+function buildOidcErrorRedirect(req, message) {
+  const redirectUrl = new URL("/", getPublicBaseUrl(req));
+  redirectUrl.searchParams.set("authError", String(message || "Unable to sign in."));
+  return redirectUrl.toString();
+}
+
+function buildOidcLogoutUrl(req, discovery, oidcSession) {
+  if (!discovery?.end_session_endpoint) {
+    return "";
+  }
+
+  const logoutUrl = new URL(discovery.end_session_endpoint);
+  logoutUrl.searchParams.set("post_logout_redirect_uri", getOidcPostLogoutRedirectUri(req));
+  logoutUrl.searchParams.set("client_id", OIDC_CLIENT_ID);
+
+  if (oidcSession?.idToken) {
+    logoutUrl.searchParams.set("id_token_hint", oidcSession.idToken);
+  }
+
+  return logoutUrl.toString();
+}
+
+function saveSessionAsync(req) {
+  return new Promise((resolve, reject) => {
+    req.session.save((error) => {
+      if (error) return reject(error);
+      return resolve();
+    });
+  });
+}
+
+function regenerateSessionAsync(req) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((error) => {
+      if (error) return reject(error);
+      return resolve();
+    });
+  });
+}
+
+function destroySessionAsync(req) {
+  return new Promise((resolve, reject) => {
+    req.session.destroy((error) => {
+      if (error) return reject(error);
+      return resolve();
+    });
+  });
 }
 
 function getClientIp(req) {
@@ -1699,6 +2054,13 @@ function requireCsrf(req, res, next) {
 
 app.use("/api", requireCsrf);
 
+app.get("/api/auth/config", (_req, res) => {
+  return res.json({
+    adminAuthMode: OIDC_ENABLED ? "oidc" : "local",
+    oidcLoginUrl: OIDC_ENABLED ? "/auth/oidc/login" : null,
+  });
+});
+
 app.get("/api/auth/me", (req, res) => {
   if (!req.session.user) {
     return res.status(401).json({ authenticated: false });
@@ -1707,67 +2069,260 @@ app.get("/api/auth/me", (req, res) => {
   res.json({ authenticated: true, user: req.session.user });
 });
 
+app.get("/auth/oidc/login", async (req, res) => {
+  if (!OIDC_ENABLED) {
+    return res.redirect(buildOidcErrorRedirect(req, "LabCenter Cloud ID is not configured for this environment."));
+  }
+
+  if (req.session.user) {
+    return res.redirect("/");
+  }
+
+  try {
+    const discovery = await getOidcDiscovery();
+    const state = randomBase64Url(32);
+    const nonce = randomBase64Url(32);
+    const codeVerifier = randomBase64Url(64);
+    const authorizationUrl = new URL(discovery.authorization_endpoint);
+
+    req.session.oidc = {
+      state,
+      nonce,
+      codeVerifier,
+      requestedAt: Date.now(),
+    };
+
+    authorizationUrl.searchParams.set("response_type", "code");
+    authorizationUrl.searchParams.set("client_id", OIDC_CLIENT_ID);
+    authorizationUrl.searchParams.set("redirect_uri", getOidcRedirectUri(req));
+    authorizationUrl.searchParams.set("scope", OIDC_SCOPE);
+    authorizationUrl.searchParams.set("state", state);
+    authorizationUrl.searchParams.set("nonce", nonce);
+    authorizationUrl.searchParams.set("code_challenge", toCodeChallenge(codeVerifier));
+    authorizationUrl.searchParams.set("code_challenge_method", "S256");
+
+    await saveSessionAsync(req);
+
+    auditLog(req, "oidc_login", "redirect", { issuer: discovery.issuer || OIDC_ISSUER });
+    return res.redirect(authorizationUrl.toString());
+  } catch (error) {
+    auditLog(req, "oidc_login", "failed", { reason: error?.message || "unknown_error" });
+    return res.redirect(buildOidcErrorRedirect(req, "Unable to start LabCenter Cloud ID sign-in."));
+  }
+});
+
+app.get("/auth/oidc/callback", async (req, res) => {
+  if (!OIDC_ENABLED) {
+    return res.redirect(buildOidcErrorRedirect(req, "LabCenter Cloud ID is not configured for this environment."));
+  }
+
+  const providerError = String(req.query?.error || "").trim();
+  const providerErrorDescription = String(req.query?.error_description || "").trim();
+  const code = String(req.query?.code || "").trim();
+  const returnedState = String(req.query?.state || "").trim();
+  const pendingOidc = req.session?.oidc;
+
+  if (providerError) {
+    delete req.session.oidc;
+    await saveSessionAsync(req).catch(() => {});
+    auditLog(req, "oidc_callback", "failed", {
+      reason: providerError,
+      detail: providerErrorDescription,
+    });
+    return res.redirect(
+      buildOidcErrorRedirect(req, providerErrorDescription || "LabCenter Cloud ID sign-in was cancelled or denied.")
+    );
+  }
+
+  if (!pendingOidc?.state || !pendingOidc?.nonce || !pendingOidc?.codeVerifier) {
+    auditLog(req, "oidc_callback", "failed", { reason: "missing_pending_session" });
+    return res.redirect(buildOidcErrorRedirect(req, "Your sign-in session expired. Please try again."));
+  }
+
+  if (!code || !returnedState || returnedState !== pendingOidc.state) {
+    delete req.session.oidc;
+    await saveSessionAsync(req).catch(() => {});
+    auditLog(req, "oidc_callback", "failed", { reason: "invalid_state" });
+    return res.redirect(buildOidcErrorRedirect(req, "We could not verify your sign-in request. Please try again."));
+  }
+
+  if (Date.now() - Number(pendingOidc.requestedAt || 0) > OIDC_AUTH_TIMEOUT_MS) {
+    delete req.session.oidc;
+    await saveSessionAsync(req).catch(() => {});
+    auditLog(req, "oidc_callback", "failed", { reason: "request_expired" });
+    return res.redirect(buildOidcErrorRedirect(req, "Your sign-in session expired. Please try again."));
+  }
+
+  try {
+    const discovery = await getOidcDiscovery();
+    const tokenRequestBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: getOidcRedirectUri(req),
+      client_id: OIDC_CLIENT_ID,
+      code_verifier: String(pendingOidc.codeVerifier),
+    });
+
+    if (OIDC_CLIENT_SECRET) {
+      tokenRequestBody.set("client_secret", OIDC_CLIENT_SECRET);
+    }
+
+    const tokenResponse = await fetchJsonWithTimeout(discovery.token_endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: tokenRequestBody.toString(),
+    });
+
+    if (!tokenResponse.id_token) {
+      throw new Error("The identity provider did not return an ID token.");
+    }
+
+    const claims = await validateOidcIdToken(tokenResponse.id_token, pendingOidc.nonce, discovery);
+    const oidcRoles = extractOidcRoles(claims);
+
+    if (OIDC_REQUIRED_ROLE && !oidcRoles.includes(OIDC_REQUIRED_ROLE)) {
+      const accessError = new Error("Your account is not assigned LabCenter admin access.");
+      accessError.userMessage = "Your account is not assigned LabCenter admin access.";
+      throw accessError;
+    }
+
+    const displayName = getOidcDisplayName(claims);
+    const email = String(claims.email || "").trim().toLowerCase();
+    const username = String(claims.preferred_username || email || claims.sub || "").trim();
+    const user = {
+      id: String(claims.sub || username || email || randomBase64Url(16)),
+      email,
+      username,
+      role: "doctor",
+      displayName,
+      authProvider: "oidc",
+      oidcIssuer: String(discovery.issuer || OIDC_ISSUER),
+      oidcRoles,
+    };
+
+    await regenerateSessionAsync(req);
+    req.session.user = user;
+    req.session.csrfToken = randomToken();
+    req.session.oidc = {
+      issuer: String(discovery.issuer || OIDC_ISSUER),
+      idToken: String(tokenResponse.id_token),
+      sid: String(claims.sid || ""),
+      username,
+    };
+    await saveSessionAsync(req);
+
+    auditLog(req, "oidc_callback", "success", {
+      userId: user.id,
+      email: user.email,
+      username: user.username,
+      roles: oidcRoles,
+    });
+    return res.redirect("/");
+  } catch (error) {
+    delete req.session.oidc;
+    await saveSessionAsync(req).catch(() => {});
+    auditLog(req, "oidc_callback", "failed", { reason: error?.message || "unknown_error" });
+    return res.redirect(
+      buildOidcErrorRedirect(req, error?.userMessage || "Unable to complete LabCenter Cloud ID sign-in.")
+    );
+  }
+});
+
 app.post("/api/auth/login", loginLimiter, (req, res) => {
-  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (OIDC_ENABLED) {
+    return res.status(409).json({ error: "Admin login uses LabCenter Cloud ID. Continue with SSO instead." });
+  }
+
+  const identifier = String(req.body?.identifier || req.body?.username || req.body?.email || "")
+    .trim()
+    .toLowerCase();
   const password = String(req.body?.password || "");
   const ip = getClientIp(req);
 
-  if (!email || !password) {
-    auditLog(req, "login", "failed", { reason: "missing_fields", email });
-    return res.status(400).json({ error: "Email and password are required." });
+  if (!identifier || !password) {
+    auditLog(req, "login", "failed", { reason: "missing_fields", identifier });
+    return res.status(400).json({ error: "Username and password are required." });
   }
 
-  const key = lockKey(email, ip);
+  const key = lockKey(identifier, ip);
   const lockoutMs = getLockoutRemaining(key);
   if (lockoutMs > 0) {
-    auditLog(req, "login", "blocked", { reason: "lockout", email });
+    auditLog(req, "login", "blocked", { reason: "lockout", identifier });
     return res.status(429).json({
       error: `Account temporarily locked. Try again in ${Math.ceil(lockoutMs / 60000)} minutes.`,
     });
   }
 
-  const user = loadUsers().find((item) => item.email?.toLowerCase() === email);
+  const user = loadUsers().find((item) => {
+    const email = String(item?.email || "").trim().toLowerCase();
+    const username = String(item?.username || item?.id || "").trim().toLowerCase();
+    return identifier === email || (username && identifier === username);
+  });
   const validPassword = user ? verifyPassword(password, user.passwordHash) : false;
 
   if (!user || !validPassword) {
     registerFailure(key);
-    auditLog(req, "login", "failed", { reason: "invalid_credentials", email });
+    auditLog(req, "login", "failed", { reason: "invalid_credentials", identifier });
     return res.status(401).json({ error: "Invalid credentials." });
   }
 
   req.session.regenerate((err) => {
     if (err) {
-      auditLog(req, "login", "failed", { reason: "session_regenerate_error", email });
+      auditLog(req, "login", "failed", { reason: "session_regenerate_error", identifier });
       return res.status(500).json({ error: "Unable to create session." });
     }
 
     req.session.user = {
       id: user.id,
       email: user.email,
+      username: user.username || user.id || user.email,
       role: user.role,
       displayName: user.displayName,
+      authProvider: "local",
     };
     req.session.csrfToken = randomToken();
     clearFailures(key);
 
-    auditLog(req, "login", "success", { email, userId: user.id, role: user.role });
+    auditLog(req, "login", "success", { identifier, userId: user.id, role: user.role });
     return res.json({ authenticated: true, user: req.session.user, csrfToken: req.session.csrfToken });
   });
 });
 
-app.post("/api/auth/logout", (req, res) => {
+app.post("/api/auth/logout", async (req, res) => {
   if (!req.session.user) {
     return res.status(204).end();
   }
 
   const { user } = req.session;
+  let logoutUrl = "";
+
+  if (user.authProvider === "oidc" && OIDC_ENABLED) {
+    try {
+      const discovery = await getOidcDiscovery();
+      logoutUrl = buildOidcLogoutUrl(req, discovery, req.session.oidc);
+    } catch (error) {
+      auditLog(req, "oidc_logout", "failed", { reason: error?.message || "unknown_error" });
+    }
+  }
+
   auditLog(req, "logout", "success", { userId: user.id, email: user.email, role: user.role });
 
-  req.session.destroy((err) => {
-    if (err) return res.status(500).json({ error: "Unable to logout cleanly." });
-    res.clearCookie("labcenter.sid");
+  try {
+    await destroySessionAsync(req);
+    res.clearCookie("labcenter.sid", {
+      httpOnly: true,
+      sameSite: OIDC_ENABLED ? "lax" : "strict",
+      secure: isProd,
+    });
+    if (logoutUrl) {
+      return res.json({ loggedOut: true, logoutUrl });
+    }
     return res.status(204).end();
-  });
+  } catch {
+    return res.status(500).json({ error: "Unable to logout cleanly." });
+  }
 });
 
 app.get("/api/client-auth/me", (req, res) => {

@@ -4,12 +4,13 @@ This project now includes a server-backed login portal with security controls th
 
 ## What was added
 
-- Server-side sessions (`httpOnly`, `sameSite=strict`, short session lifetime)
+- Server-side sessions (`httpOnly`, short session lifetime, and `SameSite=Lax` when OIDC redirect login is enabled)
 - CSRF protection for state-changing requests
 - Brute-force protection (IP limiter + account/IP lockout)
 - Security headers via `helmet` (CSP, no sniffing, frame protections)
 - Password hashing with `scrypt` (script included for generating new hashes)
 - Structured audit logging for authentication events
+- Optional admin SSO with OpenID Connect / Keycloak
 
 ## Quick start
 
@@ -18,6 +19,15 @@ This project now includes a server-backed login portal with security controls th
 2. Set environment variables:
    - `cp .env.example .env`
    - Update `SESSION_SECRET` in `.env`.
+   - Optional: if you want admin SSO through Keycloak/OpenID Connect, also set:
+     - `APP_BASE_URL`
+     - `OIDC_ISSUER`
+     - `OIDC_CLIENT_ID`
+     - optional `OIDC_CLIENT_SECRET`
+     - optional `OIDC_SCOPE`
+     - optional `OIDC_REDIRECT_URI`
+     - optional `OIDC_POST_LOGOUT_REDIRECT_URI`
+     - optional `OIDC_REQUIRED_ROLE`
    - If you want shared order history + file persistence, also set:
      - `LABCENTER_S3_BUCKET`
      - `LABCENTER_S3_REGION`
@@ -80,10 +90,13 @@ In the DNS settings for `mindbodyheal.co`, create the record Render asks for whe
 
 ## Default bootstrap login (change immediately)
 
+- Username: `doctor-001`
 - Email: `admin@clinic.local`
 - Password: `ChangeMeNow!123`
 
 The bootstrap user is stored in `/Users/greyhouse/Documents/LabCenter/data/users.json`.
+
+When OIDC is configured, the local admin login is disabled and LabCenter admins are redirected through the external identity provider instead. The client portal login stays local.
 
 ## Create a new password hash
 

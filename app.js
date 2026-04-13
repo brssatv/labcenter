@@ -95,13 +95,28 @@ const facilityTableColumnConfig = {
 };
 
 const authScreen = document.getElementById("auth-screen");
+const authGateway = document.getElementById("auth-gateway");
+const authLoginShell = document.getElementById("auth-login-shell");
 const appShell = document.getElementById("app-shell");
+const authLaunchBtn = document.getElementById("auth-launch-btn");
+const authBackBtn = document.getElementById("auth-back-btn");
 const loginForm = document.getElementById("login-form");
 const loginError = document.getElementById("login-error");
 const authModeButtons = Array.from(document.querySelectorAll("[data-auth-mode]"));
+const authModeHelper = document.getElementById("auth-mode-helper");
+const doctorSsoWrap = document.getElementById("doctor-sso-wrap");
+const doctorSsoBtn = document.getElementById("doctor-sso-btn");
 const doctorEmailWrap = document.getElementById("doctor-email-wrap");
 const clientUsernameWrap = document.getElementById("client-username-wrap");
+const passwordWrap = document.getElementById("password-wrap");
+const authActions = document.getElementById("auth-actions");
 const logoutBtn = document.getElementById("logout-btn");
+const sessionMenuTrigger = document.getElementById("session-menu-trigger");
+const sessionMenu = document.getElementById("session-menu");
+const sessionLoginType = document.getElementById("session-login-type");
+const sessionDisplayName = document.getElementById("session-display-name");
+const sessionLoginDetail = document.getElementById("session-login-detail");
+const sessionPlanName = document.getElementById("session-plan-name");
 const nav = document.getElementById("side-nav");
 const panelTitle = document.getElementById("panel-title");
 const panelSubtitle = document.getElementById("panel-subtitle");
@@ -110,14 +125,15 @@ const panelHeader = document.getElementById("panel-header");
 
 let csrfToken = "";
 let pendingAuth = false;
+let authStage = "gateway";
 let authMode = "doctor";
-let activeSession = {
-  type: "doctor",
-  accessType: "full",
-  accountId: "",
-  accountName: "",
-  username: "",
+let authConfig = {
+  adminAuthMode: "local",
+  oidcLoginUrl: "/auth/oidc/login",
 };
+let authConfigPromise = null;
+let sessionMenuOpen = false;
+let activeSession = createDefaultActiveSession();
 let currentView = "dashboard";
 let requisitionSubtab = "create";
 let facilityTab = "accounts";
@@ -148,12 +164,102 @@ let uploadResultsLogState = [];
 let portalDataReady = false;
 let portalDataPromise = null;
 
+function createDefaultActiveSession() {
+  return {
+    type: "doctor",
+    accessType: "full",
+    accountId: "",
+    accountName: "",
+    username: "",
+    displayName: "",
+    email: "",
+    entityType: "doctor",
+  };
+}
+
 function escapeHtml(value) {
   return String(value === null || value === undefined ? "" : value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function getSessionPlanLabel() {
+  if (activeSession.type === "doctor") return "Full Access";
+
+  switch (activeSession.accessType) {
+    case "report_view_order":
+      return "Starter Plan + Orders";
+    case "report_view":
+      return "Starter Plan";
+    case "no_login":
+      return "Restricted Access";
+    default:
+      return "Portal Access";
+  }
+}
+
+function getSessionSummary() {
+  if (activeSession.type === "doctor") {
+    return {
+      loginType: "Admin Login",
+      displayName: activeSession.displayName || activeSession.accountName || "LabCenter Admin",
+      detail: activeSession.email || activeSession.username || "Admin workspace",
+      plan: getSessionPlanLabel(),
+    };
+  }
+
+  const detailParts = [];
+  if (activeSession.accountId) detailParts.push(`#${activeSession.accountId}`);
+  if (activeSession.username) detailParts.push(activeSession.username);
+
+  return {
+    loginType: activeSession.entityType === "provider" ? "Provider Portal" : "Client Portal",
+    displayName: activeSession.accountName || activeSession.displayName || activeSession.username || "LabCenter User",
+    detail: detailParts.join(" • ") || "Portal workspace",
+    plan: getSessionPlanLabel(),
+  };
+}
+
+function getPrimaryAuthInput() {
+  if (authMode === "doctor" && getAdminAuthMode() === "oidc") {
+    return doctorSsoBtn;
+  }
+
+  return authMode === "client"
+    ? document.getElementById("client-username")
+    : document.getElementById("doctor-email");
+}
+
+function setAuthStage(nextStage) {
+  authStage = nextStage === "login" ? "login" : "gateway";
+  authGateway?.classList.toggle("hidden", authStage !== "gateway");
+  authLoginShell?.classList.toggle("hidden", authStage !== "login");
+
+  if (authStage === "login") {
+    window.requestAnimationFrame(() => {
+      getPrimaryAuthInput()?.focus();
+    });
+  } else {
+    window.requestAnimationFrame(() => {
+      authLaunchBtn?.focus();
+    });
+  }
+}
+
+function setSessionMenuOpen(isOpen) {
+  sessionMenuOpen = Boolean(isOpen);
+  sessionMenu?.classList.toggle("hidden", !sessionMenuOpen);
+  sessionMenuTrigger?.setAttribute("aria-expanded", String(sessionMenuOpen));
+}
+
+function renderSessionSummary() {
+  const summary = getSessionSummary();
+  if (sessionLoginType) sessionLoginType.textContent = summary.loginType;
+  if (sessionDisplayName) sessionDisplayName.textContent = summary.displayName;
+  if (sessionLoginDetail) sessionLoginDetail.textContent = summary.detail;
+  if (sessionPlanName) sessionPlanName.textContent = summary.plan;
 }
 
 const patientDirectory = [
@@ -993,6 +1099,47 @@ async function requestJson(url, options = {}) {
   return payload || {};
 }
 
+function getAdminAuthMode() {
+  return authConfig?.adminAuthMode === "oidc" ? "oidc" : "local";
+}
+
+function getAdminSsoLoginUrl() {
+  return authConfig?.oidcLoginUrl || "/auth/oidc/login";
+}
+
+async function ensureAuthConfigLoaded(force = false) {
+  if (authConfigPromise && !force) {
+    return authConfigPromise;
+  }
+
+  authConfigPromise = requestJson("/api/auth/config")
+    .then((payload) => {
+      authConfig = {
+        adminAuthMode: payload?.adminAuthMode === "oidc" ? "oidc" : "local",
+        oidcLoginUrl: payload?.oidcLoginUrl || "/auth/oidc/login",
+      };
+      return authConfig;
+    })
+    .catch((error) => {
+      authConfigPromise = null;
+      throw error;
+    });
+
+  return authConfigPromise;
+}
+
+function consumeAuthRedirectMessage() {
+  const params = new URLSearchParams(window.location.search);
+  const message = params.get("authError");
+  if (!message) return "";
+
+  params.delete("authError");
+  const nextQuery = params.toString();
+  const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash || ""}`;
+  window.history.replaceState({}, "", nextUrl);
+  return message;
+}
+
 function readLegacyLocalArray(storageKey) {
   try {
     const raw = localStorage.getItem(storageKey);
@@ -1100,6 +1247,7 @@ function renderNav() {
     button.className = `side-link ${item.key === currentView ? "active" : ""}`;
     button.textContent = item.title;
     button.addEventListener("click", () => {
+      setSessionMenuOpen(false);
       currentView = item.key;
       renderNav();
       renderView();
@@ -1116,11 +1264,33 @@ function getVisibleViews() {
 
 function setAuthMode(nextMode) {
   authMode = nextMode === "client" ? "client" : "doctor";
+  const adminUsesOidc = authMode === "doctor" && getAdminAuthMode() === "oidc";
+
   authModeButtons.forEach((button) => {
-    button.classList.toggle("active", button.getAttribute("data-auth-mode") === authMode);
+    const isActive = button.getAttribute("data-auth-mode") === authMode;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
   });
-  doctorEmailWrap?.classList.toggle("hidden", authMode !== "doctor");
+  doctorSsoWrap?.classList.toggle("hidden", !adminUsesOidc);
+  doctorEmailWrap?.classList.toggle("hidden", authMode !== "doctor" || adminUsesOidc);
   clientUsernameWrap?.classList.toggle("hidden", authMode !== "client");
+  passwordWrap?.classList.toggle("hidden", adminUsesOidc);
+  authActions?.classList.toggle("hidden", adminUsesOidc);
+
+  if (authModeHelper) {
+    authModeHelper.textContent =
+      authMode === "doctor"
+        ? adminUsesOidc
+          ? "Admins sign in through LabCenter Cloud ID to keep authentication centralized and secure."
+          : "Use your assigned LabCenter admin username and password to access the full workspace."
+        : "Use your client portal username to review reports and order activity.";
+  }
+
+  if (authStage === "login") {
+    window.requestAnimationFrame(() => {
+      getPrimaryAuthInput()?.focus();
+    });
+  }
 }
 
 function renderRequisitionTabsMarkup() {
@@ -12131,6 +12301,8 @@ async function mountApp() {
   document.body.classList.add("app-mode");
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
+  setSessionMenuOpen(false);
+  renderSessionSummary();
   panelBody.innerHTML = `
     <section class="card starter-card">
       <p class="badge">Loading</p>
@@ -12153,20 +12325,17 @@ function mountAuth() {
     orders: [],
     uploadResultsLog: [],
   });
-  activeSession = {
-    type: "doctor",
-    accessType: "full",
-    accountId: "",
-    accountName: "",
-    username: "",
-  };
+  activeSession = createDefaultActiveSession();
   currentSearchInput = null;
+  setSessionMenuOpen(false);
+  renderSessionSummary();
   document.body.classList.remove("app-mode");
   appShell.classList.add("hidden");
   authScreen.classList.remove("hidden");
   closeFacilityModals();
   loginForm.reset();
   setAuthMode("doctor");
+  setAuthStage("gateway");
   loginError.textContent = "";
 }
 
@@ -12176,16 +12345,57 @@ authModeButtons.forEach((button) => {
   });
 });
 
+authLaunchBtn?.addEventListener("click", () => {
+  setAuthStage("login");
+});
+
+authBackBtn?.addEventListener("click", () => {
+  loginError.textContent = "";
+  setAuthStage("gateway");
+});
+
+doctorSsoBtn?.addEventListener("click", () => {
+  if (pendingAuth) return;
+
+  pendingAuth = true;
+  loginError.textContent = "Redirecting to LabCenter Cloud ID...";
+
+  ensureAuthConfigLoaded()
+    .then(() => {
+      window.location.assign(getAdminSsoLoginUrl());
+    })
+    .catch((error) => {
+      pendingAuth = false;
+      loginError.textContent = error?.message || "Unable to continue to LabCenter Cloud ID.";
+    });
+});
+
+sessionMenuTrigger?.addEventListener("click", () => {
+  setSessionMenuOpen(!sessionMenuOpen);
+});
+
+document.addEventListener("click", (event) => {
+  if (!sessionMenuOpen) return;
+  if (sessionMenuTrigger?.contains(event.target) || sessionMenu?.contains(event.target)) return;
+  setSessionMenuOpen(false);
+});
+
 loginForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (pendingAuth) return;
 
-  const email = document.getElementById("doctor-email").value.trim().toLowerCase();
+  const adminIdentifier = document.getElementById("doctor-email").value.trim().toLowerCase();
   const clientUsername = document.getElementById("client-username").value.trim().toLowerCase();
   const password = document.getElementById("doctor-password").value;
+  const adminUsesOidc = authMode === "doctor" && getAdminAuthMode() === "oidc";
 
-  if (authMode === "doctor" && (!email.includes("@") || password.length < 10)) {
-    loginError.textContent = "Enter a valid doctor email and a password with at least 10 characters.";
+  if (adminUsesOidc) {
+    doctorSsoBtn?.click();
+    return;
+  }
+
+  if (authMode === "doctor" && (!adminIdentifier || password.length < 10)) {
+    loginError.textContent = "Enter your admin username and a password with at least 10 characters.";
     return;
   }
   if (authMode === "client" && (!clientUsername || password.length < 8)) {
@@ -12202,7 +12412,7 @@ loginForm.addEventListener("submit", (event) => {
       const endpoint = authMode === "doctor" ? "/api/auth/login" : "/api/client-auth/login";
       const body =
         authMode === "doctor"
-          ? { email, password }
+          ? { identifier: adminIdentifier, username: adminIdentifier, email: adminIdentifier, password }
           : {
               username: clientUsername,
               password,
@@ -12218,12 +12428,16 @@ loginForm.addEventListener("submit", (event) => {
       });
       csrfToken = loginResult.csrfToken || csrfToken;
       if (authMode === "doctor") {
+        const doctorUser = loginResult?.user || {};
         activeSession = {
           type: "doctor",
           accessType: "full",
-          accountId: "",
-          accountName: "",
-          username: "",
+          accountId: doctorUser.id || "",
+          accountName: doctorUser.displayName || "",
+          username: doctorUser.username || doctorUser.email || adminIdentifier,
+          displayName: doctorUser.displayName || "",
+          email: doctorUser.email || "",
+          entityType: "doctor",
         };
       } else {
         activeSession = {
@@ -12232,6 +12446,9 @@ loginForm.addEventListener("submit", (event) => {
           accountId: loginResult?.clientUser?.accountId || "",
           accountName: loginResult?.clientUser?.accountName || "",
           username: loginResult?.clientUser?.username || clientUsername,
+          displayName: loginResult?.clientUser?.accountName || "",
+          email: "",
+          entityType: loginResult?.clientUser?.entityType || "account",
         };
       }
       loginError.textContent = "";
@@ -12247,18 +12464,27 @@ loginForm.addEventListener("submit", (event) => {
 
 logoutBtn.addEventListener("click", () => {
   (async () => {
+    setSessionMenuOpen(false);
+    let redirectingToIdp = false;
+
     try {
       if (!csrfToken) await fetchCsrfToken();
       const endpoint = activeSession.type === "client" ? "/api/client-auth/logout" : "/api/auth/logout";
-      await requestJson(endpoint, {
+      const logoutResult = await requestJson(endpoint, {
         method: "POST",
         headers: {
           "x-csrf-token": csrfToken,
         },
       });
+      if (logoutResult?.logoutUrl) {
+        redirectingToIdp = true;
+        window.location.assign(logoutResult.logoutUrl);
+        return;
+      }
     } catch {
       // Ignore logout API failures and still reset UI locally.
     } finally {
+      if (redirectingToIdp) return;
       csrfToken = "";
       await fetchCsrfToken().catch(() => {});
       mountAuth();
@@ -12267,16 +12493,22 @@ logoutBtn.addEventListener("click", () => {
 });
 
 (async () => {
+  await ensureAuthConfigLoaded().catch(() => {});
+
   try {
     await fetchCsrfToken();
     const authState = await requestJson("/api/auth/me");
     if (authState.authenticated) {
+      const doctorUser = authState?.user || {};
       activeSession = {
         type: "doctor",
         accessType: "full",
-        accountId: "",
-        accountName: "",
-        username: "",
+        accountId: doctorUser.id || "",
+        accountName: doctorUser.displayName || "",
+        username: doctorUser.username || doctorUser.email || "",
+        displayName: doctorUser.displayName || "",
+        email: doctorUser.email || "",
+        entityType: "doctor",
       };
       await mountApp();
       return;
@@ -12294,6 +12526,9 @@ logoutBtn.addEventListener("click", () => {
         accountId: clientState?.clientUser?.accountId || "",
         accountName: clientState?.clientUser?.accountName || "",
         username: clientState?.clientUser?.username || "",
+        displayName: clientState?.clientUser?.accountName || "",
+        email: "",
+        entityType: clientState?.clientUser?.entityType || "account",
       };
       await mountApp();
       return;
@@ -12303,9 +12538,21 @@ logoutBtn.addEventListener("click", () => {
   }
 
   mountAuth();
+  const redirectedAuthMessage = consumeAuthRedirectMessage();
+  if (redirectedAuthMessage) {
+    setAuthMode("doctor");
+    setAuthStage("login");
+    loginError.textContent = redirectedAuthMessage;
+  }
 })();
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && sessionMenuOpen) {
+    setSessionMenuOpen(false);
+    sessionMenuTrigger?.focus();
+    return;
+  }
+
   const cmdOrCtrl = event.metaKey || event.ctrlKey;
   if (!cmdOrCtrl || event.key.toLowerCase() !== "j") return;
   if (!currentSearchInput) return;
