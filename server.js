@@ -73,6 +73,78 @@ function seedFileIfMissing(targetPath, seedPath, fallbackContents) {
   fs.writeFileSync(targetPath, fallbackContents, "utf8");
 }
 
+function loadUsersFromPath(targetPath) {
+  try {
+    const raw = fs.readFileSync(targetPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.users) ? parsed.users : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUsersToPath(targetPath, users) {
+  ensureDir(path.dirname(targetPath));
+  fs.writeFileSync(targetPath, `${JSON.stringify({ users }, null, 2)}\n`, "utf8");
+}
+
+function getUserSyncKeys(user) {
+  return Array.from(
+    new Set(
+      [user?.id, user?.username, user?.email]
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+}
+
+function syncSeedUsers(runtimeUsersPath, sourceUsersSeedPath) {
+  if (!sourceUsersSeedPath || path.resolve(runtimeUsersPath) === path.resolve(sourceUsersSeedPath)) {
+    return;
+  }
+
+  const sourceUsers = loadUsersFromPath(sourceUsersSeedPath);
+  if (!sourceUsers.length) return;
+
+  const runtimeUsers = loadUsersFromPath(runtimeUsersPath);
+  const runtimeIndexByKey = new Map();
+
+  runtimeUsers.forEach((user, index) => {
+    getUserSyncKeys(user).forEach((key) => {
+      if (!runtimeIndexByKey.has(key)) {
+        runtimeIndexByKey.set(key, index);
+      }
+    });
+  });
+
+  let changed = false;
+
+  sourceUsers.forEach((sourceUser) => {
+    const matchIndex = getUserSyncKeys(sourceUser)
+      .map((key) => runtimeIndexByKey.get(key))
+      .find((index) => Number.isInteger(index));
+    const nextUser = { ...(matchIndex !== undefined ? runtimeUsers[matchIndex] : {}), ...sourceUser };
+
+    if (matchIndex === undefined) {
+      runtimeUsers.push(nextUser);
+      changed = true;
+      getUserSyncKeys(nextUser).forEach((key) => runtimeIndexByKey.set(key, runtimeUsers.length - 1));
+      return;
+    }
+
+    if (JSON.stringify(runtimeUsers[matchIndex]) !== JSON.stringify(nextUser)) {
+      runtimeUsers[matchIndex] = nextUser;
+      changed = true;
+    }
+
+    getUserSyncKeys(nextUser).forEach((key) => runtimeIndexByKey.set(key, matchIndex));
+  });
+
+  if (changed) {
+    saveUsersToPath(runtimeUsersPath, runtimeUsers);
+  }
+}
+
 function ensureRuntimeData() {
   ensureDir(dataDir);
   ensureDir(sessionDir);
@@ -96,6 +168,7 @@ function ensureRuntimeData() {
       2
     ) + "\n"
   );
+  syncSeedUsers(usersPath, path.join(sourceDataDir, "users.json"));
   seedFileIfMissing(
     facilityPath,
     path.join(sourceDataDir, "facility.json"),
@@ -216,13 +289,7 @@ const LOCKOUT_MS = 30 * 60 * 1000;
 const FAIL_LIMIT = 5;
 
 function loadUsers() {
-  try {
-    const raw = fs.readFileSync(usersPath, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed.users) ? parsed.users : [];
-  } catch {
-    return [];
-  }
+  return loadUsersFromPath(usersPath);
 }
 
 function loadFacilityData() {
