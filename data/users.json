@@ -8,12 +8,12 @@
       "passwordHash": "scrypt$16384$8$1$149285dc2e3722f45b7bc645866caded$ec49b81e2a49b270fdbc4dfb26ddb4ec251ffce4b61b45b6a47d3648bbd7d7e2a19f5489de59ce2a52d2bd6e45465b1f02f2a1f274688b7051f708056648d65c"
     },
     {
-      "id": "doctor-002",
+      "id": "doctor-innovex-lab",
       "username": "innovex-lab",
-      "email": "innovex-lab@clinic.local",
+      "email": "innovexlab@innovexlab.com",
       "displayName": "Innovex Lab Admin",
       "role": "doctor",
-      "passwordHash": "scrypt$16384$8$1$cecb7541f350240129df0343d45f33d2$6e880c692854fc6dfeb9e5ef046c16a45cdbe4b1b8e399617ee8488535d012f88a40e8fc5654a55f7ec538e21fcff00c600cddca1ef61c2bacfdcbe897676180"
+      "passwordHash": "scrypt$16384$8$1$44612ce529120c7ef6d1b143ce89dfed$e778139898fcb3eaf7eb38e91077564b5926106cfdd3a20a1effa6487e9c5d28f994d98ea5322950cfe91b627bbca89362a48cea852b78a128eece1e57c33421"
     }
   ]
 }
