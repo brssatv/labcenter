@@ -50,12 +50,21 @@ const OIDC_REQUIRED_ROLE = String(process.env.OIDC_REQUIRED_ROLE || "").trim();
 const OIDC_ENABLED = Boolean(OIDC_ISSUER && OIDC_CLIENT_ID);
 const OIDC_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const OIDC_CLOCK_TOLERANCE_SEC = 60;
+const normalizePublishMode = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "disabled") return "disabled";
+  if (raw === "log" || raw === "logged") return "log";
+  if (raw === "simulate" || raw === "simulated" || raw === "mock") return "simulated";
+  return "disabled";
+};
 const reportPdfEnabled = String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").trim()
   ? /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").trim())
   : process.platform === "darwin";
 const scanOcrEnabled = String(process.env.LABCENTER_ENABLE_SCAN_OCR || "").trim()
   ? /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_ENABLE_SCAN_OCR || "").trim())
   : true;
+const publishEmailMode = normalizePublishMode(process.env.LABCENTER_PUBLISH_EMAIL_MODE || "disabled");
+const publishFaxMode = normalizePublishMode(process.env.LABCENTER_PUBLISH_FAX_MODE || "disabled");
 
 function ensureDir(targetPath) {
   fs.mkdirSync(targetPath, { recursive: true });
@@ -1308,6 +1317,182 @@ function sanitizeReportPdfFileName(value) {
     .slice(0, 120);
   if (!cleaned) return `Final_Report_${Date.now()}.pdf`;
   return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : `${cleaned}.pdf`;
+}
+
+function splitPublishValues(rawValue) {
+  if (Array.isArray(rawValue)) {
+    return rawValue.flatMap((item) => splitPublishValues(item)).filter(Boolean);
+  }
+  return String(rawValue || "")
+    .split(/[\n,;|]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function extractEmailRecipients(...values) {
+  const seen = new Set();
+  const recipients = [];
+  values
+    .flatMap((value) => splitPublishValues(value))
+    .flatMap((value) => String(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean)
+    .forEach((value) => {
+      if (seen.has(value)) return;
+      seen.add(value);
+      recipients.push(value);
+    });
+  return recipients;
+}
+
+function normalizeFaxRecipient(value) {
+  const digits = String(value || "").replace(/\D+/g, "");
+  return digits.length >= 10 ? digits : "";
+}
+
+function getOrderFacilityKeys(order, facilityData) {
+  const keys = new Set();
+  const facilityName = String(order?.facilityName || "").trim();
+  const needle = normalizeMatchKey(facilityName);
+  if (needle) keys.add(needle);
+  const accounts = Array.isArray(facilityData?.accounts) ? facilityData.accounts : [];
+  const matchedAccount = accounts.find((row) =>
+    [row?.id, row?.name, row?.account_code, row?.facility_name, row?.facilityName, row?.basic_information?.accountName]
+      .map(normalizeMatchKey)
+      .some((value) => value && value === needle)
+  );
+  [
+    matchedAccount?.id,
+    matchedAccount?.name,
+    matchedAccount?.account_code,
+    matchedAccount?.facility_name,
+    matchedAccount?.facilityName,
+    matchedAccount?.basic_information?.accountName,
+  ]
+    .map(normalizeMatchKey)
+    .filter(Boolean)
+    .forEach((value) => keys.add(value));
+  return keys;
+}
+
+function getProviderFacilityKeys(providerRow) {
+  return new Set(
+    [
+      providerRow?.account,
+      providerRow?.accounts,
+      providerRow?.provider_configuration?.accounts,
+      providerRow?.provider_information?.accounts,
+    ]
+      .flatMap((value) => splitPublishValues(value))
+      .map(normalizeMatchKey)
+      .filter(Boolean)
+  );
+}
+
+function resolveProviderForOrderPublish(order) {
+  const facilityData = loadFacilityData();
+  const providers = Array.isArray(facilityData?.providers) ? facilityData.providers : [];
+  const providerNeedle = normalizeMatchKey(order?.provider);
+  const providerNpi = String(order?.providerNpi || "").replace(/\D+/g, "");
+  const facilityKeys = getOrderFacilityKeys(order, facilityData);
+
+  let matches = providers.filter((row) => {
+    const nameMatch = providerNeedle
+      && [row?.validator_name, row?.provider_name, row?.display_name, row?.provider_information?.providerName]
+        .map(normalizeMatchKey)
+        .some((value) => value && value === providerNeedle);
+    const npiMatch = providerNpi
+      && String(row?.npi || row?.provider_information?.npi || "").replace(/\D+/g, "") === providerNpi;
+    return Boolean(nameMatch || npiMatch);
+  });
+
+  if (!matches.length && facilityKeys.size) {
+    matches = providers.filter((row) => {
+      const providerKeys = getProviderFacilityKeys(row);
+      return [...providerKeys].some((value) => facilityKeys.has(value));
+    });
+  }
+
+  if (matches.length > 1 && facilityKeys.size) {
+    const narrowed = matches.filter((row) => {
+      const providerKeys = getProviderFacilityKeys(row);
+      return [...providerKeys].some((value) => facilityKeys.has(value));
+    });
+    if (narrowed.length) matches = narrowed;
+  }
+
+  return matches[0] || null;
+}
+
+function getProviderPublishTargets(providerRow) {
+  const configuration = providerRow?.provider_configuration && typeof providerRow.provider_configuration === "object"
+    ? providerRow.provider_configuration
+    : {};
+  const sendEmail = "sendEmail" in configuration ? Boolean(configuration.sendEmail) : Boolean(providerRow?.send_email);
+  const sendFax = "sendFax" in configuration ? Boolean(configuration.sendFax) : Boolean(providerRow?.send_fax);
+  const emailRecipients = extractEmailRecipients(
+    providerRow?.email_id,
+    providerRow?.alternate_emails,
+    configuration.email,
+    configuration.alternateEmails,
+    providerRow?.provider_information?.email
+  );
+  const faxRecipient = normalizeFaxRecipient(
+    providerRow?.fax_number || configuration.faxNumber || providerRow?.provider_information?.faxNumber
+  );
+  return { sendEmail, sendFax, emailRecipients, faxRecipient };
+}
+
+async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType }) {
+  const generatedAt = new Date().toISOString();
+  if (shouldUseS3ForRequest(req)) {
+    const storedReport = await s3Storage.uploadBuffer({
+      key: buildStoredFileKey("reports", reportType, orderId || "unassigned", `${generatedAt}-${fileName}`),
+      body: pdfBuffer,
+      contentType: "application/pdf",
+      metadata: {
+        orderid: orderId,
+        reporttype: reportType,
+        filename: fileName,
+      },
+      contentDisposition: `inline; filename="${fileName}"`,
+      cacheControl: "private, max-age=0, no-store",
+    });
+    portalStore.saveOrderFile({
+      orderId,
+      fileRole: "report_pdf",
+      reportType,
+      bucket: storedReport.bucket,
+      key: storedReport.key,
+      fileName,
+      mimeType: "application/pdf",
+      sizeBytes: storedReport.sizeBytes,
+      createdAt: generatedAt,
+      metadata: {
+        generatedAt,
+      },
+    });
+    if (existingOrder) {
+      portalStore.upsertOrders([
+        {
+          ...existingOrder,
+          generatedReports: {
+            ...(existingOrder.generatedReports || {}),
+            [reportType]: {
+              bucket: storedReport.bucket,
+              key: storedReport.key,
+              fileName,
+              mimeType: "application/pdf",
+              sizeBytes: storedReport.sizeBytes,
+              generatedAt,
+            },
+          },
+          updatedAt: generatedAt,
+        },
+      ]);
+    }
+  }
+  return generatedAt;
 }
 
 function inferMimeTypeFromFileName(fileName) {
@@ -3347,61 +3532,13 @@ app.post("/api/orders/render-report-pdf", async (req, res) => {
   const orderId = String(req.body?.orderId || "").trim();
   const reportType = String(req.body?.reportType || "final").trim() || "final";
   try {
-    const persistToS3 = shouldUseS3ForRequest(req);
     const existingOrder = orderId ? portalStore.getOrderById(orderId) : null;
     if (orderId && (!existingOrder || !canAccessOrderRecord(req, existingOrder))) {
       return res.status(404).json({ error: "Order not found." });
     }
 
     const pdfBuffer = await renderReportPdfFromHtml(html);
-    const generatedAt = new Date().toISOString();
-    if (persistToS3) {
-      const storedReport = await s3Storage.uploadBuffer({
-        key: buildStoredFileKey("reports", reportType, orderId || "unassigned", `${generatedAt}-${fileName}`),
-        body: pdfBuffer,
-        contentType: "application/pdf",
-        metadata: {
-          orderid: orderId,
-          reporttype: reportType,
-          filename: fileName,
-        },
-        contentDisposition: `inline; filename="${fileName}"`,
-        cacheControl: "private, max-age=0, no-store",
-      });
-      portalStore.saveOrderFile({
-        orderId,
-        fileRole: "report_pdf",
-        reportType,
-        bucket: storedReport.bucket,
-        key: storedReport.key,
-        fileName,
-        mimeType: "application/pdf",
-        sizeBytes: storedReport.sizeBytes,
-        createdAt: generatedAt,
-        metadata: {
-          generatedAt,
-        },
-      });
-      if (existingOrder) {
-        portalStore.upsertOrders([
-          {
-            ...existingOrder,
-            generatedReports: {
-              ...(existingOrder.generatedReports || {}),
-              [reportType]: {
-                bucket: storedReport.bucket,
-                key: storedReport.key,
-                fileName,
-                mimeType: "application/pdf",
-                sizeBytes: storedReport.sizeBytes,
-                generatedAt,
-              },
-            },
-            updatedAt: generatedAt,
-          },
-        ]);
-      }
-    }
+    await persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType });
     auditLog(req, "render_final_report_pdf", "success", {
       bytes: pdfBuffer.length,
       fileName,
@@ -3419,6 +3556,137 @@ app.post("/api/orders/render-report-pdf", async (req, res) => {
     const reason = String(error?.message || "").trim();
     return res.status(500).json({
       error: reason ? `Unable to generate final report PDF. ${reason}` : "Unable to generate final report PDF.",
+    });
+  }
+});
+
+app.post("/api/orders/publish-final-report", async (req, res) => {
+  if (!hasReportPdfAccess(req)) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+
+  const orderId = String(req.body?.orderId || "").trim();
+  const html = String(req.body?.html || "");
+  const fileName = sanitizeReportPdfFileName(req.body?.fileName || `Order_${orderId || Date.now()}_Final_Report.pdf`);
+  if (!orderId) {
+    return res.status(400).json({ error: "Order ID is required." });
+  }
+  if (!html.trim()) {
+    return res.status(400).json({ error: "Final report HTML content is required." });
+  }
+  if (html.length > 4 * 1024 * 1024) {
+    return res.status(413).json({ error: "Final report HTML content is too large." });
+  }
+
+  try {
+    const existingOrder = portalStore.getOrderById(orderId);
+    if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    const provider = resolveProviderForOrderPublish(existingOrder);
+    if (!provider) {
+      return res.status(400).json({ error: "Unable to find a matching provider with publish settings for this order." });
+    }
+
+    const providerName = String(
+      provider?.validator_name || provider?.provider_name || provider?.display_name || provider?.provider_information?.providerName || existingOrder.provider || ""
+    ).trim();
+    const targets = getProviderPublishTargets(provider);
+    const email = {
+      enabled: targets.sendEmail,
+      recipients: targets.emailRecipients,
+      mode: publishEmailMode,
+      status: !targets.sendEmail
+        ? "disabled"
+        : !targets.emailRecipients.length
+        ? "missing_recipient"
+        : publishEmailMode === "disabled"
+        ? "not_configured"
+        : publishEmailMode === "log"
+        ? "logged"
+        : "simulated",
+    };
+    const fax = {
+      enabled: targets.sendFax,
+      recipient: targets.faxRecipient,
+      mode: publishFaxMode,
+      status: !targets.sendFax
+        ? "disabled"
+        : !targets.faxRecipient
+        ? "missing_recipient"
+        : publishFaxMode === "disabled"
+        ? "not_configured"
+        : publishFaxMode === "log"
+        ? "logged"
+        : "simulated",
+    };
+
+    const successfulChannels = [email.status, fax.status].filter((status) => status === "logged" || status === "simulated");
+    if (!successfulChannels.length) {
+      const reasons = [];
+      if (email.enabled && !email.recipients.length) reasons.push("email recipient is missing");
+      if (fax.enabled && !fax.recipient) reasons.push("fax number is missing");
+      if (email.enabled && email.recipients.length && email.status === "not_configured") reasons.push("email delivery is not configured");
+      if (fax.enabled && fax.recipient && fax.status === "not_configured") reasons.push("fax delivery is not configured");
+      if (!email.enabled && !fax.enabled) reasons.push("provider publish settings do not enable email or fax");
+      return res.status(400).json({
+        error: `Unable to publish final report: ${reasons.filter(Boolean).join("; ")}.`,
+        email,
+        fax,
+      });
+    }
+
+    const pdfBuffer = await renderReportPdfFromHtml(html);
+    await persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType: "final" });
+
+    const publishedAt = new Date().toISOString();
+    const savedOrder = portalStore.upsertOrders([
+      {
+        ...existingOrder,
+        publishedReports: {
+          ...(existingOrder.publishedReports || {}),
+          final: {
+            publishedAt,
+            providerName,
+            email: {
+              status: email.status,
+              recipients: email.recipients,
+              mode: email.mode,
+            },
+            fax: {
+              status: fax.status,
+              recipient: fax.recipient,
+              mode: fax.mode,
+            },
+            fileName,
+          },
+        },
+        updatedAt: publishedAt,
+      },
+    ])[0];
+
+    auditLog(req, "publish_final_report", "success", {
+      orderId,
+      providerName,
+      emailStatus: email.status,
+      faxStatus: fax.status,
+      fileName,
+    });
+
+    return res.json({
+      message: `Publish completed for Order #${orderId} to ${providerName || "provider"}.`,
+      email,
+      fax,
+      order: savedOrder,
+    });
+  } catch (error) {
+    auditLog(req, "publish_final_report", "failed", {
+      orderId,
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({
+      error: error?.message || "Unable to publish final report.",
     });
   }
 });
@@ -3566,6 +3834,7 @@ app.post("/api/requisitions/extract-scan", async (req, res) => {
 });
 
 app.use("/assets", express.static(path.join(__dirname, "assets")));
+app.use("/vendor/ag-grid", express.static(path.join(__dirname, "node_modules", "ag-grid-community")));
 
 app.get("/data/us-zips.json", (_req, res) => {
   return res.sendFile(zipCodesPath);

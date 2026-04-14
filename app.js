@@ -140,6 +140,24 @@ let facilityTab = "accounts";
 let facilityAccountsQuery = "";
 let facilityAccountsDisabledOnly = false;
 let facilityProvidersQuery = "";
+let facilityAccountFilters = {
+  name: "",
+  contact: "",
+  accountCode: "",
+  city: "",
+  email: "",
+};
+let facilityProviderFilters = {
+  name: "",
+  contact: "",
+  specialty: "",
+  state: "",
+  email: "",
+};
+let facilitySearchExpanded = {
+  accounts: false,
+  providers: false,
+};
 let facilityModalSection = "basic";
 let facilityProviderModalSection = "provider-info";
 let currentSearchInput = null;
@@ -1762,6 +1780,67 @@ function buildMonthlyOrderTrend(orders, monthCount = 6) {
   return buckets;
 }
 
+function buildDashboardTrendChartSvg(monthlyTrend) {
+  const chartWidth = 920;
+  const chartHeight = 250;
+  const topPad = 22;
+  const rightPad = 18;
+  const bottomPad = 42;
+  const leftPad = 18;
+  const plotHeight = 160;
+  const plotTop = topPad + 16;
+  const baselineY = plotTop + plotHeight;
+  const slotWidth = (chartWidth - leftPad - rightPad) / Math.max(1, monthlyTrend.length);
+  const barWidth = Math.min(54, slotWidth * 0.42);
+  const maxCount = Math.max(1, ...monthlyTrend.map((item) => Number(item.count) || 0));
+
+  const gridLines = [0.25, 0.5, 0.75, 1]
+    .map((ratio) => {
+      const y = Math.round(baselineY - (plotHeight * ratio));
+      return `<line x1="${leftPad}" y1="${y}" x2="${chartWidth - rightPad}" y2="${y}" stroke="#dfe9f4" stroke-width="1" />`;
+    })
+    .join("");
+
+  const bars = monthlyTrend
+    .map((bucket, index) => {
+      const count = Number(bucket.count) || 0;
+      const centerX = leftPad + (slotWidth * index) + (slotWidth / 2);
+      const x = Math.round(centerX - (barWidth / 2));
+      const valueY = topPad + 10;
+      const monthY = chartHeight - 10;
+      if (!count) {
+        return `
+          <text x="${Math.round(centerX)}" y="${valueY}" text-anchor="middle" font-size="18" font-weight="700" fill="#42617f">${count}</text>
+          <line x1="${x}" y1="${baselineY}" x2="${Math.round(x + barWidth)}" y2="${baselineY}" stroke="#a9c2de" stroke-width="6" stroke-linecap="round" />
+          <text x="${Math.round(centerX)}" y="${monthY}" text-anchor="middle" font-size="18" font-weight="700" fill="#5b6d81">${escapeHtml(bucket.label)}</text>
+        `;
+      }
+
+      const barHeight = Math.max(16, Math.round((count / maxCount) * plotHeight));
+      const y = baselineY - barHeight;
+      return `
+        <text x="${Math.round(centerX)}" y="${valueY}" text-anchor="middle" font-size="18" font-weight="700" fill="#42617f">${count}</text>
+        <rect x="${x}" y="${y}" width="${Math.round(barWidth)}" height="${barHeight}" rx="12" ry="12" fill="url(#dashboardTrendGradient)" />
+        <text x="${Math.round(centerX)}" y="${monthY}" text-anchor="middle" font-size="18" font-weight="700" fill="#5b6d81">${escapeHtml(bucket.label)}</text>
+      `;
+    })
+    .join("");
+
+  return `
+    <svg class="dashboard-trend-svg" viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" aria-label="Order progression bar chart">
+      <defs>
+        <linearGradient id="dashboardTrendGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#3d8be0"></stop>
+          <stop offset="100%" stop-color="#2a64ab"></stop>
+        </linearGradient>
+      </defs>
+      ${gridLines}
+      <line x1="${leftPad}" y1="${baselineY}" x2="${chartWidth - rightPad}" y2="${baselineY}" stroke="#cfddeb" stroke-width="1.5" />
+      ${bars}
+    </svg>
+  `;
+}
+
 function renderDashboard() {
   const orders = readOrders();
   const statusCounts = {
@@ -1866,20 +1945,7 @@ function renderDashboard() {
             <span>${formatDashboardNumber(orders.length)} total orders</span>
           </div>
           <div class="dashboard-trend-chart">
-            ${monthlyTrend
-              .map((bucket) => {
-                const ratio = bucket.count / trendMax;
-                const height = bucket.count ? Math.max(12, Math.round(ratio * 100)) : 6;
-                return `
-                  <div class="trend-column" title="${bucket.fullLabel}: ${bucket.count}">
-                    <div class="trend-bar" style="height: ${height}%">
-                      <span>${bucket.count}</span>
-                    </div>
-                    <label>${bucket.label}</label>
-                  </div>
-                `;
-              })
-              .join("")}
+            ${buildDashboardTrendChartSvg(monthlyTrend)}
           </div>
         </article>
 
@@ -7123,6 +7189,7 @@ function renderOrderHistory() {
   const generatingReports = new Set();
   const generatingSummaryReports = new Set();
   const generatingFinalReports = new Set();
+  const publishingFinalReports = new Set();
   const validationDraftReports = new Map();
   const validationUndoState = new Map();
   const headerMap = {
@@ -7142,6 +7209,7 @@ function renderOrderHistory() {
     generateReport: "Generate Report",
     generateSummaryReport: "Summary Report",
     finalReport: "Final Report",
+    publishReport: "Publish",
   };
   const filters = {
     accessionNo: "",
@@ -9418,6 +9486,61 @@ function renderOrderHistory() {
     }
   }
 
+  async function publishFinalReport(orderId) {
+    if (!facilityDataLoaded) {
+      try {
+        await loadFacilityData();
+      } catch {
+        // Publishing can still validate against whatever order data is available.
+      }
+    }
+    const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
+    if (!order) {
+      throw new Error("Order not found.");
+    }
+    if (!order?.processedResult?.report) {
+      throw new Error("No processed report found for this order.");
+    }
+
+    const assetSources = await getReportTemplateAssetSources();
+    const html = buildDetectedSummaryReportHtml(order, assetSources, { variant: "final" });
+    if (!csrfToken) await fetchCsrfToken();
+
+    const response = await requestJson("/api/orders/publish-final-report", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({
+        orderId: String(orderId),
+        html,
+        fileName: `Order_${orderId}_Final_Report.pdf`,
+      }),
+    });
+
+    if (response?.order) {
+      const orders = readOrders();
+      const index = orders.findIndex((row) => Number(row.orderId) === Number(orderId));
+      if (index >= 0) {
+        orders[index] = response.order;
+        writeOrders(orders);
+      }
+    }
+
+    const channelLines = [];
+    if (response?.email) {
+      const recipients = Array.isArray(response.email.recipients) ? response.email.recipients.join(", ") : "";
+      channelLines.push(`Email: ${response.email.status}${recipients ? ` (${recipients})` : ""}`);
+    }
+    if (response?.fax) {
+      channelLines.push(`Fax: ${response.fax.status}${response.fax.recipient ? ` (${response.fax.recipient})` : ""}`);
+    }
+    const summary = [response?.message, ...channelLines].filter(Boolean).join("\n");
+    alert(summary || "Publish completed.");
+    return response;
+  }
+
   async function openGenerateSummaryReport(orderId) {
     if (!facilityDataLoaded) {
       try {
@@ -10078,6 +10201,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const abrSummaryRows = buildSummaryCards(abrDetectedEntries, "ABR Gene");
     const pathogenDetailRowsMarkup = buildDetailedRows(pathogenDetailedEntries, "Pathogen", "pathogen");
     const abrDetailRowsMarkup = buildDetailedRows(abrDetailedEntries, "ABR Gene", "abr");
+    const manualEditNote = getValidationManualEditNote(report);
 
     return `
       <div class="history-preview-dialog">
@@ -10121,6 +10245,27 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                 ${abrDetailRowsMarkup}
               </tbody>
             </table>
+            ${
+              editable
+                ? `
+                  <section class="validation-note-card">
+                    <label class="validation-note-label" for="validate-manual-note-${escapeHtml(order.orderId || "")}">
+                      <span>Manual Edit Note</span>
+                      <textarea
+                        id="validate-manual-note-${escapeHtml(order.orderId || "")}"
+                        class="validation-note-input"
+                        data-validate-note
+                        rows="3"
+                        placeholder="Add a note for any manual ABR edit before saving."
+                      >${escapeHtml(manualEditNote)}</textarea>
+                    </label>
+                    <p class="validation-note-hint" data-validate-note-hint>
+                      Add a note whenever you manually edit ABR results.
+                    </p>
+                  </section>
+                `
+                : ""
+            }
             ${
               editable && undoState
                 ? `
@@ -10169,6 +10314,30 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     };
   }
 
+  function getValidationManualEditNote(report) {
+    return String(report?.metadata?.manualEditNote || "").trim();
+  }
+
+  function serializeValidationReportForComparison(report) {
+    if (!report || typeof report !== "object") return "";
+    const metadata = report.metadata && typeof report.metadata === "object"
+      ? Object.fromEntries(
+          Object.entries(report.metadata).filter(([key]) => key !== "manualEditNote")
+        )
+      : {};
+    return JSON.stringify({
+      panelName: String(report.panelName || ""),
+      summary: report.summary && typeof report.summary === "object" ? report.summary : {},
+      metadata,
+      detected: Array.isArray(report.detected) ? report.detected : [],
+      detailed: Array.isArray(report.detailed) ? report.detailed : [],
+    });
+  }
+
+  function reportHasManualValidationEdits(currentReport, originalReport) {
+    return serializeValidationReportForComparison(currentReport) !== serializeValidationReportForComparison(originalReport);
+  }
+
   function collectValidationModalReport(baseReport) {
     const nextReport = cloneValidationReport(baseReport);
     if (!nextReport) return null;
@@ -10183,7 +10352,43 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       rows[index][field] = value;
       if (field === "ctValue") rows[index].ctRaw = value;
     });
+    const noteInput = previewModalNode.querySelector("[data-validate-note]");
+    const noteValue = String(noteInput?.value || "").trim();
+    nextReport.metadata = nextReport.metadata && typeof nextReport.metadata === "object"
+      ? { ...nextReport.metadata }
+      : {};
+    nextReport.metadata.manualEditNote = noteValue;
     return nextReport;
+  }
+
+  function getValidationSaveState(orderId) {
+    const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
+    const originalReport = order?.processedResult?.report;
+    const draftBaseReport = validationDraftReports.get(String(orderId)) || originalReport;
+    const currentReport = draftBaseReport ? collectValidationModalReport(draftBaseReport) : null;
+    const hasManualEdits = Boolean(currentReport && originalReport && reportHasManualValidationEdits(currentReport, originalReport));
+    const noteValue = getValidationManualEditNote(currentReport);
+    return {
+      currentReport,
+      hasManualEdits,
+      noteValue,
+      noteRequired: hasManualEdits && !noteValue,
+    };
+  }
+
+  function updateValidationSaveState(orderId) {
+    const saveBtn = previewModalNode?.querySelector("[data-save-validate]");
+    const noteHint = previewModalNode?.querySelector("[data-validate-note-hint]");
+    if (!saveBtn) return;
+    const saveState = getValidationSaveState(orderId);
+    saveBtn.disabled = saveState.noteRequired;
+    saveBtn.setAttribute("aria-disabled", saveState.noteRequired ? "true" : "false");
+    if (noteHint) {
+      noteHint.textContent = saveState.noteRequired
+        ? "Add a note before saving manual edits."
+        : "Add a note whenever you manually edit ABR results.";
+      noteHint.classList.toggle("validation-note-hint-required", saveState.noteRequired);
+    }
   }
 
   function getCurrentValidationReport(orderId) {
@@ -10263,6 +10468,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     previewModalNode.setAttribute("data-validate-order-id", orderKey);
     previewModalNode.innerHTML = buildReportMarkup(orderForMarkup, { editable: true });
     previewModalNode.classList.remove("hidden");
+    updateValidationSaveState(orderId);
     if (options.scrollState) {
       requestAnimationFrame(() => {
         restoreValidationModalScrollState(options.scrollState, options);
@@ -10409,7 +10615,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         <thead>
           <tr>
             ${Object.entries(headerMap)
-              .map(([key, title]) => `<th${key === "generateReport" || key === "generateSummaryReport" || key === "finalReport" ? ' class="generate-report-col"' : ""}>${title}</th>`)
+              .map(([key, title]) => `<th${key === "generateReport" || key === "generateSummaryReport" || key === "finalReport" || key === "publishReport" ? ' class="generate-report-col"' : ""}>${title}</th>`)
               .join("")}
           </tr>
           <tr>
@@ -10429,6 +10635,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
             <th class="generate-report-col"></th>
             <th class="generate-report-col"></th>
             <th class="generate-report-col"></th>
+            <th class="generate-report-col"></th>
           </tr>
         </thead>
         <tbody>
@@ -10444,6 +10651,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               const isGenerating = generatingReports.has(Number(row.orderId));
               const isGeneratingSummary = generatingSummaryReports.has(Number(row.orderId));
               const isGeneratingFinal = generatingFinalReports.has(Number(row.orderId));
+              const isPublishingFinal = publishingFinalReports.has(Number(row.orderId));
               return `
                 <tr>
                   <td>${row.orderId}</td>
@@ -10500,6 +10708,13 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                     ${
                       row.processedResult?.report
                         ? `<button type="button" class="table-action-btn final-report-btn" data-generate-final-report-order="${row.orderId}" ${isGeneratingFinal ? "disabled" : ""}>${isGeneratingFinal ? "Generating..." : "Final Report"}</button>`
+                        : `<span class="subtle">-</span>`
+                    }
+                  </td>
+                  <td class="report-action-cell">
+                    ${
+                      row.processedResult?.report
+                        ? `<button type="button" class="table-action-btn publish-report-btn" data-publish-final-report-order="${row.orderId}" ${isPublishingFinal ? "disabled" : ""}>${isPublishingFinal ? "Publishing..." : "Publish"}</button>`
                         : `<span class="subtle">-</span>`
                     }
                   </td>
@@ -10606,6 +10821,25 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       return;
     }
 
+    const publishFinalReportBtn = event.target.closest("[data-publish-final-report-order]");
+    if (publishFinalReportBtn) {
+      const orderId = publishFinalReportBtn.getAttribute("data-publish-final-report-order");
+      if (!orderId) return;
+      const numericId = Number(orderId);
+      if (publishingFinalReports.has(numericId)) return;
+      publishingFinalReports.add(numericId);
+      renderTable();
+      try {
+        await publishFinalReport(orderId);
+      } catch (error) {
+        alert(error?.message || "Unable to publish final report.");
+      } finally {
+        publishingFinalReports.delete(numericId);
+        renderTable();
+      }
+      return;
+    }
+
     const validateBtn = event.target.closest("[data-validate-order]");
     if (validateBtn) {
       const orderId = validateBtn.getAttribute("data-validate-order");
@@ -10707,6 +10941,13 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (saveBtn) {
       const orderId = saveBtn.getAttribute("data-save-validate");
       if (!orderId) return;
+      const saveState = getValidationSaveState(orderId);
+      if (saveState.noteRequired) {
+        updateValidationSaveState(orderId);
+        previewModalNode.querySelector("[data-validate-note]")?.focus();
+        alert("Please add a manual edit note before saving validation changes.");
+        return;
+      }
       const updated = await saveValidation(orderId);
       if (!updated) {
         alert("Unable to save validation values.");
@@ -10719,6 +10960,13 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (event.target.closest("[data-close-preview]") || event.target === previewModalNode) {
       closePreview();
     }
+  });
+
+  previewModalNode?.addEventListener("input", (event) => {
+    if (!event.target.closest("[data-validate-field]") && !event.target.closest("[data-validate-note]")) return;
+    const orderId = previewModalNode.getAttribute("data-validate-order-id");
+    if (!orderId) return;
+    updateValidationSaveState(orderId);
   });
 
   renderTable();
@@ -10791,6 +11039,22 @@ function matchesAccountQuery(row, query) {
     .map((value) => String(value || "").toLowerCase())
     .join(" ");
   return haystack.includes(query);
+}
+
+function includesFilterValue(value, query) {
+  if (!query) return true;
+  return String(value || "").toLowerCase().includes(String(query || "").trim().toLowerCase());
+}
+
+function matchesAccountFilters(row, filters) {
+  const active = filters || {};
+  return (
+    includesFilterValue(row?.name, active.name) &&
+    includesFilterValue(row?.contact, active.contact) &&
+    includesFilterValue(row?.account_code || row?.id, active.accountCode) &&
+    includesFilterValue(row?.city, active.city) &&
+    includesFilterValue(row?.email, active.email)
+  );
 }
 
 function toCsvCell(value) {
@@ -10917,6 +11181,17 @@ function matchesProviderQuery(row, query) {
   return haystack.includes(query);
 }
 
+function matchesProviderFilters(row, filters) {
+  const active = filters || {};
+  return (
+    includesFilterValue(row?.validator_name || row?.provider_name || row?.display_name, active.name) &&
+    includesFilterValue(row?.contact_no, active.contact) &&
+    includesFilterValue(row?.speciality, active.specialty) &&
+    includesFilterValue(row?.state, active.state) &&
+    includesFilterValue(row?.email_id, active.email)
+  );
+}
+
 function isTruthyLike(value) {
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;
@@ -10966,6 +11241,186 @@ function resolveProviderIndexByIdentifier(identifier) {
     return Number.isInteger(index) && index >= 0 && index < facilityData.providers.length ? index : -1;
   }
   return facilityData.providers.findIndex((row) => String(row?.provider_id || "").trim() === raw);
+}
+
+function formatFacilityGridValue(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  return String(value);
+}
+
+function getFacilityGridColumnWidth(columnKey) {
+  const widthMap = {
+    srno: 92,
+    sr_no: 92,
+    name: 220,
+    validator_name: 220,
+    provider_name: 220,
+    display_name: 220,
+    id: 120,
+    provider_id: 120,
+    contact: 150,
+    contact_no: 150,
+    account_code: 140,
+    account: 140,
+    email: 220,
+    email_id: 220,
+    credit_limit: 130,
+    current_due: 130,
+    credit_days_remaining: 170,
+    city: 160,
+    state: 110,
+    status: 120,
+  };
+  return widthMap[columnKey] || 150;
+}
+
+class FacilityGridHeader {
+  init(params) {
+    this.params = params;
+    this.eGui = document.createElement("div");
+    this.eGui.className = "th-wrap facility-grid-header";
+
+    if (!params.enableSorting && !params.enableMenu) {
+      this.eGui.innerHTML = `<span class="facility-grid-header-label">${escapeHtml(params.displayName || "")}</span>`;
+      return;
+    }
+
+    this.sortButton = document.createElement("button");
+    this.sortButton.type = "button";
+    this.sortButton.className = "sort-btn facility-grid-sort-btn";
+    this.sortButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      if (this.params.enableSorting) {
+        this.params.progressSort(event.shiftKey);
+      }
+    });
+
+    if (params.enableMenu || params.enableFilterButton) {
+      this.menuButton = document.createElement("button");
+      this.menuButton.type = "button";
+      this.menuButton.className = "filter-toggle facility-grid-menu-btn";
+      this.menuButton.setAttribute("aria-label", `Open menu for ${params.displayName}`);
+      this.menuButton.textContent = "▼";
+      this.menuButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (this.params.enableMenu) {
+          this.params.showColumnMenu(this.menuButton);
+        } else if (this.params.enableFilterButton) {
+          this.params.showFilter(this.menuButton);
+        }
+      });
+      this.eGui.append(this.sortButton, this.menuButton);
+    } else {
+      this.menuButton = null;
+      this.eGui.append(this.sortButton);
+    }
+    this.updateState = this.updateState.bind(this);
+    this.params.api.addEventListener("sortChanged", this.updateState);
+    this.params.api.addEventListener("filterChanged", this.updateState);
+    this.updateState();
+  }
+
+  updateState() {
+    if (!this.sortButton) return;
+    const sort = this.params.column.getSort();
+    const sortIcon = sort === "asc" ? "↑" : sort === "desc" ? "↓" : "↕";
+    this.sortButton.textContent = `${this.params.displayName} ${sortIcon}`;
+    if (this.menuButton) {
+      this.menuButton.classList.toggle("active", Boolean(this.params.column.isFilterActive()));
+    }
+  }
+
+  getGui() {
+    return this.eGui;
+  }
+
+  refresh(params) {
+    this.params = params;
+    this.updateState();
+    return true;
+  }
+
+  destroy() {
+    if (this.params?.api && this.updateState) {
+      this.params.api.removeEventListener("sortChanged", this.updateState);
+      this.params.api.removeEventListener("filterChanged", this.updateState);
+    }
+  }
+}
+
+function buildFacilityGridColumnDefs(columns, entity) {
+  return [
+    ...columns.map((columnKey, index) => ({
+      field: columnKey,
+      headerName: formatFacilityColumnLabel(columnKey),
+      headerComponent: FacilityGridHeader,
+      minWidth: getFacilityGridColumnWidth(columnKey),
+      filter: "agTextColumnFilter",
+      wrapText: true,
+      autoHeight: true,
+      sort: index === 0 ? "asc" : null,
+      unSortIcon: true,
+      valueFormatter: (params) => formatFacilityGridValue(params.value),
+      tooltipValueGetter: (params) => formatFacilityGridValue(params.value),
+    })),
+    {
+      headerName: "Actions",
+      field: "__actions",
+      colId: "__actions",
+      pinned: "right",
+      width: 170,
+      minWidth: 170,
+      maxWidth: 170,
+      headerComponent: FacilityGridHeader,
+      sortable: false,
+      filter: false,
+      suppressMovable: true,
+      suppressNavigable: true,
+      lockPinned: true,
+      cellClass: "facility-grid-actions-cell",
+      cellRenderer: (params) => `
+        <div class="facility-row-actions">
+          <button type="button" class="table-action-btn" data-facility-row-action="edit" data-facility-entity="${escapeHtml(entity)}" data-facility-id="${escapeHtml(params.data.identifier || "")}">Edit</button>
+          <button type="button" class="table-action-btn" data-facility-row-action="login-status" data-facility-entity="${escapeHtml(entity)}" data-facility-id="${escapeHtml(params.data.identifier || "")}">Login</button>
+        </div>
+      `,
+    },
+  ];
+}
+
+function mountFacilityGrid(container, rows, columns, entity) {
+  if (!container || !window.agGrid || typeof window.agGrid.createGrid !== "function") {
+    return null;
+  }
+
+  const rowData = rows.map((entry) => ({
+    ...entry.row,
+    identifier: entry.identifier,
+  }));
+
+  return window.agGrid.createGrid(container, {
+    rowData,
+    columnDefs: buildFacilityGridColumnDefs(columns, entity),
+    defaultColDef: {
+      sortable: true,
+      resizable: true,
+      filter: true,
+      floatingFilter: false,
+      suppressHeaderMenuButton: false,
+      suppressHeaderFilterButton: true,
+    },
+    pagination: true,
+    paginationPageSize: 25,
+    paginationPageSizeSelector: [10, 25, 50, 100],
+    animateRows: true,
+    domLayout: "autoHeight",
+    tooltipShowDelay: 250,
+    suppressRowClickSelection: true,
+    suppressCellFocus: true,
+    headerHeight: 62,
+    rowHeight: 66,
+  });
 }
 
 function parseProviderDisplayName(rawName) {
@@ -12007,10 +12462,8 @@ function renderFacility() {
 
   const accounts = facilityData.accounts;
   const providers = facilityData.providers;
-  const accountQuery = facilityAccountsQuery.trim().toLowerCase();
-  const providerQuery = facilityProvidersQuery.trim().toLowerCase();
   const filteredAccountEntries = accounts.reduce((list, row, index) => {
-    if (!matchesAccountQuery(row, accountQuery)) return list;
+    if (!matchesAccountFilters(row, facilityAccountFilters)) return list;
     if (facilityAccountsDisabledOnly && !isAccountDisabled(row)) return list;
     list.push({
       row,
@@ -12020,7 +12473,7 @@ function renderFacility() {
     return list;
   }, []);
   const filteredProviderEntries = providers.reduce((list, row, index) => {
-    if (!matchesProviderQuery(row, providerQuery)) return list;
+    if (!matchesProviderFilters(row, facilityProviderFilters)) return list;
     list.push({
       row,
       index,
@@ -12039,65 +12492,74 @@ function renderFacility() {
     facilityTab === "accounts"
       ? `Rows: ${activeRows.length} of ${accounts.length}`
       : `Rows: ${activeRows.length} of ${providers.length}`;
-
-  const accountToolbar =
-    facilityTab === "accounts"
-      ? `
-        <div class="facility-accounts-toolbar">
-          <div class="facility-account-search">
-            <input id="facility-account-search" type="text" placeholder="Search Account Name / Contact Number" value="${escapeHtml(facilityAccountsQuery)}">
-            <button type="button" class="facility-account-search-icon" aria-label="Search accounts">⌕</button>
-          </div>
-          <div class="facility-account-actions">
-            <button type="button" class="facility-action-secondary ${facilityAccountsDisabledOnly ? "active" : ""}" data-facility-action="toggle-disabled">Disabled Accounts</button>
-            <button type="button" class="facility-action-primary" data-facility-action="export-accounts">Export</button>
-            <button type="button" class="facility-action-primary" data-facility-action="add-account">Add Account</button>
-          </div>
+  const isAccountTab = facilityTab === "accounts";
+  const activeFilters = isAccountTab ? facilityAccountFilters : facilityProviderFilters;
+  const isExpanded = Boolean(facilitySearchExpanded[facilityTab]);
+  const searchTitle = isAccountTab ? "Account Search" : "Provider Search";
+  const searchCopy = isAccountTab
+    ? "Find accounts by name, contact, account code, and city."
+    : "Find providers by name, contact, specialty, and state.";
+  const primaryFields = isAccountTab
+    ? `
+      <label>
+        <span>Account Name</span>
+        <div class="input-with-icon">
+          <input name="name" placeholder="Enter Account Name" value="${escapeHtml(activeFilters.name)}">
+          <span>⌕</span>
         </div>
-      `
-      : "";
-
-  const providerToolbar =
-    facilityTab === "providers"
-      ? `
-        <div class="facility-accounts-toolbar">
-          <div class="facility-account-search">
-            <input id="facility-provider-search" type="text" placeholder="Search Provider" value="${escapeHtml(facilityProvidersQuery)}">
-            <button type="button" class="facility-account-search-icon" aria-label="Search providers">⌕</button>
-          </div>
-          <div class="facility-account-actions">
-            <button type="button" class="facility-action-tertiary" data-facility-action="bulk-upload-providers">Bulk Upload</button>
-            <button type="button" class="facility-action-primary" data-facility-action="export-providers">Export</button>
-            <button type="button" class="facility-action-primary" data-facility-action="add-provider">Add Provider</button>
-          </div>
+      </label>
+      <label>
+        <span>Account Contact</span>
+        <div class="input-with-icon">
+          <input name="contact" placeholder="Enter Contact" value="${escapeHtml(activeFilters.contact)}">
+          <span>⌕</span>
         </div>
-      `
-      : "";
-
-  const tableHead = `
-    <tr>
-      ${tableColumns.map((col) => `<th>${escapeHtml(formatFacilityColumnLabel(col))}</th>`).join("")}
-      <th>Actions</th>
-    </tr>
-  `;
-
-  const tableBody = activeEntries.length
-    ? activeEntries
-        .map((entry) => {
-          const row = entry.row;
-          const cells = tableColumns.map((col) => `<td>${escapeHtml(row[col] ?? "-")}</td>`).join("");
-          return `
-            <tr>
-              ${cells}
-              <td class="facility-row-actions">
-                <button type="button" class="table-action-btn" data-facility-row-action="edit" data-facility-entity="${facilityTab}" data-facility-id="${escapeHtml(entry.identifier)}">Edit</button>
-                <button type="button" class="table-action-btn" data-facility-row-action="login-status" data-facility-entity="${facilityTab}" data-facility-id="${escapeHtml(entry.identifier)}">Login</button>
-              </td>
-            </tr>
-          `;
-        })
-        .join("")
-    : `<tr><td colspan="${Math.max(tableColumns.length + 1, 1)}" class="req-empty-cell">No ${activeLabel} loaded yet.</td></tr>`;
+      </label>
+      <label>
+        <span>Account Code</span>
+        <input name="accountCode" placeholder="Enter Account Code" value="${escapeHtml(activeFilters.accountCode)}">
+      </label>
+    `
+    : `
+      <label>
+        <span>Provider Name</span>
+        <div class="input-with-icon">
+          <input name="name" placeholder="Enter Provider Name" value="${escapeHtml(activeFilters.name)}">
+          <span>⌕</span>
+        </div>
+      </label>
+      <label>
+        <span>Provider Contact</span>
+        <div class="input-with-icon">
+          <input name="contact" placeholder="Enter Contact" value="${escapeHtml(activeFilters.contact)}">
+          <span>⌕</span>
+        </div>
+      </label>
+      <label>
+        <span>Specialty</span>
+        <input name="specialty" placeholder="Enter Specialty" value="${escapeHtml(activeFilters.specialty || "")}">
+      </label>
+    `;
+  const secondaryFields = isAccountTab
+    ? `
+      <label><span>City</span><input name="city" placeholder="Enter City" value="${escapeHtml(activeFilters.city || "")}"></label>
+      <label><span>Email</span><input name="email" placeholder="Enter Email" value="${escapeHtml(activeFilters.email || "")}"></label>
+    `
+    : `
+      <label><span>State</span><input name="state" placeholder="Enter State" value="${escapeHtml(activeFilters.state || "")}"></label>
+      <label><span>Email</span><input name="email" placeholder="Enter Email" value="${escapeHtml(activeFilters.email || "")}"></label>
+    `;
+  const facilityActions = isAccountTab
+    ? `
+      <button type="button" class="facility-action-secondary ${facilityAccountsDisabledOnly ? "active" : ""}" data-facility-action="toggle-disabled">Disabled Accounts</button>
+      <button type="button" class="facility-action-primary" data-facility-action="export-accounts">Export</button>
+      <button type="button" class="facility-action-primary" data-facility-action="add-account">Add Account</button>
+    `
+    : `
+      <button type="button" class="facility-action-tertiary" data-facility-action="bulk-upload-providers">Bulk Upload</button>
+      <button type="button" class="facility-action-primary" data-facility-action="export-providers">Export</button>
+      <button type="button" class="facility-action-primary" data-facility-action="add-provider">Add Provider</button>
+    `;
 
   panelBody.innerHTML = `
     <section class="card">
@@ -12107,17 +12569,44 @@ function renderFacility() {
           <button type="button" class="history-tab ${facilityTab === "providers" ? "active" : ""}" data-facility-tab="providers">Providers</button>
         </div>
       </div>
-      ${accountToolbar}
-      ${providerToolbar}
+      <section class="patient-search-card facility-search-shell">
+        <div class="facility-search-header">
+          <h3>${searchTitle}</h3>
+          <p>${searchCopy}</p>
+        </div>
+        <form id="facility-search-form">
+          <div class="patient-search-grid facility-form-grid">
+            ${primaryFields}
+            <div class="patient-search-actions facility-search-actions">
+              <button type="submit" id="facility-search-btn" class="btn-primary">Search</button>
+              <button type="button" id="facility-search-more" class="btn-link">${isExpanded ? "Show Less ↑" : "Show More ↓"}</button>
+              <button type="button" id="facility-search-clear" class="btn-link facility-clear-link">Clear</button>
+            </div>
+          </div>
+          <div id="facility-search-more-panel" class="patient-search-more ${isExpanded ? "" : "hidden"}">
+            <div class="patient-search-grid two-up">
+              ${secondaryFields}
+            </div>
+          </div>
+        </form>
+        <div class="facility-account-actions facility-action-row">
+          ${facilityActions}
+        </div>
+      </section>
       <div class="order-history-table-wrap facility-table-wrap">
         <div class="order-history-meta">${rowCountLabel}</div>
-        <table class="order-history-table facility-table">
-          <thead>${tableHead}</thead>
-          <tbody>${tableBody}</tbody>
-        </table>
+        ${
+          activeEntries.length
+            ? `<div id="facility-grid" class="ag-theme-quartz facility-grid"></div>`
+            : `<div class="facility-grid-empty req-empty-cell">No ${activeLabel} loaded yet.</div>`
+        }
       </div>
     </section>
   `;
+
+  if (activeEntries.length) {
+    mountFacilityGrid(panelBody.querySelector("#facility-grid"), activeEntries, tableColumns, facilityTab);
+  }
 
   panelBody.querySelector(".order-history-tabs")?.addEventListener("click", (event) => {
     const tabBtn = event.target.closest("[data-facility-tab]");
@@ -12128,17 +12617,44 @@ function renderFacility() {
     renderFacility();
   });
 
-  panelBody.querySelector("#facility-account-search")?.addEventListener("input", (event) => {
-    facilityAccountsQuery = event.target.value || "";
+  panelBody.querySelector("#facility-search-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    if (facilityTab === "accounts") {
+      facilityAccountFilters = {
+        name: String(formData.get("name") || "").trim(),
+        contact: String(formData.get("contact") || "").trim(),
+        accountCode: String(formData.get("accountCode") || "").trim(),
+        city: String(formData.get("city") || "").trim(),
+        email: String(formData.get("email") || "").trim(),
+      };
+    } else {
+      facilityProviderFilters = {
+        name: String(formData.get("name") || "").trim(),
+        contact: String(formData.get("contact") || "").trim(),
+        specialty: String(formData.get("specialty") || "").trim(),
+        state: String(formData.get("state") || "").trim(),
+        email: String(formData.get("email") || "").trim(),
+      };
+    }
     renderFacility();
   });
 
-  panelBody.querySelector("#facility-provider-search")?.addEventListener("input", (event) => {
-    facilityProvidersQuery = event.target.value || "";
+  panelBody.querySelector("#facility-search-more")?.addEventListener("click", () => {
+    facilitySearchExpanded[facilityTab] = !facilitySearchExpanded[facilityTab];
     renderFacility();
   });
 
-  panelBody.querySelector(".facility-accounts-toolbar")?.addEventListener("click", (event) => {
+  panelBody.querySelector("#facility-search-clear")?.addEventListener("click", () => {
+    if (facilityTab === "accounts") {
+      facilityAccountFilters = { name: "", contact: "", accountCode: "", city: "", email: "" };
+    } else {
+      facilityProviderFilters = { name: "", contact: "", specialty: "", state: "", email: "" };
+    }
+    renderFacility();
+  });
+
+  panelBody.querySelector(".facility-action-row")?.addEventListener("click", (event) => {
     const actionButton = event.target.closest("[data-facility-action]");
     if (!actionButton) return;
     const action = actionButton.getAttribute("data-facility-action");
@@ -12175,7 +12691,7 @@ function renderFacility() {
     }
   });
 
-  panelBody.querySelector(".order-history-table")?.addEventListener("click", (event) => {
+  panelBody.querySelector(".facility-table-wrap")?.addEventListener("click", (event) => {
     const actionButton = event.target.closest("[data-facility-row-action]");
     if (!actionButton) return;
     const action = actionButton.getAttribute("data-facility-row-action");
