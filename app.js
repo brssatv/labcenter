@@ -2347,36 +2347,57 @@ function splitFacilityLinkValues(rawValue) {
     .filter(Boolean);
 }
 
+function getFacilityAccountDisplayValue(row) {
+  return String(
+    row?.name ||
+      row?.basic_information?.accountName ||
+      row?.facility_name ||
+      row?.facilityName ||
+      ""
+  ).trim();
+}
+
+function findFacilityAccountRecord(facilityName = "") {
+  const needle = normalizeFacilityLinkKey(facilityName);
+  if (!needle) return null;
+
+  return (
+    (Array.isArray(facilityData?.accounts) ? facilityData.accounts : []).find((row) => {
+      const candidates = [
+        row?.id,
+        row?.account_code,
+        row?.name,
+        row?.basic_information?.accountName,
+        row?.facility_name,
+        row?.facilityName,
+      ];
+      return candidates.some((item) => normalizeFacilityLinkKey(item) === needle);
+    }) || null
+  );
+}
+
 function getFacilitySelectionKeys(facilityName = "") {
   const selectedFacility = String(facilityName || "").trim();
   const keys = new Set();
   if (!selectedFacility) return keys;
 
+  const matchedAccount = findFacilityAccountRecord(selectedFacility);
+
+  if (!matchedAccount) return keys;
+
   keys.add(normalizeFacilityLinkKey(selectedFacility));
 
-  const matchedAccount = (Array.isArray(facilityData?.accounts) ? facilityData.accounts : []).find((row) => {
-    const candidates = [
-      row?.name,
-      row?.basic_information?.accountName,
-      row?.facility_name,
-      row?.facilityName,
-    ];
-    return candidates.some((item) => normalizeFacilityLinkKey(item) === normalizeFacilityLinkKey(selectedFacility));
-  });
-
-  if (matchedAccount) {
-    [
-      matchedAccount?.id,
-      matchedAccount?.account_code,
-      matchedAccount?.name,
-      matchedAccount?.basic_information?.accountName,
-      matchedAccount?.facility_name,
-      matchedAccount?.facilityName,
-    ]
-      .map((value) => normalizeFacilityLinkKey(value))
-      .filter(Boolean)
-      .forEach((value) => keys.add(value));
-  }
+  [
+    matchedAccount?.id,
+    matchedAccount?.account_code,
+    matchedAccount?.name,
+    matchedAccount?.basic_information?.accountName,
+    matchedAccount?.facility_name,
+    matchedAccount?.facilityName,
+  ]
+    .map((value) => normalizeFacilityLinkKey(value))
+    .filter(Boolean)
+    .forEach((value) => keys.add(value));
 
   return keys;
 }
@@ -2411,13 +2432,7 @@ function getFacilityAccountOptions() {
   const options = [];
   const accounts = Array.isArray(facilityData?.accounts) ? facilityData.accounts : [];
   accounts.forEach((row) => {
-    const candidate = String(
-      row?.name ||
-        row?.basic_information?.accountName ||
-        row?.facility_name ||
-        row?.facilityName ||
-        ""
-    ).trim();
+    const candidate = getFacilityAccountDisplayValue(row);
     if (!candidate) return;
     const key = candidate.toLowerCase();
     if (seen.has(key)) return;
@@ -2743,9 +2758,25 @@ function renderRegistration(prefillData = null) {
             </div>
             <div class="field-grid one-col">
               <label><span>Facility *</span>
-                <select name="facilityName" id="req-facility-name" required>
-                  ${buildFacilityAccountOptionMarkup(prefillData?.facilityName)}
-                </select>
+                <div id="req-facility-combobox" class="provider-combobox" role="combobox" aria-haspopup="listbox" aria-owns="req-facility-results" aria-expanded="false">
+                  <div class="search-input-row provider-input-row">
+                    <input
+                      name="facilityName"
+                      id="req-facility-name"
+                      type="text"
+                      value="${escapeHtml(prefillData?.facilityName || "")}"
+                      placeholder="Type facility name"
+                      autocomplete="off"
+                      spellcheck="false"
+                      aria-autocomplete="list"
+                      aria-controls="req-facility-results"
+                      aria-expanded="false"
+                      required
+                    >
+                    <button type="button" id="req-facility-toggle" class="search-icon-btn provider-toggle-btn" aria-label="Show matching facilities">⌕</button>
+                  </div>
+                  <div id="req-facility-results" class="provider-results hidden" role="listbox" aria-label="Matching facilities"></div>
+                </div>
               </label>
             </div>
             <div class="field-grid two-col">
@@ -3134,7 +3165,10 @@ function renderRegistration(prefillData = null) {
   const clearBtn = document.getElementById("registration-clear");
   const status = document.getElementById("registration-status");
   const registerAndOrderBtn = document.getElementById("register-and-order");
-  const facilityNameSelect = document.getElementById("req-facility-name");
+  const facilityComboboxNode = document.getElementById("req-facility-combobox");
+  const facilityNameInput = document.getElementById("req-facility-name");
+  const facilityToggleBtn = document.getElementById("req-facility-toggle");
+  const facilityResultsNode = document.getElementById("req-facility-results");
   const providerComboboxNode = document.getElementById("req-provider-combobox");
   const providerNameInput = document.getElementById("req-provider-name");
   const providerToggleBtn = document.getElementById("req-provider-toggle");
@@ -3181,6 +3215,8 @@ function renderRegistration(prefillData = null) {
   let activeScanReviewResolver = null;
   let scanUploadInFlight = false;
   let activeScanReviewFieldKeys = [];
+  let facilityMatchResults = [];
+  let activeFacilityMatchIndex = -1;
   let providerMatchResults = [];
   let activeProviderMatchIndex = -1;
 
@@ -3357,16 +3393,8 @@ function renderRegistration(prefillData = null) {
     });
     const nextFacility = String(normalizedValues.facilityName || "").trim();
     const nextProvider = String(normalizedValues.provider || "").trim();
-    if (facilityNameSelect) {
-      if (nextFacility && !Array.from(facilityNameSelect.options).some((opt) => opt.value === nextFacility)) {
-        facilityNameSelect.insertAdjacentHTML(
-          "beforeend",
-          `<option value="${escapeHtml(nextFacility)}">${escapeHtml(nextFacility)}</option>`
-        );
-      }
-      facilityNameSelect.value = nextFacility;
-    }
-    const matchedProvider = refreshProviderAutocomplete(nextFacility, nextProvider);
+    refreshFacilityAutocomplete(nextFacility);
+    const matchedProvider = refreshProviderAutocomplete(facilityNameInput?.value || nextFacility, nextProvider);
     if (providerNpiInput) {
       providerNpiInput.value = String(matchedProvider?.npi || normalizedValues.providerNpi || "").trim();
     }
@@ -3411,14 +3439,178 @@ function renderRegistration(prefillData = null) {
     return String(raw || "").replace(/\D/g, "").slice(0, 5);
   }
 
+  function normalizeFacilitySearch(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
   function normalizeProviderSearch(value) {
     return String(value || "").trim().toLowerCase();
+  }
+
+  function setFacilityResultsExpanded(isExpanded) {
+    const expanded = Boolean(isExpanded);
+    facilityComboboxNode?.setAttribute("aria-expanded", String(expanded));
+    facilityNameInput?.setAttribute("aria-expanded", String(expanded));
   }
 
   function setProviderResultsExpanded(isExpanded) {
     const expanded = Boolean(isExpanded);
     providerComboboxNode?.setAttribute("aria-expanded", String(expanded));
     providerNameInput?.setAttribute("aria-expanded", String(expanded));
+  }
+
+  function getFacilitySearchOptions(preferredFacility = "") {
+    const selectedFacility = String(preferredFacility || "").trim();
+    const options = getFacilityAccountOptions().map((value) => {
+      const account = findFacilityAccountRecord(value);
+      const accountCode = String(account?.account_code || account?.id || "").trim();
+      const email = String(account?.email || account?.basic_information?.email || "").trim();
+      const metaParts = [accountCode ? `Code ${accountCode}` : "", email].filter(Boolean);
+      return {
+        value,
+        label: value,
+        meta: metaParts.join(" • "),
+      };
+    });
+    if (selectedFacility && !findFacilityAccountRecord(selectedFacility)) {
+      options.unshift({
+        value: selectedFacility,
+        label: selectedFacility,
+        meta: "Custom facility",
+        isFallback: true,
+      });
+    }
+    return options;
+  }
+
+  function findExactFacilityMatch(value) {
+    const rawValue = String(value || "").trim();
+    const account = findFacilityAccountRecord(rawValue);
+    if (!account) {
+      const needle = normalizeFacilitySearch(rawValue);
+      if (!needle) return null;
+      return (
+        getFacilitySearchOptions(rawValue).find((item) => {
+          const candidates = [item.value, item.label].map(normalizeFacilitySearch).filter(Boolean);
+          return candidates.includes(needle);
+        }) || null
+      );
+    }
+
+    const resolvedValue = getFacilityAccountDisplayValue(account);
+    const accountCode = String(account?.account_code || account?.id || "").trim();
+    const email = String(account?.email || account?.basic_information?.email || "").trim();
+    const metaParts = [accountCode ? `Code ${accountCode}` : "", email].filter(Boolean);
+    return {
+      value: resolvedValue,
+      label: resolvedValue,
+      meta: metaParts.join(" • "),
+    };
+  }
+
+  function resolveFacilityMatchFromInput(value) {
+    const rawValue = String(value || "").trim();
+    if (!rawValue) return null;
+
+    const exactMatch = findExactFacilityMatch(rawValue);
+    if (exactMatch) return exactMatch;
+
+    const needle = normalizeFacilitySearch(rawValue);
+    const matches = getFacilitySearchOptions(rawValue).filter((item) =>
+      `${item.value} ${item.label} ${item.meta}`.toLowerCase().includes(needle)
+    );
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function getFilteredFacilityMatches(query = "") {
+    const needle = normalizeFacilitySearch(query);
+    const options = getFacilitySearchOptions(facilityNameInput?.value || "");
+    const matches = needle
+      ? options.filter((item) => `${item.value} ${item.label} ${item.meta}`.toLowerCase().includes(needle))
+      : options;
+    return matches.slice(0, 8);
+  }
+
+  function hideFacilityResults() {
+    facilityMatchResults = [];
+    activeFacilityMatchIndex = -1;
+    if (facilityResultsNode) {
+      facilityResultsNode.innerHTML = "";
+      facilityResultsNode.classList.add("hidden");
+    }
+    setFacilityResultsExpanded(false);
+  }
+
+  function renderFacilityResults(query = facilityNameInput?.value || "", { forceOpen = false } = {}) {
+    if (!facilityResultsNode || !facilityNameInput) return;
+
+    const rawQuery = String(query || "");
+    const trimmedQuery = rawQuery.trim();
+    const matches = getFilteredFacilityMatches(trimmedQuery);
+    const shouldShow = forceOpen || Boolean(trimmedQuery) || document.activeElement === facilityNameInput;
+
+    facilityMatchResults = matches;
+    if (!matches.length) {
+      activeFacilityMatchIndex = -1;
+    } else if (activeFacilityMatchIndex < 0 || activeFacilityMatchIndex >= matches.length) {
+      activeFacilityMatchIndex = 0;
+    }
+
+    if (!shouldShow) {
+      hideFacilityResults();
+      return;
+    }
+
+    const resultMarkup = matches
+      .map((item, index) => {
+        const isActive = index === activeFacilityMatchIndex;
+        const metaText = item.meta || "Facility directory";
+        return `
+          <button
+            type="button"
+            class="provider-result-btn ${isActive ? "active" : ""}"
+            data-facility-match-index="${index}"
+            role="option"
+            aria-selected="${isActive ? "true" : "false"}"
+          >
+            <div class="provider-result-top">
+              <strong>${escapeHtml(item.value)}</strong>
+            </div>
+            <span class="provider-result-meta">${escapeHtml(metaText)}</span>
+          </button>
+        `;
+      })
+      .join("");
+
+    const emptyMarkup =
+      !matches.length
+        ? `<p class="provider-results-empty">${escapeHtml(trimmedQuery ? "No matching facilities found." : "No facilities available yet.")}</p>`
+        : "";
+
+    facilityResultsNode.innerHTML = `${resultMarkup}${emptyMarkup}`;
+    facilityResultsNode.classList.remove("hidden");
+    setFacilityResultsExpanded(true);
+  }
+
+  function selectFacilityMatch(match, { hideResultsAfterSelect = true } = {}) {
+    if (!facilityNameInput || !match) return false;
+    facilityNameInput.value = String(match.value || "").trim();
+    refreshProviderAutocomplete(facilityNameInput.value, providerNameInput?.value || "");
+    if (hideResultsAfterSelect) {
+      hideFacilityResults();
+    } else {
+      renderFacilityResults(facilityNameInput.value, { forceOpen: true });
+    }
+    return true;
+  }
+
+  function refreshFacilityAutocomplete(preferredFacility = "") {
+    if (!facilityNameInput) return null;
+    const nextFacility = String(preferredFacility || "").trim();
+    const match = nextFacility ? findExactFacilityMatch(nextFacility) : null;
+    facilityNameInput.value = match ? match.value : nextFacility;
+    hideFacilityResults();
+    return match;
   }
 
   function getProviderSearchOptions(selectedFacility = "", preferredProvider = "") {
@@ -3498,7 +3690,7 @@ function renderRegistration(prefillData = null) {
 
     const rawQuery = String(query || "");
     const trimmedQuery = rawQuery.trim();
-    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    const selectedFacility = String(facilityNameInput?.value || "").trim();
     const exactMatch = findExactProviderMatch(trimmedQuery, selectedFacility);
     const matches = getFilteredProviderMatches(trimmedQuery, selectedFacility);
     const showCustomAdd = activeSession.type === "doctor" && Boolean(trimmedQuery) && !exactMatch;
@@ -3572,7 +3764,7 @@ function renderRegistration(prefillData = null) {
 
   function syncProviderNpiFromInput({ allowLooseResolve = false } = {}) {
     if (!providerNameInput || !providerNpiInput) return null;
-    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    const selectedFacility = String(facilityNameInput?.value || "").trim();
     const match = allowLooseResolve
       ? resolveProviderMatchFromInput(providerNameInput.value, selectedFacility)
       : findExactProviderMatch(providerNameInput.value, selectedFacility);
@@ -3620,7 +3812,7 @@ function renderRegistration(prefillData = null) {
       closeCustomProviderModal(null);
     }
 
-    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    const selectedFacility = String(facilityNameInput?.value || "").trim();
     customProviderFacilityNode.textContent = selectedFacility || "Not linked to a specific facility";
     customProviderNameInput.value = String(defaultValues.providerName || "").trim();
     if (customProviderNpiInput) {
@@ -3693,7 +3885,7 @@ function renderRegistration(prefillData = null) {
     const submitted = await openCustomProviderModal(defaultValues);
     if (!submitted) return false;
 
-    const selectedFacility = String(facilityNameSelect?.value || "").trim();
+    const selectedFacility = String(facilityNameInput?.value || "").trim();
     const providerName = String(submitted.providerName || "").trim();
     const providerNpi = String(submitted.providerNpi || "").trim();
 
@@ -4118,18 +4310,84 @@ function renderRegistration(prefillData = null) {
   }
   syncAgeFromDob();
 
-  const refreshFacilitySelectOptions = () => {
-    const currentFacilityValue = facilityNameSelect ? facilityNameSelect.value : "";
-    if (facilityNameSelect) {
-      facilityNameSelect.innerHTML = buildFacilityAccountOptionMarkup(currentFacilityValue);
-      if (currentFacilityValue) facilityNameSelect.value = currentFacilityValue;
-    }
+  const refreshFacilityAutocompleteState = () => {
+    const currentFacilityValue = facilityNameInput ? facilityNameInput.value : "";
     const currentProviderValue = providerNameInput ? providerNameInput.value : "";
-    refreshProviderAutocomplete(currentFacilityValue, currentProviderValue);
+    refreshFacilityAutocomplete(currentFacilityValue);
+    refreshProviderAutocomplete(facilityNameInput?.value || currentFacilityValue, currentProviderValue);
   };
 
-  facilityNameSelect?.addEventListener("change", () => {
-    refreshProviderAutocomplete(facilityNameSelect.value, providerNameInput?.value || "");
+  facilityNameInput?.addEventListener("focus", () => {
+    renderFacilityResults(facilityNameInput.value, { forceOpen: true });
+  });
+  facilityNameInput?.addEventListener("input", () => {
+    activeFacilityMatchIndex = 0;
+    renderFacilityResults(facilityNameInput.value, { forceOpen: true });
+    if (document.activeElement === providerNameInput || !providerResultsNode?.classList.contains("hidden")) {
+      renderProviderResults(providerNameInput?.value || "", { forceOpen: true });
+    }
+  });
+  facilityNameInput?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (facilityResultsNode?.classList.contains("hidden")) {
+        renderFacilityResults(facilityNameInput.value, { forceOpen: true });
+        return;
+      }
+      if (!facilityMatchResults.length) return;
+      activeFacilityMatchIndex = Math.min(activeFacilityMatchIndex + 1, facilityMatchResults.length - 1);
+      renderFacilityResults(facilityNameInput.value, { forceOpen: true });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!facilityMatchResults.length) return;
+      activeFacilityMatchIndex = Math.max(activeFacilityMatchIndex - 1, 0);
+      renderFacilityResults(facilityNameInput.value, { forceOpen: true });
+    } else if (event.key === "Enter") {
+      if (!facilityResultsNode?.classList.contains("hidden")) {
+        event.preventDefault();
+        if (facilityMatchResults[activeFacilityMatchIndex]) {
+          selectFacilityMatch(facilityMatchResults[activeFacilityMatchIndex]);
+          return;
+        }
+        const resolved = resolveFacilityMatchFromInput(facilityNameInput.value);
+        if (resolved) {
+          selectFacilityMatch(resolved);
+        }
+      }
+    } else if (event.key === "Escape") {
+      hideFacilityResults();
+    }
+  });
+  facilityNameInput?.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      const resolved = resolveFacilityMatchFromInput(facilityNameInput.value);
+      if (resolved) {
+        selectFacilityMatch(resolved);
+        return;
+      }
+      hideFacilityResults();
+      refreshProviderAutocomplete(facilityNameInput.value, providerNameInput?.value || "");
+    }, 120);
+  });
+  facilityToggleBtn?.addEventListener("click", () => {
+    if (facilityResultsNode?.classList.contains("hidden")) {
+      facilityNameInput?.focus();
+      renderFacilityResults(facilityNameInput?.value || "", { forceOpen: true });
+      return;
+    }
+    hideFacilityResults();
+    facilityNameInput?.focus();
+  });
+  facilityResultsNode?.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+  facilityResultsNode?.addEventListener("click", (event) => {
+    const matchButton = event.target.closest("[data-facility-match-index]");
+    if (!matchButton) return;
+    const index = Number(matchButton.getAttribute("data-facility-match-index"));
+    if (Number.isInteger(index) && facilityMatchResults[index]) {
+      selectFacilityMatch(facilityMatchResults[index]);
+    }
   });
   providerNameInput?.addEventListener("focus", () => {
     renderProviderResults(providerNameInput.value, { forceOpen: true });
@@ -4161,7 +4419,7 @@ function renderRegistration(prefillData = null) {
           selectProviderMatch(providerMatchResults[activeProviderMatchIndex]);
           return;
         }
-        const resolved = resolveProviderMatchFromInput(providerNameInput.value, facilityNameSelect?.value || "");
+        const resolved = resolveProviderMatchFromInput(providerNameInput.value, facilityNameInput?.value || "");
         if (resolved) {
           selectProviderMatch(resolved);
         }
@@ -4287,15 +4545,16 @@ function renderRegistration(prefillData = null) {
     if (!file) return;
     await handleRequisitionScanUpload(file);
   });
-  refreshProviderAutocomplete(facilityNameSelect?.value || "", providerNameInput?.value || "");
+  refreshFacilityAutocomplete(facilityNameInput?.value || "");
+  refreshProviderAutocomplete(facilityNameInput?.value || "", providerNameInput?.value || "");
 
   if (facilityDataLoaded) {
-    refreshFacilitySelectOptions();
+    refreshFacilityAutocompleteState();
   } else {
     loadFacilityData()
       .then(() => {
         if (currentView !== "registration" || requisitionSubtab !== "create") return;
-        refreshFacilitySelectOptions();
+        refreshFacilityAutocompleteState();
       })
       .catch(() => {});
   }
@@ -4318,7 +4577,7 @@ function renderRegistration(prefillData = null) {
     clearCustomAllergies();
     syncSpecimenTypeDependentFields();
     syncAgeFromDob();
-    refreshFacilitySelectOptions();
+    refreshFacilityAutocompleteState();
     refreshPatientIdPreview();
     status.textContent = "Form cleared.";
   });
@@ -4335,7 +4594,7 @@ function renderRegistration(prefillData = null) {
       clearCustomAllergies();
       syncSpecimenTypeDependentFields();
       syncAgeFromDob();
-      refreshFacilitySelectOptions();
+      refreshFacilityAutocompleteState();
       refreshPatientIdPreview();
     } catch (error) {
       status.textContent = error?.message || "Unable to save requisition.";
