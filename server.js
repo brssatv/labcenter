@@ -65,6 +65,12 @@ const scanOcrEnabled = String(process.env.LABCENTER_ENABLE_SCAN_OCR || "").trim(
   : true;
 const publishEmailMode = normalizePublishMode(process.env.LABCENTER_PUBLISH_EMAIL_MODE || "disabled");
 const publishFaxMode = normalizePublishMode(process.env.LABCENTER_PUBLISH_FAX_MODE || "disabled");
+const PHARMD_SFTP_HOST = String(process.env.PHARMD_SFTP_HOST || "18.144.129.54").trim();
+const PHARMD_SFTP_PORT = Math.max(1, Math.floor(Number(process.env.PHARMD_SFTP_PORT || 22) || 22));
+const PHARMD_SFTP_USERNAME = String(process.env.PHARMD_SFTP_USERNAME || "jays-user").trim();
+const PHARMD_SFTP_PASSWORD = String(process.env.PHARMD_SFTP_PASSWORD || "").trim();
+const PHARMD_SFTP_ORU_DIR = String(process.env.PHARMD_SFTP_ORU_DIR || "oru").trim() || "oru";
+const PHARMD_SFTP_TIMEOUT_SEC = Math.max(5, Math.min(120, Math.floor(Number(process.env.PHARMD_SFTP_TIMEOUT_SEC || 30) || 30)));
 
 function ensureDir(targetPath) {
   fs.mkdirSync(targetPath, { recursive: true });
@@ -1317,6 +1323,328 @@ function sanitizeReportPdfFileName(value) {
     .slice(0, 120);
   if (!cleaned) return `Final_Report_${Date.now()}.pdf`;
   return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : `${cleaned}.pdf`;
+}
+
+function sanitizePharmdHl7FileName(value) {
+  const raw = String(value || "").trim();
+  const cleaned = raw
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 160);
+  if (!cleaned) return `PharmD_ORU_${Date.now()}.hl7`;
+  return /\.(hl7|txt)$/i.test(cleaned) ? cleaned : `${cleaned}.hl7`;
+}
+
+function createPharmdLogEntry(level, step, message, extra = {}) {
+  return {
+    ts: new Date().toISOString(),
+    level: String(level || "info").trim() || "info",
+    step: String(step || "general").trim() || "general",
+    message: String(message || "").trim() || "PharmD event",
+    ...extra,
+  };
+}
+
+function mergePharmdLogs(existingLogs, nextLogs, limit = 100) {
+  const current = Array.isArray(existingLogs) ? existingLogs.filter(Boolean) : [];
+  const incoming = Array.isArray(nextLogs) ? nextLogs.filter(Boolean) : [];
+  return [...current, ...incoming].slice(-Math.max(1, limit));
+}
+
+function getPharmdSftpConfig() {
+  return {
+    host: PHARMD_SFTP_HOST,
+    port: PHARMD_SFTP_PORT,
+    username: PHARMD_SFTP_USERNAME,
+    password: PHARMD_SFTP_PASSWORD,
+    remoteDir: PHARMD_SFTP_ORU_DIR,
+    timeoutSec: PHARMD_SFTP_TIMEOUT_SEC,
+  };
+}
+
+function getPharmdSftpPublicConfig(config = {}) {
+  return {
+    host: String(config.host || "").trim(),
+    port: Math.max(1, Math.floor(Number(config.port || 0) || 0)),
+    username: String(config.username || "").trim(),
+    remoteDir: String(config.remoteDir || "").trim(),
+    timeoutSec: Math.max(1, Math.floor(Number(config.timeoutSec || 0) || 0)),
+  };
+}
+
+function buildPharmdRemotePath(remoteDir, fileName) {
+  const dir = String(remoteDir || "").trim().replace(/^\/+|\/+$/g, "");
+  if (!dir) return fileName;
+  return `${dir}/${fileName}`;
+}
+
+function parsePharmdExpectMarkers(output) {
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("@@"));
+}
+
+function buildPharmdSftpExpectScript() {
+  return `#!/usr/bin/expect -f
+set host [lindex $argv 0]
+set port [lindex $argv 1]
+set username [lindex $argv 2]
+set password [lindex $argv 3]
+set remoteDir [lindex $argv 4]
+set localPath [lindex $argv 5]
+set remoteFile [lindex $argv 6]
+set timeout [lindex $argv 7]
+
+proc fail {message code} {
+  puts "@@ERROR@@$message"
+  exit $code
+}
+
+spawn /usr/bin/sftp -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -P $port "$username@$host"
+expect {
+  -re "Are you sure you want to continue connecting.*" { send -- "yes\\r"; exp_continue }
+  -re "(?i)password:" { send -- "$password\\r"; exp_continue }
+  -re "Permission denied" { fail "Permission denied while connecting to PharmD SFTP." 31 }
+  -re "Connection refused" { fail "Connection refused by PharmD SFTP server." 32 }
+  -re "No route to host" { fail "No route to PharmD SFTP host." 33 }
+  -re "Could not resolve hostname.*" { fail "Unable to resolve PharmD SFTP host." 34 }
+  -re "Connection closed.*" { fail "Connection closed before SFTP session was established." 35 }
+  -re {sftp>} { puts "@@CONNECTED@@"; }
+  timeout { fail "Timed out while connecting to PharmD SFTP." 36 }
+  eof { fail "SFTP session ended before login completed." 37 }
+}
+
+if {$remoteDir ne ""} {
+  send -- "cd $remoteDir\\r"
+  expect {
+    -re "No such file or directory" { fail "Remote directory '$remoteDir' was not found." 38 }
+    -re "Couldn't.*" { fail "Unable to enter remote directory '$remoteDir'." 39 }
+    -re {sftp>} { puts "@@REMOTE_DIR@@$remoteDir"; }
+    timeout { fail "Timed out while opening remote directory '$remoteDir'." 40 }
+    eof { fail "SFTP session ended before remote directory was confirmed." 41 }
+  }
+}
+
+send -- "put \\"$localPath\\" \\"$remoteFile\\"\\r"
+expect {
+  -re "Uploading .*" { exp_continue }
+  -re "100%.*" { exp_continue }
+  -re "Permission denied" { fail "Permission denied while uploading the PharmD HL7 file." 42 }
+  -re "Couldn't.*" { fail "Unable to upload the PharmD HL7 file." 43 }
+  -re {sftp>} { puts "@@UPLOADED@@$remoteFile"; }
+  timeout { fail "Timed out while uploading the PharmD HL7 file." 44 }
+  eof { fail "SFTP session ended before upload completed." 45 }
+}
+
+send -- "bye\\r"
+expect eof
+puts "@@DONE@@"
+exit 0
+`;
+}
+
+function executePharmdSftpUpload({ oruMessage, fileName, config }) {
+  return new Promise((resolve, reject) => {
+    const messageText = String(oruMessage || "");
+    const safeFileName = sanitizePharmdHl7FileName(fileName);
+    const connection = getPharmdSftpPublicConfig(config);
+    const expectBinary = "/usr/bin/expect";
+    const sftpBinary = "/usr/bin/sftp";
+    const logs = [
+      createPharmdLogEntry("info", "prepare", `Preparing PharmD ORU upload for ${safeFileName}.`, {
+        host: connection.host,
+        port: connection.port,
+        username: connection.username,
+        remoteDir: connection.remoteDir,
+      }),
+    ];
+
+    if (!messageText.trim()) {
+      reject({
+        message: "PharmD ORU message is empty and cannot be sent.",
+        logs: [...logs, createPharmdLogEntry("error", "prepare", "PharmD ORU message is empty.")],
+      });
+      return;
+    }
+
+    if (!connection.host || !connection.port || !connection.username) {
+      reject({
+        message: "PharmD SFTP host, port, or username is not configured.",
+        logs: [...logs, createPharmdLogEntry("error", "config", "PharmD SFTP host, port, or username is not configured.")],
+      });
+      return;
+    }
+
+    if (!String(config?.password || "").trim()) {
+      reject({
+        message: "PharmD SFTP password is not configured. Set PHARMD_SFTP_PASSWORD before sending.",
+        logs: [...logs, createPharmdLogEntry("error", "config", "PharmD SFTP password is not configured.")],
+      });
+      return;
+    }
+
+    if (process.platform === "win32") {
+      reject({
+        message: "PharmD SFTP send is currently supported only on macOS/Linux runtimes with expect and sftp installed.",
+        logs: [...logs, createPharmdLogEntry("error", "runtime", "PharmD SFTP send is not supported on this runtime.")],
+      });
+      return;
+    }
+
+    if (!fs.existsSync(expectBinary) || !fs.existsSync(sftpBinary)) {
+      reject({
+        message: "PharmD SFTP tools are missing. This machine needs both /usr/bin/expect and /usr/bin/sftp.",
+        logs: [...logs, createPharmdLogEntry("error", "runtime", "Required PharmD SFTP tools are missing from this machine.")],
+      });
+      return;
+    }
+
+    let tempDir = "";
+    try {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "labcenter-pharmd-"));
+    } catch {
+      reject({
+        message: "Unable to create a temporary workspace for PharmD upload.",
+        logs: [...logs, createPharmdLogEntry("error", "prepare", "Unable to create a temporary workspace for PharmD upload.")],
+      });
+      return;
+    }
+
+    const localPath = path.join(tempDir, safeFileName);
+    const scriptPath = path.join(tempDir, "pharmd-send.expect");
+    const cleanup = () => {
+      if (!tempDir) return;
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // Best effort cleanup only.
+      }
+      tempDir = "";
+    };
+
+    try {
+      fs.writeFileSync(localPath, messageText, "utf8");
+      fs.writeFileSync(scriptPath, buildPharmdSftpExpectScript(), "utf8");
+    } catch {
+      cleanup();
+      reject({
+        message: "Unable to prepare temporary PharmD upload files.",
+        logs: [...logs, createPharmdLogEntry("error", "prepare", "Unable to prepare temporary PharmD upload files.")],
+      });
+      return;
+    }
+
+    const child = spawn(expectBinary, [
+      scriptPath,
+      connection.host,
+      String(connection.port),
+      connection.username,
+      String(config.password || ""),
+      connection.remoteDir || "",
+      localPath,
+      safeFileName,
+      String(connection.timeoutSec || 30),
+    ], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (error, payload = null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve(payload);
+    };
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // No-op.
+      }
+      finish({
+        message: "Timed out while sending the PharmD HL7 file.",
+        logs: [...logs, createPharmdLogEntry("error", "timeout", "Timed out while sending the PharmD HL7 file.")],
+      });
+    }, Math.max(10000, (connection.timeoutSec + 15) * 1000));
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      finish({
+        message: `Unable to launch PharmD SFTP client: ${error.message}`,
+        logs: [...logs, createPharmdLogEntry("error", "launch", `Unable to launch PharmD SFTP client: ${error.message}`)],
+      });
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const markers = parsePharmdExpectMarkers(`${stdout}\n${stderr}`);
+      const markerLogs = [];
+      let connectedAt = "";
+      let uploadedAt = "";
+
+      markers.forEach((marker) => {
+        if (marker === "@@CONNECTED@@") {
+          connectedAt = connectedAt || new Date().toISOString();
+          markerLogs.push(createPharmdLogEntry("success", "connect", "Connection to PharmD SFTP established successfully."));
+          return;
+        }
+        if (marker.startsWith("@@REMOTE_DIR@@")) {
+          const remoteDir = marker.replace("@@REMOTE_DIR@@", "").trim() || connection.remoteDir || "";
+          markerLogs.push(createPharmdLogEntry("success", "remote_dir", `Remote PharmD folder confirmed: ${remoteDir || "."}.`));
+          return;
+        }
+        if (marker.startsWith("@@UPLOADED@@")) {
+          const uploadedFile = marker.replace("@@UPLOADED@@", "").trim() || safeFileName;
+          uploadedAt = uploadedAt || new Date().toISOString();
+          markerLogs.push(createPharmdLogEntry("success", "upload", `HL7 file uploaded successfully to PharmD as ${uploadedFile}.`));
+          return;
+        }
+        if (marker === "@@DONE@@") {
+          markerLogs.push(createPharmdLogEntry("info", "complete", "PharmD SFTP session closed cleanly."));
+          return;
+        }
+        if (marker.startsWith("@@ERROR@@")) {
+          const message = marker.replace("@@ERROR@@", "").trim() || "PharmD SFTP upload failed.";
+          markerLogs.push(createPharmdLogEntry("error", "error", message));
+        }
+      });
+
+      const hasUploadedMarker = markerLogs.some((entry) => entry.step === "upload" && entry.level === "success");
+      if (code !== 0 || !hasUploadedMarker) {
+        const markerError = markerLogs.find((entry) => entry.level === "error")?.message;
+        const details = (stderr || stdout || "").trim();
+        const message = markerError || details || `PharmD SFTP upload failed with exit code ${code}.`;
+        finish({
+          message,
+          logs: [...logs, ...markerLogs, createPharmdLogEntry("error", "complete", message)],
+        });
+        return;
+      }
+
+      finish(null, {
+        message: `PharmD HL7 file uploaded successfully to ${buildPharmdRemotePath(connection.remoteDir, safeFileName)}.`,
+        logs: [...logs, ...markerLogs],
+        connectionEstablishedAt: connectedAt || new Date().toISOString(),
+        sentAt: uploadedAt || new Date().toISOString(),
+        remotePath: buildPharmdRemotePath(connection.remoteDir, safeFileName),
+        fileName: safeFileName,
+      });
+    });
+  });
 }
 
 function splitPublishValues(rawValue) {
@@ -2849,6 +3177,110 @@ app.put("/api/portal/orders/:orderId", requireAuthenticatedUser, (req, res) => {
       reason: error?.message || "unexpected_error",
     });
     return res.status(500).json({ error: "Unable to update order." });
+  }
+});
+
+app.post("/api/pharmd/orders/:orderId/send", requireDoctorAuth, async (req, res) => {
+  const orderId = String(req.params.orderId || "").trim();
+  const current = portalStore.getOrderById(orderId);
+  if (!current || !canAccessOrderRecord(req, current)) {
+    return res.status(404).json({ error: "Order not found." });
+  }
+
+  const requestedMessage = String(req.body?.oruMessage || current?.pharmd?.oruMessage || "").trim();
+  const requestedFileName = sanitizePharmdHl7FileName(
+    req.body?.fileName || current?.pharmd?.messageFileName || `Order_${orderId}_PharmD_ORU.hl7`
+  );
+  const pharmdConfig = getPharmdSftpConfig();
+  const publicConfig = getPharmdSftpPublicConfig(pharmdConfig);
+  const requestedBy = String(req?.session?.user?.email || req?.session?.user?.displayName || "doctor").trim();
+  const requestLog = createPharmdLogEntry("info", "request", `PharmD send requested for ${requestedFileName}.`, {
+    requestedBy,
+    host: publicConfig.host,
+    port: publicConfig.port,
+    username: publicConfig.username,
+    remoteDir: publicConfig.remoteDir,
+  });
+
+  const persistOrder = (patch = {}, extraLogs = []) => {
+    const nowIso = new Date().toISOString();
+    const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
+    return portalStore.upsertOrders([
+      {
+        ...current,
+        updatedAt: patch.updatedAt || nowIso,
+        pharmd: {
+          ...existingPharmd,
+          oruMessage: requestedMessage || existingPharmd.oruMessage || "",
+          messageFileName: requestedFileName,
+          host: publicConfig.host,
+          port: publicConfig.port,
+          username: publicConfig.username,
+          remoteDir: publicConfig.remoteDir,
+          lastAttemptAt: patch.lastAttemptAt || nowIso,
+          ...patch,
+          logs: mergePharmdLogs(existingPharmd.logs, [requestLog, ...extraLogs]),
+        },
+      },
+    ])[0];
+  };
+
+  try {
+    const result = await executePharmdSftpUpload({
+      oruMessage: requestedMessage,
+      fileName: requestedFileName,
+      config: pharmdConfig,
+    });
+
+    const savedOrder = persistOrder({
+      status: "sent",
+      sendStatus: "sent",
+      error: "",
+      lastError: "",
+      connectionEstablishedAt: result.connectionEstablishedAt,
+      sentAt: result.sentAt,
+      remotePath: result.remotePath,
+      lastAttemptAt: result.sentAt,
+      updatedAt: result.sentAt,
+    }, result.logs);
+
+    auditLog(req, "pharmd_send", "success", {
+      orderId,
+      remotePath: result.remotePath,
+      host: publicConfig.host,
+      username: publicConfig.username,
+    });
+
+    return res.json({
+      ok: true,
+      message: result.message,
+      order: savedOrder,
+    });
+  } catch (error) {
+    const failureMessage = String(error?.message || "Unable to send PharmD HL7 file.").trim() || "Unable to send PharmD HL7 file.";
+    const failureLogs = Array.isArray(error?.logs) && error.logs.length
+      ? error.logs
+      : [createPharmdLogEntry("error", "send", failureMessage)];
+    const savedOrder = persistOrder({
+      status: "error",
+      sendStatus: "error",
+      error: failureMessage,
+      lastError: failureMessage,
+      lastAttemptAt: new Date().toISOString(),
+    }, failureLogs);
+
+    auditLog(req, "pharmd_send", "failed", {
+      orderId,
+      reason: failureMessage,
+      host: publicConfig.host,
+      username: publicConfig.username,
+    });
+
+    return res.json({
+      ok: false,
+      message: failureMessage,
+      order: savedOrder,
+    });
   }
 });
 

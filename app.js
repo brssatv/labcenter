@@ -25,6 +25,11 @@ const views = [
     subtitle: "Review created orders and payment status.",
   },
   {
+    key: "output-results",
+    title: "Output Results",
+    subtitle: "Track result queues for pending, review, completed, and rejected work.",
+  },
+  {
     key: "master-registry",
     title: "Master Registry",
     subtitle: "Canonical pathogen and virus reference registry.",
@@ -2278,6 +2283,437 @@ function asPatientRecord(record) {
     phoneBelongsTo: record.phoneBelongsTo || "Patient",
     createdAt: record.createdAt || "",
   };
+}
+
+function splitFullNameParts(value) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) {
+    return {
+      firstName: "",
+      middleName: "",
+      lastName: "",
+    };
+  }
+  const parts = text.split(" ");
+  if (parts.length === 1) {
+    return {
+      firstName: parts[0],
+      middleName: "",
+      lastName: "",
+    };
+  }
+  if (parts.length === 2) {
+    return {
+      firstName: parts[0],
+      middleName: "",
+      lastName: parts[1],
+    };
+  }
+  return {
+    firstName: parts[0],
+    middleName: parts.slice(1, -1).join(" "),
+    lastName: parts[parts.length - 1],
+  };
+}
+
+function buildOrderPatientDisplayName(record) {
+  const full = `${record?.firstName || ""} ${record?.middleName || ""} ${record?.lastName || ""}`.replace(/\s+/g, " ").trim();
+  if (full) return full;
+  return String(record?.patientName || "").trim() || "-";
+}
+
+function resolveOrderPatientRecordForPharmd(order) {
+  const records = readRegistrations()
+    .slice()
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+  const patientId = String(order?.patientId || "").trim();
+  if (patientId) {
+    const matchedById = records.find((row) => String(row?.patientId || "").trim() === patientId);
+    if (matchedById) return matchedById;
+  }
+
+  const orderName = normalizePanelKey(order?.patientName || "");
+  if (orderName) {
+    const matchedByName = records.find((row) => normalizePanelKey(buildOrderPatientDisplayName(row)) === orderName);
+    if (matchedByName) return matchedByName;
+  }
+
+  return null;
+}
+
+function normalizePharmdToken(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function matchesResistanceGeneCatalog(value) {
+  const token = normalizePharmdToken(value);
+  if (!token) return false;
+  return masterResistanceGeneCatalog.some((record) => {
+    const candidates = [record?.gene, ...(Array.isArray(record?.aliases) ? record.aliases : [])];
+    return candidates.some((item) => {
+      const candidate = normalizePharmdToken(item);
+      return candidate && (token === candidate || token.includes(candidate) || candidate.includes(token));
+    });
+  });
+}
+
+function isTruthyPharmdField(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return Boolean(normalized && !["0", "false", "no", "off"].includes(normalized));
+}
+
+function escapeHl7Text(value) {
+  return String(value || "")
+    .replace(/\r?\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\\/g, "\\E\\")
+    .replace(/\|/g, "\\F\\")
+    .replace(/\^/g, "\\S\\")
+    .replace(/~/g, "\\R\\")
+    .replace(/&/g, "\\T\\");
+}
+
+function formatHl7Timestamp(value, { dateOnly = false } = {}) {
+  const date = new Date(value || "");
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = safeDate.getFullYear();
+  const month = String(safeDate.getMonth() + 1).padStart(2, "0");
+  const day = String(safeDate.getDate()).padStart(2, "0");
+  if (dateOnly) return `${year}${month}${day}`;
+  const hours = String(safeDate.getHours()).padStart(2, "0");
+  const minutes = String(safeDate.getMinutes()).padStart(2, "0");
+  const seconds = String(safeDate.getSeconds()).padStart(2, "0");
+  return `${year}${month}${day}${hours}${minutes}${seconds}`;
+}
+
+function resolvePharmdAccession(order) {
+  const existing = String(order?.accessionNo || order?.accession || "").trim();
+  if (existing) return existing;
+  if (!order?.orderId) return "";
+  return buildAccessionNumber({
+    serviceLine: order?.services?.[0] || {},
+    orderDate: order?.sampleCollectTime || order?.createdAt,
+    orderId: order.orderId,
+  });
+}
+
+function pickPharmdMetadataValue(metadata, aliases = []) {
+  const source = metadata && typeof metadata === "object" ? metadata : {};
+  const entries = Object.entries(source);
+  const normalizedAliases = aliases
+    .map((item) => normalizePharmdToken(item))
+    .filter(Boolean);
+  if (!normalizedAliases.length) return "";
+  const matched = entries.find(([key]) => normalizedAliases.includes(normalizePharmdToken(key)));
+  return matched ? String(matched[1] || "").trim() : "";
+}
+
+function resolvePharmdSpecimenType(order, patientRecord) {
+  if (patientRecord?.specimenTypeOtherText) return String(patientRecord.specimenTypeOtherText).trim();
+  if (isTruthyPharmdField(patientRecord?.specimenTypeSwab)) return "Swab";
+  if (isTruthyPharmdField(patientRecord?.specimenTypeWound)) return "Wound";
+  if (isTruthyPharmdField(patientRecord?.specimenTypeOther)) return "Others";
+  const metadata = order?.processedResult?.report?.metadata;
+  return pickPharmdMetadataValue(metadata, ["Specimen Type", "Sample Type"]) || "Swab";
+}
+
+function resolvePharmdSpecimenSite(order, patientRecord) {
+  if (patientRecord?.specimenTypeWoundLocation) return String(patientRecord.specimenTypeWoundLocation).trim();
+  const metadata = order?.processedResult?.report?.metadata;
+  return pickPharmdMetadataValue(metadata, ["Specimen Source Site", "Source Site", "Collection Site"]);
+}
+
+function formatAllergyFieldLabel(fieldName) {
+  return String(fieldName || "")
+    .replace(/^allergy_/, "")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function buildPharmdPatientNotes(order, patientRecord) {
+  const allergies = Object.entries(patientRecord || {})
+    .filter(([key, value]) => key.startsWith("allergy_") && isTruthyPharmdField(value))
+    .map(([key]) => formatAllergyFieldLabel(key));
+  const customAllergies = String(patientRecord?.allergyCustomList || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const notes = [];
+  const allergyItems = [...new Set([...allergies, ...customAllergies])];
+  if (allergyItems.length) notes.push(`Allergies: ${allergyItems.join(", ")}`);
+  const additional = String(patientRecord?.additionalInformation || order?.pharmd?.notes || "").trim();
+  if (additional) notes.push(`Notes: ${additional}`);
+  return notes;
+}
+
+function resolvePharmdObservationType(row) {
+  const explicitType = String(row?.recordType || row?.observationType || "").trim().toLowerCase();
+  if (["abr", "resistance", "resistancegene", "resistancegenes"].includes(explicitType)) return "Resistance Genes";
+  if (["pathogen", "pathogens"].includes(explicitType)) return "Pathogens";
+  return matchesResistanceGeneCatalog(row?.pathogen || row?.target || "") ? "Resistance Genes" : "Pathogens";
+}
+
+function formatPharmdObservationValue(row) {
+  const raw = String(row?.result || row?.ampStatus || "").trim();
+  const normalized = raw.toLowerCase();
+  if (!normalized) return "Not Detected";
+  if (normalized.includes("not detected") || normalized === "-" || normalized.includes("negative") || normalized.includes("undetermined")) {
+    return "Not Detected";
+  }
+  if (normalized.includes("detected")) {
+    if (normalized.includes("high")) return "Detected - High";
+    if (normalized.includes("moderate")) return "Detected - Moderate";
+    if (normalized.includes("low")) return "Detected - Low";
+    return "Detected";
+  }
+  if (normalized.includes("positive")) {
+    if (normalized.includes("high")) return "Detected - High";
+    if (normalized.includes("moderate")) return "Detected - Moderate";
+    if (normalized.includes("low")) return "Detected - Low";
+    return "Detected";
+  }
+  const classification = String(row?.classification || "").trim().toLowerCase();
+  if (classification.includes("high")) return "Detected - High";
+  if (classification.includes("moderate")) return "Detected - Moderate";
+  if (classification.includes("low")) return "Detected - Low";
+  return raw;
+}
+
+function buildPharmdOruMessage(order) {
+  if (!order) return "";
+  const patientRecord = resolveOrderPatientRecordForPharmd(order) || {};
+  const nameParts = splitFullNameParts(order?.patientName || buildOrderPatientDisplayName(patientRecord));
+  const providerParts = splitFullNameParts(order?.provider || patientRecord?.provider || "");
+  const sendingApplication = String(patientRecord?.referenceLab || "LabCenter").trim() || "LabCenter";
+  const sendingFacility = String(order?.facilityName || patientRecord?.facilityName || "LabCenter").trim() || "LabCenter";
+  const panelLine = order?.services?.[0] || {};
+  const panelId = String(panelLine?.panelIds?.[0] || "").trim();
+  const panelName = String(panelLine?.serviceName || order?.processedResult?.report?.panelName || "Lab Panel").trim() || "Lab Panel";
+  const accession = resolvePharmdAccession(order);
+  const messageTimestamp = formatHl7Timestamp(order?.pharmd?.sentAt || order?.processedAt || order?.updatedAt || order?.createdAt);
+  const messageControlId = escapeHl7Text(
+    String(order?.pharmd?.messageControlId || `${order?.orderId || "ORDER"}-${messageTimestamp}`).trim()
+  );
+  const patientDob = formatHl7Timestamp(patientRecord?.dob || order?.patientDob || "", { dateOnly: true });
+  const sex = String(patientRecord?.sex || order?.sex || "").trim().toUpperCase();
+  const sexCode = sex.startsWith("F") ? "F" : sex.startsWith("M") ? "M" : sex.startsWith("O") ? "O" : "U";
+  const patientId = escapeHl7Text(String(order?.patientId || patientRecord?.patientId || "").trim());
+  const patientAddress = [
+    escapeHl7Text(patientRecord?.address || ""),
+    escapeHl7Text(patientRecord?.address2 || ""),
+    escapeHl7Text(patientRecord?.city || ""),
+    escapeHl7Text(patientRecord?.state || ""),
+    escapeHl7Text(patientRecord?.zipcode || ""),
+  ];
+  const notes = buildPharmdPatientNotes(order, patientRecord);
+  const collectionTimestamp = formatHl7Timestamp(
+    order?.sampleCollectTime || patientRecord?.collectionDate || order?.createdAt
+  );
+  const specimenType = escapeHl7Text(resolvePharmdSpecimenType(order, patientRecord));
+  const specimenSite = escapeHl7Text(resolvePharmdSpecimenSite(order, patientRecord));
+  const detailedRows = Array.isArray(order?.processedResult?.report?.detailed)
+    ? order.processedResult.report.detailed.filter((row) => String(row?.pathogen || row?.target || "").trim())
+    : [];
+  if (!detailedRows.length) return "";
+
+  const segments = [
+    `MSH|^~\\&|${escapeHl7Text(sendingApplication)}|${escapeHl7Text(sendingFacility)}|PharmD|CPD|${messageTimestamp}||ORU^R01|${messageControlId}|P|2.5.1`,
+    `PID|1|${patientId}|||${escapeHl7Text(nameParts.lastName)}^${escapeHl7Text(nameParts.firstName)}^${escapeHl7Text(nameParts.middleName)}||${patientDob}|${sexCode}|||${patientAddress.join("^")}|`,
+  ];
+
+  notes.forEach((note, index) => {
+    segments.push(`NTE|${index + 1}|P|${escapeHl7Text(note)}|`);
+  });
+
+  segments.push(`PV1|1|P|^${escapeHl7Text(sendingFacility)}||||^${escapeHl7Text(providerParts.lastName)}^${escapeHl7Text(providerParts.firstName)}`);
+  segments.push(`ORC|RE|${escapeHl7Text(String(order?.orderId || "").trim())}|||||||${collectionTimestamp}|`);
+  segments.push(`SPM|1|||^${specimenType}||||^${specimenSite}`);
+  segments.push(`OBR|1||${escapeHl7Text(accession)}|${escapeHl7Text(panelId)}^${escapeHl7Text(panelName)}|`);
+
+  detailedRows.forEach((row, index) => {
+    const label = escapeHl7Text(String(row?.pathogen || row?.target || "").trim());
+    const subId = escapeHl7Text(resolvePharmdObservationType(row));
+    const resultValue = escapeHl7Text(formatPharmdObservationValue(row));
+    segments.push(`OBX|${index + 1}|ST|^${label}|${subId}|${resultValue}|`);
+  });
+
+  return segments.join("\r");
+}
+
+function resolvePharmdOruMessage(order) {
+  const candidates = [
+    order?.pharmd?.oruMessage,
+    order?.pharmd?.hl7Message,
+    order?.pharmd?.message,
+    order?.pharmd?.oru?.message,
+  ];
+  const existing = candidates.find((item) => typeof item === "string" && item.trim());
+  return existing ? existing.trim() : buildPharmdOruMessage(order);
+}
+
+function resolvePharmdStatusInfo(order) {
+  const pharmd = order?.pharmd && typeof order.pharmd === "object" ? order.pharmd : {};
+  const statusToken = String(
+    pharmd?.status
+    || pharmd?.sendStatus
+    || pharmd?.deliveryStatus
+    || pharmd?.oruStatus
+    || ""
+  ).trim().toLowerCase();
+  if (pharmd?.error) {
+    return {
+      label: "Send Failed",
+      className: "status-rejected",
+      detail: String(pharmd.error || "").trim(),
+    };
+  }
+  if (pharmd?.receivedAt || pharmd?.pdfReceivedAt || pharmd?.reportReceivedAt) {
+    return {
+      label: "Report Received",
+      className: "status-complete",
+      detail: "",
+    };
+  }
+  if (["sent", "delivered", "transmitted", "uploaded"].includes(statusToken) || pharmd?.sentAt || pharmd?.submittedAt) {
+    return {
+      label: "Sent",
+      className: "status-processed",
+      detail: "",
+    };
+  }
+  if (["queued", "pending", "pending send", "ready", "ready to send"].includes(statusToken) || order?.processedResult?.report) {
+    return {
+      label: "Queued",
+      className: "status-pending",
+      detail: "",
+    };
+  }
+  return {
+    label: "Not Started",
+    className: "status-pending",
+    detail: "",
+  };
+}
+
+function resolvePharmdQueuedOrSentAt(order) {
+  return order?.pharmd?.sentAt
+    || order?.pharmd?.submittedAt
+    || order?.pharmd?.queuedAt
+    || order?.pharmd?.messageCreatedAt
+    || order?.processedAt
+    || "";
+}
+
+function resolvePharmdReportReceivedAt(order) {
+  return order?.pharmd?.receivedAt
+    || order?.pharmd?.pdfReceivedAt
+    || order?.pharmd?.reportReceivedAt
+    || "";
+}
+
+function resolvePharmdMessageFileName(order) {
+  const explicit = String(
+    order?.pharmd?.messageFileName
+    || order?.pharmd?.oruFileName
+    || ""
+  ).trim();
+  if (explicit) return explicit;
+  const accession = resolvePharmdAccession(order);
+  const stem = accession || `Order_${String(order?.orderId || "").trim() || "PharmD"}`;
+  return `${stem}_PharmD_ORU.hl7`;
+}
+
+function openPlainTextPreviewWindow({ title, heading, content }) {
+  const previewWindow = window.open("", "_blank", "popup=yes,width=960,height=760");
+  if (!previewWindow) {
+    alert("Unable to open preview window. Please allow pop-ups and try again.");
+    return false;
+  }
+  previewWindow.document.open();
+  previewWindow.document.write(`
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <title>${escapeHtml(title || "Preview")}</title>
+      <style>
+        html, body {
+          margin: 0;
+          min-height: 100%;
+          background: #f4f7fb;
+          color: #24384f;
+          font-family: Arial, sans-serif;
+        }
+        body {
+          padding: 24px;
+        }
+        .preview-shell {
+          max-width: 1100px;
+          margin: 0 auto;
+          background: #fff;
+          border: 1px solid #d0dae5;
+          border-radius: 16px;
+          box-shadow: 0 18px 40px rgba(24, 44, 72, 0.12);
+          overflow: hidden;
+        }
+        .preview-head {
+          padding: 18px 22px;
+          border-bottom: 1px solid #dce4ec;
+        }
+        .preview-head h3 {
+          margin: 0;
+          font-size: 20px;
+        }
+        .preview-head p {
+          margin: 6px 0 0;
+          color: #597087;
+          font-size: 14px;
+        }
+        pre {
+          margin: 0;
+          padding: 22px;
+          overflow: auto;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-size: 13px;
+          line-height: 1.5;
+          background: #f8fbfe;
+        }
+      </style>
+    </head>
+    <body>
+      <section class="preview-shell">
+        <header class="preview-head">
+          <h3>${escapeHtml(heading || title || "Preview")}</h3>
+          <p>Read-only HL7 message preview</p>
+        </header>
+        <pre>${escapeHtml(String(content || "").replace(/\r/g, "\n"))}</pre>
+      </section>
+    </body>
+    </html>
+  `);
+  previewWindow.document.close();
+  return true;
+}
+
+function downloadPlainTextFile({ content, fileName, mimeType = "text/plain;charset=utf-8" }) {
+  const blob = new Blob([String(content || "")], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName || "download.txt";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function getSearchablePatients() {
@@ -7392,7 +7828,443 @@ function renderPanelMaster() {
   renderRows();
 }
 
-function renderOrderHistory() {
+function renderOutputResults() {
+  const outputTabs = [
+    { key: "pending-results", label: "Pending Results" },
+    { key: "pending-pharmd", label: "Pending PharmD" },
+    { key: "completed", label: "Completed" },
+    { key: "rejected", label: "Rejected" },
+  ];
+  let activeTab = outputTabs[0].key;
+  let searchQuery = "";
+  let outputTableNode = null;
+  const sendingPharmdOrders = new Set();
+
+  function formatOutputDate(iso) {
+    if (!iso) return "-";
+    const value = new Date(iso);
+    if (Number.isNaN(value.getTime())) return "-";
+    return value.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  function findOrderById(orderId) {
+    return readOrders().find((item) => String(item?.orderId || "").trim() === String(orderId || "").trim()) || null;
+  }
+
+  function resolveOrderAccession(order) {
+    return resolvePharmdAccession(order) || "-";
+  }
+
+  function resolveOutputBucket(order) {
+    const status = String(order?.status || "").trim().toLowerCase();
+    if (status === "rejected") return "rejected";
+    if (order?.publishedReports?.final?.publishedAt || status === "complete") return "completed";
+    if (status === "processed" || status === "validated" || order?.processedResult?.report) return "pending-pharmd";
+    return "pending-results";
+  }
+
+  function resolveOutputBadgeClass(order) {
+    const bucket = resolveOutputBucket(order);
+    if (bucket === "completed") return "status-complete";
+    if (bucket === "rejected") return "status-rejected";
+    if (bucket === "pending-pharmd") return "status-processed";
+    return "status-pending";
+  }
+
+  function resolveOutputStageLabel(order) {
+    const bucket = resolveOutputBucket(order);
+    if (bucket === "completed") return "Completed";
+    if (bucket === "rejected") return "Rejected";
+    if (bucket === "pending-pharmd") return "Pending PharmD";
+    return "Pending Results";
+  }
+
+  function getTabCount(tabKey) {
+    return readOrders().filter((order) => resolveOutputBucket(order) === tabKey).length;
+  }
+
+  function getFilteredOrders() {
+    const needle = searchQuery.trim().toLowerCase();
+    return readOrders()
+      .filter((order) => resolveOutputBucket(order) === activeTab)
+      .filter((order) => {
+        if (!needle) return true;
+        const haystack = [
+          order?.orderId,
+          resolveOrderAccession(order),
+          order?.patientName,
+          order?.patientId,
+          order?.provider,
+          order?.facilityName,
+          order?.services?.[0]?.serviceName,
+        ]
+          .map((value) => String(value || "").toLowerCase())
+          .join(" ");
+        return haystack.includes(needle);
+      })
+      .sort((a, b) => new Date(b.updatedAt || b.processedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.processedAt || a.createdAt || 0).getTime());
+  }
+
+  function replaceOrderInState(updatedOrder) {
+    if (!updatedOrder?.orderId) return;
+    const orders = readOrders();
+    const index = orders.findIndex((item) => String(item?.orderId || "").trim() === String(updatedOrder.orderId || "").trim());
+    if (index >= 0) orders[index] = updatedOrder;
+    else orders.unshift(updatedOrder);
+    writeOrders(orders);
+  }
+
+  function resolvePharmdRemotePath(order) {
+    const explicit = String(order?.pharmd?.remotePath || "").trim();
+    if (explicit) return explicit;
+    const remoteDir = String(order?.pharmd?.remoteDir || "oru").trim().replace(/^\/+|\/+$/g, "");
+    const fileName = resolvePharmdMessageFileName(order);
+    return remoteDir ? `${remoteDir}/${fileName}` : fileName;
+  }
+
+  function buildPharmdLogPreview(order) {
+    const logs = Array.isArray(order?.pharmd?.logs) ? order.pharmd.logs : [];
+    const headerLines = [
+      `Order #: ${String(order?.orderId || "-").trim() || "-"}`,
+      `Accession #: ${resolveOrderAccession(order)}`,
+      `Patient: ${String(order?.patientName || "-").trim() || "-"}`,
+      `Status: ${resolvePharmdStatusInfo(order).label}`,
+      `Remote Target: ${resolvePharmdRemotePath(order)}`,
+      "",
+    ];
+    if (!logs.length) {
+      return `${headerLines.join("\n")}No PharmD connection attempts have been recorded for this order yet.`;
+    }
+    const logLines = logs.map((entry) => {
+      const ts = formatOutputDate(entry?.ts || "");
+      const level = String(entry?.level || "info").toUpperCase();
+      const step = String(entry?.step || "general").trim() || "general";
+      const message = String(entry?.message || "").trim() || "Log entry";
+      return `[${ts}] ${level} (${step}) ${message}`;
+    });
+    return [...headerLines, ...logLines].join("\n");
+  }
+
+  async function sendPharmdOrder(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    const oruMessage = resolvePharmdOruMessage(order);
+    if (!oruMessage) throw new Error("No HL7 ORU message is available for this order yet.");
+    if (!csrfToken) await fetchCsrfToken();
+    const payload = await requestJson(`/api/pharmd/orders/${encodeURIComponent(orderId)}/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({
+        oruMessage,
+        fileName: resolvePharmdMessageFileName(order),
+      }),
+    });
+    if (payload?.order) replaceOrderInState(payload.order);
+    renderOutputResultsTable();
+    if (!payload?.ok) {
+      throw new Error(payload?.message || "Unable to send PharmD HL7 file.");
+    }
+    return payload;
+  }
+
+  function buildGenericQueueTableMarkup(rows) {
+    return `
+      <div class="output-results-meta">Rows: ${rows.length}</div>
+      <table class="order-history-table">
+        <thead>
+          <tr>
+            <th>Order #</th>
+            <th>Accession #</th>
+            <th>Patient</th>
+            <th>Panel</th>
+            <th>Provider</th>
+            <th>Facility</th>
+            <th>Last Activity</th>
+            <th>Stage</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map((row) => `
+              <tr>
+                <td>${escapeHtml(row?.orderId || "-")}</td>
+                <td>${escapeHtml(resolveOrderAccession(row))}</td>
+                <td>
+                  <strong>${escapeHtml(row?.patientName || "-")}</strong>
+                  <div class="subtle">(${escapeHtml(row?.patientId || "-")})</div>
+                </td>
+                <td>${escapeHtml(row?.services?.[0]?.serviceName || "Lab Panel")}</td>
+                <td>${escapeHtml(row?.provider || "-")}</td>
+                <td>${escapeHtml(row?.facilityName || "-")}</td>
+                <td>${escapeHtml(formatOutputDate(row?.publishedReports?.final?.publishedAt || row?.processedAt || row?.updatedAt || row?.createdAt || ""))}</td>
+                <td><span class="history-status ${resolveOutputBadgeClass(row)}">${escapeHtml(resolveOutputStageLabel(row))}</span></td>
+              </tr>
+            `)
+            .join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function buildPendingPharmdTableMarkup(rows) {
+    return `
+      <div class="output-results-meta">Rows: ${rows.length}</div>
+      <table class="order-history-table">
+        <thead>
+          <tr>
+            <th>Order #</th>
+            <th>Accession #</th>
+            <th>Patient</th>
+            <th>Panel</th>
+            <th>PharmD Status</th>
+            <th>HL7 Message</th>
+            <th>Queued / Sent</th>
+            <th>Report Received</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map((row) => {
+              const statusInfo = resolvePharmdStatusInfo(row);
+              const message = resolvePharmdOruMessage(row);
+              const hasMessage = Boolean(message);
+              const fileName = resolvePharmdMessageFileName(row);
+              const isSending = sendingPharmdOrders.has(String(row?.orderId || "").trim());
+              return `
+                <tr>
+                  <td>${escapeHtml(row?.orderId || "-")}</td>
+                  <td>${escapeHtml(resolveOrderAccession(row))}</td>
+                  <td>
+                    <strong>${escapeHtml(row?.patientName || "-")}</strong>
+                    <div class="subtle">(${escapeHtml(row?.patientId || "-")})</div>
+                  </td>
+                  <td>
+                    ${escapeHtml(row?.services?.[0]?.serviceName || "Lab Panel")}
+                    <div class="subtle">${escapeHtml(row?.provider || "-")} • ${escapeHtml(row?.facilityName || "-")}</div>
+                  </td>
+                  <td>
+                    <span class="history-status ${escapeHtml(statusInfo.className)}">${escapeHtml(statusInfo.label)}</span>
+                    ${statusInfo.detail ? `<div class="subtle output-results-inline-note">${escapeHtml(statusInfo.detail)}</div>` : ""}
+                  </td>
+                  <td>
+                    <div class="output-results-message-actions">
+                      <button
+                        type="button"
+                        class="table-action-btn"
+                        data-view-pharmd-message="${escapeHtml(row?.orderId || "")}"
+                        ${hasMessage ? "" : "disabled"}
+                      >
+                        View ORU
+                      </button>
+                      <button
+                        type="button"
+                        class="table-action-btn"
+                        data-download-pharmd-message="${escapeHtml(row?.orderId || "")}"
+                        data-pharmd-file-name="${escapeHtml(fileName)}"
+                        ${hasMessage ? "" : "disabled"}
+                      >
+                        Download ORU
+                      </button>
+                      <button
+                        type="button"
+                        class="table-action-btn"
+                        data-send-pharmd-message="${escapeHtml(row?.orderId || "")}"
+                        ${hasMessage && !isSending ? "" : "disabled"}
+                      >
+                        ${isSending ? "Sending..." : "Send"}
+                      </button>
+                      <button
+                        type="button"
+                        class="table-action-btn"
+                        data-view-pharmd-log="${escapeHtml(row?.orderId || "")}"
+                      >
+                        Log
+                      </button>
+                    </div>
+                    <div class="subtle output-results-inline-note">${hasMessage ? escapeHtml(fileName) : "HL7 message unavailable"}</div>
+                  </td>
+                  <td>${escapeHtml(formatOutputDate(resolvePharmdQueuedOrSentAt(row)))}</td>
+                  <td>${escapeHtml(formatOutputDate(resolvePharmdReportReceivedAt(row)))}</td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderOutputResultsTable() {
+    const rows = getFilteredOrders();
+    if (!outputTableNode) return;
+
+    if (!rows.length) {
+      outputTableNode.innerHTML = `
+        <section class="output-results-empty">
+          <p class="badge">Queue Clear</p>
+          <h3>No orders are currently in ${escapeHtml(outputTabs.find((tab) => tab.key === activeTab)?.label || "this queue")}.</h3>
+          <p class="subtle">Try another tab or clear the search to review more result records.</p>
+        </section>
+      `;
+      return;
+    }
+
+    outputTableNode.innerHTML = activeTab === "pending-pharmd"
+      ? buildPendingPharmdTableMarkup(rows)
+      : buildGenericQueueTableMarkup(rows);
+  }
+
+  panelBody.innerHTML = `
+    <section class="output-results-page">
+      <div class="output-results-hero">
+        <div>
+          <p class="badge">Result Workflow</p>
+          <h3>Output Results</h3>
+          <p class="subtle">Review result queues by operational stage so pending work is easier to triage.</p>
+        </div>
+        <label class="output-results-search">
+          <span>Search</span>
+          <input id="output-results-search" type="search" placeholder="Order, accession, patient, provider">
+        </label>
+      </div>
+
+      <div id="output-results-tabs" class="output-results-tabs" role="tablist" aria-label="Output Results Queues">
+        ${outputTabs
+          .map((tab) => `
+            <button
+              type="button"
+              class="history-tab ${tab.key === activeTab ? "active" : ""}"
+              data-output-tab="${tab.key}"
+              role="tab"
+              aria-selected="${tab.key === activeTab ? "true" : "false"}"
+            >
+              <span>${tab.label}</span>
+              <strong>${getTabCount(tab.key)}</strong>
+            </button>
+          `)
+          .join("")}
+      </div>
+
+      <div id="output-results-table"></div>
+    </section>
+  `;
+
+  const tabsNode = document.getElementById("output-results-tabs");
+  const searchNode = document.getElementById("output-results-search");
+  outputTableNode = document.getElementById("output-results-table");
+
+  tabsNode?.addEventListener("click", (event) => {
+    const tabBtn = event.target.closest("[data-output-tab]");
+    if (!tabBtn) return;
+    const nextTab = String(tabBtn.getAttribute("data-output-tab") || "").trim();
+    if (!nextTab || nextTab === activeTab) return;
+    activeTab = nextTab;
+    tabsNode.querySelectorAll("[data-output-tab]").forEach((node) => {
+      const selected = node.getAttribute("data-output-tab") === activeTab;
+      node.classList.toggle("active", selected);
+      node.setAttribute("aria-selected", String(selected));
+    });
+    renderOutputResultsTable();
+  });
+
+  searchNode?.addEventListener("input", (event) => {
+    searchQuery = event.target.value || "";
+    renderOutputResultsTable();
+  });
+
+  outputTableNode?.addEventListener("click", (event) => {
+    const sendBtn = event.target.closest("[data-send-pharmd-message]");
+    if (sendBtn) {
+      const orderId = String(sendBtn.getAttribute("data-send-pharmd-message") || "").trim();
+      if (!orderId || sendingPharmdOrders.has(orderId)) return;
+      sendingPharmdOrders.add(orderId);
+      renderOutputResultsTable();
+      sendPharmdOrder(orderId)
+        .then((payload) => {
+          alert(payload?.message || "PharmD HL7 file sent successfully.");
+        })
+        .catch((error) => {
+          alert(error?.message || "Unable to send PharmD HL7 file.");
+        })
+        .finally(() => {
+          sendingPharmdOrders.delete(orderId);
+          renderOutputResultsTable();
+        });
+      return;
+    }
+
+    const logBtn = event.target.closest("[data-view-pharmd-log]");
+    if (logBtn) {
+      const orderId = logBtn.getAttribute("data-view-pharmd-log");
+      const order = findOrderById(orderId);
+      if (!order) {
+        alert("Order not found.");
+        return;
+      }
+      openPlainTextPreviewWindow({
+        title: `Order ${order?.orderId || ""} PharmD Send Log`,
+        heading: `PharmD Send Log • Order #${order?.orderId || "-"}`,
+        content: buildPharmdLogPreview(order),
+      });
+      return;
+    }
+
+    const viewBtn = event.target.closest("[data-view-pharmd-message]");
+    if (viewBtn) {
+      const orderId = viewBtn.getAttribute("data-view-pharmd-message");
+      const order = findOrderById(orderId);
+      const message = resolvePharmdOruMessage(order);
+      if (!message) {
+        alert("No HL7 ORU message is available for this order yet.");
+        return;
+      }
+      openPlainTextPreviewWindow({
+        title: `Order ${order?.orderId || ""} PharmD ORU`,
+        heading: `PharmD ORU Message • Order #${order?.orderId || "-"}`,
+        content: message,
+      });
+      return;
+    }
+
+    const downloadBtn = event.target.closest("[data-download-pharmd-message]");
+    if (downloadBtn) {
+      const orderId = downloadBtn.getAttribute("data-download-pharmd-message");
+      const order = findOrderById(orderId);
+      const message = resolvePharmdOruMessage(order);
+      if (!message) {
+        alert("No HL7 ORU message is available for this order yet.");
+        return;
+      }
+      downloadPlainTextFile({
+        content: message,
+        fileName: downloadBtn.getAttribute("data-pharmd-file-name") || resolvePharmdMessageFileName(order),
+        mimeType: "text/plain;charset=utf-8",
+      });
+    }
+  });
+
+  renderOutputResultsTable();
+}
+
+function renderOrderHistory(initialTab = "all-orders") {
+  const historyTabs = [
+    { key: "all-orders", label: "All Orders" },
+    { key: "order-settlements", label: "Order Settlements" },
+    { key: "add-service", label: "Add Service To Order" },
+    { key: "upload-results", label: "Upload Test Results" },
+  ];
+  const validHistoryTabs = new Set(historyTabs.map((item) => item.key));
+  const startingTab = validHistoryTabs.has(initialTab) ? initialTab : "all-orders";
+
   panelBody.innerHTML = `
     <section class="order-history-page">
       <div class="order-history-banner">
@@ -7408,10 +8280,17 @@ function renderOrderHistory() {
 
       <div class="order-history-topbar">
         <div class="order-history-tabs">
-          <button type="button" class="history-tab active" data-tab="all-orders">All Orders</button>
-          <button type="button" class="history-tab" data-tab="order-settlements">Order Settlements</button>
-          <button type="button" class="history-tab" data-tab="add-service">Add Service To Order</button>
-          <button type="button" class="history-tab" data-tab="upload-results">Upload Test Results</button>
+          ${historyTabs
+            .map((item) => `
+              <button
+                type="button"
+                class="history-tab ${item.key === startingTab ? "active" : ""}"
+                data-tab="${item.key}"
+              >
+                ${item.label}
+              </button>
+            `)
+            .join("")}
         </div>
         <div class="order-history-searches">
           <div class="order-id-search">
@@ -7442,7 +8321,7 @@ function renderOrderHistory() {
   const uploadPanelNode = document.getElementById("upload-results-panel");
   const tableWrapNode = panelBody.querySelector(".order-history-table-wrap");
   const previewModalNode = document.getElementById("order-preview-modal");
-  let activeTab = "all-orders";
+  let activeTab = startingTab;
   let uploadStatusMessage = "";
   const processingOrders = new Set();
   const generatingReports = new Set();
@@ -11228,7 +12107,14 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     updateValidationSaveState(orderId);
   });
 
-  renderTable();
+  const showUpload = activeTab === "upload-results";
+  uploadPanelNode.classList.toggle("hidden", !showUpload);
+  tableWrapNode.classList.toggle("hidden", showUpload);
+  if (showUpload) {
+    renderUploadPanel();
+  } else {
+    renderTable();
+  }
 }
 
 function deriveFacilityColumns(rows, entity = "accounts", options = {}) {
@@ -13039,6 +13925,10 @@ function renderView() {
       case "order-history":
         panelBody.classList.add("full-bleed");
         renderOrderHistory();
+        break;
+      case "output-results":
+        panelBody.classList.add("full-bleed");
+        renderOutputResults();
         break;
       case "master-registry":
         panelBody.classList.add("full-bleed");
