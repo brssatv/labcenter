@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "NODE_ENV=development node server.js",
+    "start:runtime-data": "node scripts/start-local-runtime.js",
     "hash-password": "node scripts/hash-password.js",
     "desktop": "electron .",
     "dist:win": "electron-builder --win nsis",

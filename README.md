@@ -40,6 +40,24 @@ This project now includes a server-backed login portal with security controls th
 4. Open:
    - `http://localhost:3000`
 
+## Run local with exported production data
+
+If you want local to show the same Facility records as `portal.mindbodyheal.co`, run the app against an exported runtime-data folder instead of the repo's built-in `data/` snapshot.
+
+1. Export or copy the production runtime-data folder to your machine.
+2. Put it somewhere outside git or in the ignored local `runtime-data/` folder.
+3. Make sure it includes:
+   - required: `facility.json`
+   - recommended: `users.json`
+   - recommended: `labcenter.sqlite`
+4. Start the app against that folder:
+   - `PORT=43211 npm run start:runtime-data -- ./runtime-data`
+5. Log in as a doctor/admin user if you want to see all Facility records.
+
+Notes:
+- If you only copy `facility.json`, the Facility screen can still match production data, but orders, users, and some other runtime state may not.
+- `sessions/` does not need to be copied; LabCenter will create it automatically inside the chosen runtime-data folder.
+
 ## SOP
 
 Operational instructions for using the app are documented in [SOP.md](/Users/greyhouse/Documents/LabCenter/SOP.md).
