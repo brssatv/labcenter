@@ -3190,7 +3190,7 @@ function renderRegistration(prefillData = null) {
           <section class="requisition-card">
             <h4 class="requisition-card-title title-dark">Facility Information</h4>
             <div class="field-grid one-col">
-              <label><span>Reference Lab</span><input name="referenceLab" value="LabCenter Diagnostics" placeholder="Reference Lab"></label>
+              <label><span>Reference Lab</span><input name="referenceLab" placeholder="Reference Lab"></label>
             </div>
             <div class="field-grid one-col">
               <label><span>Facility *</span>
@@ -3774,7 +3774,7 @@ function renderRegistration(prefillData = null) {
     }
 
     const map = {
-      referenceLab: normalizedValues.referenceLab || "LabCenter Diagnostics",
+      referenceLab: normalizedValues.referenceLab || "",
       facilityName: normalizedValues.facilityName,
       provider: normalizedValues.provider,
       providerNpi: normalizedValues.providerNpi || "",
