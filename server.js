@@ -4066,6 +4066,61 @@ app.put("/api/facility/providers/:providerId", requireDoctorAuth, (req, res) => 
   }
 });
 
+app.get("/api/orders/:orderId/final-report-pdf", requireAuthenticatedUser, async (req, res) => {
+  try {
+    const orderId = String(req.params.orderId || "").trim();
+    if (!orderId) {
+      return res.status(400).json({ error: "Order ID is required." });
+    }
+
+    const existingOrder = portalStore.getOrderById(orderId);
+    if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+
+    const generatedFinal = existingOrder?.generatedReports?.final;
+    const bucket = String(generatedFinal?.bucket || "").trim();
+    const key = String(generatedFinal?.key || "").trim();
+    const fileName = sanitizeReportPdfFileName(
+      generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`
+    );
+    if (!bucket || !key) {
+      return res.status(404).json({ error: "Saved final report PDF not found for this order." });
+    }
+    if (!s3Storage.enabled) {
+      return res.status(503).json({ error: "S3 report storage is not configured for this environment." });
+    }
+
+    const storedReport = await s3Storage.downloadBuffer({ bucket, key });
+    if (!storedReport?.body?.length) {
+      return res.status(404).json({ error: "Saved final report PDF could not be loaded." });
+    }
+
+    auditLog(req, "view_saved_final_report_pdf", "success", {
+      orderId,
+      bucket,
+      key,
+      bytes: storedReport.body.length,
+    });
+
+    res.setHeader("Content-Type", storedReport.contentType || "application/pdf");
+    res.setHeader("Content-Disposition", storedReport.contentDisposition || `inline; filename="${fileName}"`);
+    res.setHeader("Cache-Control", "private, max-age=0, no-store");
+    if (storedReport.contentLength) {
+      res.setHeader("Content-Length", String(storedReport.contentLength));
+    }
+    return res.send(storedReport.body);
+  } catch (error) {
+    auditLog(req, "view_saved_final_report_pdf", "failed", {
+      orderId: String(req.params.orderId || ""),
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({
+      error: error?.message || "Unable to load saved final report PDF.",
+    });
+  }
+});
+
 app.post("/api/orders/render-report-pdf", async (req, res) => {
   if (!hasReportPdfAccess(req)) {
     return res.status(401).json({ error: "Authentication required." });
@@ -4135,109 +4190,47 @@ app.post("/api/orders/publish-final-report", async (req, res) => {
       return res.status(404).json({ error: "Order not found." });
     }
 
-    const provider = resolveProviderForOrderPublish(existingOrder);
-    if (!provider) {
-      return res.status(400).json({ error: "Unable to find a matching provider with publish settings for this order." });
-    }
-
-    const providerName = String(
-      provider?.validator_name || provider?.provider_name || provider?.display_name || provider?.provider_information?.providerName || existingOrder.provider || ""
-    ).trim();
-    const targets = getProviderPublishTargets(provider);
-    const email = {
-      enabled: targets.sendEmail,
-      recipients: targets.emailRecipients,
-      mode: publishEmailMode,
-      status: !targets.sendEmail
-        ? "disabled"
-        : !targets.emailRecipients.length
-        ? "missing_recipient"
-        : publishEmailMode === "disabled"
-        ? "not_configured"
-        : publishEmailMode === "log"
-        ? "logged"
-        : "simulated",
-    };
-    const fax = {
-      enabled: targets.sendFax,
-      recipient: targets.faxRecipient,
-      mode: publishFaxMode,
-      status: !targets.sendFax
-        ? "disabled"
-        : !targets.faxRecipient
-        ? "missing_recipient"
-        : publishFaxMode === "disabled"
-        ? "not_configured"
-        : publishFaxMode === "log"
-        ? "logged"
-        : "simulated",
-    };
-
-    const successfulChannels = [email.status, fax.status].filter((status) => status === "logged" || status === "simulated");
-    if (!successfulChannels.length) {
-      const reasons = [];
-      if (email.enabled && !email.recipients.length) reasons.push("email recipient is missing");
-      if (fax.enabled && !fax.recipient) reasons.push("fax number is missing");
-      if (email.enabled && email.recipients.length && email.status === "not_configured") reasons.push("email delivery is not configured");
-      if (fax.enabled && fax.recipient && fax.status === "not_configured") reasons.push("fax delivery is not configured");
-      if (!email.enabled && !fax.enabled) reasons.push("provider publish settings do not enable email or fax");
-      return res.status(400).json({
-        error: `Unable to publish final report: ${reasons.filter(Boolean).join("; ")}.`,
-        email,
-        fax,
-      });
-    }
-
     const pdfBuffer = await renderReportPdfFromHtml(html);
     await persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType: "final" });
-
-    const publishedAt = new Date().toISOString();
+    const refreshedOrder = portalStore.getOrderById(orderId) || existingOrder;
+    const prePublishedAt = new Date().toISOString();
+    const prePublishedBy = String(
+      req?.session?.user?.email
+      || req?.session?.user?.displayName
+      || req?.session?.clientUser?.username
+      || "system"
+    ).trim();
     const savedOrder = portalStore.upsertOrders([
       {
-        ...existingOrder,
-        publishedReports: {
-          ...(existingOrder.publishedReports || {}),
-          final: {
-            publishedAt,
-            providerName,
-            email: {
-              status: email.status,
-              recipients: email.recipients,
-              mode: email.mode,
-            },
-            fax: {
-              status: fax.status,
-              recipient: fax.recipient,
-              mode: fax.mode,
-            },
-            fileName,
-          },
+        ...refreshedOrder,
+        updatedAt: prePublishedAt,
+        pharmd: {
+          ...((refreshedOrder?.pharmd && typeof refreshedOrder.pharmd === "object") ? refreshedOrder.pharmd : {}),
+          prePublishedAt,
+          prePublishedBy,
+          prePublishedFileName: fileName,
+          readyForPharmdAt: prePublishedAt,
         },
-        updatedAt: publishedAt,
       },
     ])[0];
 
-    auditLog(req, "publish_final_report", "success", {
+    auditLog(req, "prepublish_final_report", "success", {
       orderId,
-      providerName,
-      emailStatus: email.status,
-      faxStatus: fax.status,
       fileName,
+      storedToS3: Boolean(savedOrder?.generatedReports?.final?.bucket && savedOrder?.generatedReports?.final?.key),
     });
 
     return res.json({
-      message: `Publish completed for Order #${orderId} to ${providerName || "provider"}.`,
-      email,
-      fax,
+      message: `PrePublish completed for Order #${orderId}. Final report is ready for PharmD.`,
       order: savedOrder,
     });
   } catch (error) {
-    auditLog(req, "publish_final_report", "failed", {
+    auditLog(req, "prepublish_final_report", "failed", {
       orderId,
       reason: error?.message || "unexpected_error",
     });
     return res.status(500).json({
-      error: error?.message || "Unable to publish final report.",
+      error: error?.message || "Unable to prepublish final report.",
     });
   }
 });

@@ -2976,6 +2976,13 @@ function resolvePharmdStatusInfo(order) {
     || pharmd?.oruStatus
     || ""
   ).trim().toLowerCase();
+  if (pharmd?.skipPharmd) {
+    return {
+      label: "Skip Enabled",
+      className: "status-processed",
+      detail: "Using the stored final report for validation.",
+    };
+  }
   if (pharmd?.error) {
     return {
       label: "Send Failed",
@@ -2988,6 +2995,13 @@ function resolvePharmdStatusInfo(order) {
       label: "Report Received",
       className: "status-complete",
       detail: "",
+    };
+  }
+  if (pharmd?.prePublishedAt) {
+    return {
+      label: "PrePublished",
+      className: "status-processed",
+      detail: "Final report stored and ready for PharmD.",
     };
   }
   if (["sent", "delivered", "transmitted", "uploaded"].includes(statusToken) || pharmd?.sentAt || pharmd?.submittedAt) {
@@ -3016,6 +3030,8 @@ function resolvePharmdQueuedOrSentAt(order) {
     || order?.pharmd?.submittedAt
     || order?.pharmd?.queuedAt
     || order?.pharmd?.messageCreatedAt
+    || order?.pharmd?.prePublishedAt
+    || order?.pharmd?.skipPharmdAt
     || order?.processedAt
     || "";
 }
@@ -3037,6 +3053,22 @@ function resolvePharmdMessageFileName(order) {
   const accession = resolvePharmdAccession(order);
   const stem = accession || `Order_${String(order?.orderId || "").trim() || "PharmD"}`;
   return `${stem}_PharmD_ORU.hl7`;
+}
+
+function hasSavedFinalReport(order) {
+  return Boolean(
+    String(order?.generatedReports?.final?.bucket || "").trim()
+    && String(order?.generatedReports?.final?.key || "").trim()
+  );
+}
+
+function isPharmdSkipped(order) {
+  return Boolean(order?.pharmd?.skipPharmd);
+}
+
+function canValidatePharmdFinalReport(order) {
+  if (!hasSavedFinalReport(order)) return false;
+  return Boolean(isPharmdSkipped(order) || resolvePharmdReportReceivedAt(order));
 }
 
 function openPlainTextPreviewWindow({ title, heading, content }) {
@@ -8699,7 +8731,10 @@ function renderOutputResults() {
   let activeTab = outputTabs[0].key;
   let searchQuery = "";
   let outputTableNode = null;
+  let tabsNode = null;
   const sendingPharmdOrders = new Set();
+  const workflowSavingOrders = new Set();
+  const previewLoadingOrders = new Set();
 
   function formatOutputDate(iso) {
     if (!iso) return "-";
@@ -8725,7 +8760,7 @@ function renderOutputResults() {
   function resolveOutputBucket(order) {
     const status = String(order?.status || "").trim().toLowerCase();
     if (status === "rejected") return "rejected";
-    if (order?.publishedReports?.final?.publishedAt || status === "complete") return "completed";
+    if (order?.publishedReports?.final?.publishedAt || order?.pharmd?.completedAt || order?.completedAt || status === "complete") return "completed";
     if (status === "processed" || status === "validated" || order?.processedResult?.report) return "pending-pharmd";
     return "pending-results";
   }
@@ -8750,6 +8785,18 @@ function renderOutputResults() {
     return readOrders().filter((order) => resolveOutputBucket(order) === tabKey).length;
   }
 
+  function resolveOutputLastActivityAt(order) {
+    return order?.completedAt
+      || order?.pharmd?.completedAt
+      || order?.publishedReports?.final?.publishedAt
+      || order?.pharmd?.prePublishedAt
+      || order?.pharmd?.validationReadyAt
+      || order?.updatedAt
+      || order?.processedAt
+      || order?.createdAt
+      || "";
+  }
+
   function getFilteredOrders() {
     const needle = searchQuery.trim().toLowerCase();
     return readOrders()
@@ -8769,7 +8816,7 @@ function renderOutputResults() {
           .join(" ");
         return haystack.includes(needle);
       })
-      .sort((a, b) => new Date(b.updatedAt || b.processedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.processedAt || a.createdAt || 0).getTime());
+      .sort((a, b) => new Date(resolveOutputLastActivityAt(b) || 0).getTime() - new Date(resolveOutputLastActivityAt(a) || 0).getTime());
   }
 
   function replaceOrderInState(updatedOrder) {
@@ -8812,6 +8859,16 @@ function renderOutputResults() {
     return [...headerLines, ...logLines].join("\n");
   }
 
+  function refreshOutputTabCounts() {
+    if (!tabsNode) return;
+    tabsNode.querySelectorAll("[data-output-tab]").forEach((node) => {
+      const countNode = node.querySelector("strong");
+      if (countNode) {
+        countNode.textContent = String(getTabCount(node.getAttribute("data-output-tab")));
+      }
+    });
+  }
+
   async function sendPharmdOrder(orderId) {
     const order = findOrderById(orderId);
     if (!order) throw new Error("Order not found.");
@@ -8835,6 +8892,159 @@ function renderOutputResults() {
       throw new Error(payload?.message || "Unable to send PharmD HL7 file.");
     }
     return payload;
+  }
+
+  async function toggleSkipPharmd(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    if (!hasSavedFinalReport(order)) {
+      throw new Error("Saved final report preview is not available for this order yet.");
+    }
+    const nextSkipState = !isPharmdSkipped(order);
+    await updateOrderById(orderId, (row) => {
+      const nowIso = new Date().toISOString();
+      const pharmd = row?.pharmd && typeof row.pharmd === "object" ? { ...row.pharmd } : {};
+      if (nextSkipState) {
+        pharmd.skipPharmd = true;
+        pharmd.skipPharmdAt = nowIso;
+        pharmd.validationReadyAt = nowIso;
+      } else {
+        delete pharmd.skipPharmd;
+        delete pharmd.skipPharmdAt;
+        delete pharmd.validationReadyAt;
+      }
+      return {
+        ...row,
+        pharmd,
+        updatedAt: nowIso,
+      };
+    });
+  }
+
+  function writeLoadingPreviewWindow(previewWindow, title, message) {
+    previewWindow.document.open();
+    previewWindow.document.write(`
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <title>${escapeHtml(title || "Loading Final Report")}</title>
+        <style>
+          html, body {
+            margin: 0;
+            min-height: 100%;
+            background: #f5f8fc;
+            color: #24384f;
+            font-family: Arial, sans-serif;
+          }
+          body {
+            display: grid;
+            place-items: center;
+            padding: 24px;
+          }
+          .loading-card {
+            max-width: 520px;
+            border: 1px solid #cfdae6;
+            border-radius: 16px;
+            background: #fff;
+            padding: 22px 24px;
+            box-shadow: 0 16px 36px rgba(23, 44, 72, 0.12);
+          }
+          .loading-card h3 {
+            margin: 0 0 8px;
+            font-size: 20px;
+          }
+          .loading-card p {
+            margin: 0;
+            color: #4a5f77;
+            line-height: 1.5;
+          }
+        </style>
+      </head>
+      <body>
+        <article class="loading-card">
+          <h3>${escapeHtml(title || "Loading Final Report")}</h3>
+          <p>${escapeHtml(message || "Please wait while we load the saved final report.")}</p>
+        </article>
+      </body>
+      </html>
+    `);
+    previewWindow.document.close();
+  }
+
+  function writePreviewWindowError(previewWindow, title, message) {
+    if (!previewWindow) return;
+    writeLoadingPreviewWindow(previewWindow, title, message);
+  }
+
+  async function openSavedFinalReportPreview(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    if (!hasSavedFinalReport(order)) {
+      throw new Error("Saved final report preview is not available for this order yet.");
+    }
+
+    const previewWindow = window.open("", "_blank", "popup=yes,width=1080,height=860");
+    if (!previewWindow) {
+      throw new Error("Unable to open preview window. Please allow pop-ups and try again.");
+    }
+    writeLoadingPreviewWindow(
+      previewWindow,
+      `Order #${order?.orderId || "-"} Final Report`,
+      `Loading the saved final report preview for Order #${order?.orderId || "-"}.`
+    );
+
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/final-report-pdf`, {
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        let errorMessage = "Unable to load the saved final report preview.";
+        try {
+          const payload = await response.json();
+          errorMessage = String(payload?.error || errorMessage);
+        } catch {
+          const text = await response.text();
+          if (text.trim()) errorMessage = text.trim();
+        }
+        throw new Error(errorMessage);
+      }
+      const blob = await response.blob();
+      if (!blob.size) {
+        throw new Error("Saved final report preview is empty.");
+      }
+      const blobUrl = URL.createObjectURL(blob);
+      previewWindow.location.replace(blobUrl);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60 * 1000);
+    } catch (error) {
+      writePreviewWindowError(
+        previewWindow,
+        "Final Report Preview Unavailable",
+        error?.message || "Unable to load the saved final report preview."
+      );
+      throw error;
+    }
+  }
+
+  async function markOrderComplete(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    if (!canValidatePharmdFinalReport(order)) {
+      throw new Error("This order is not ready to move to Completed yet.");
+    }
+    await updateOrderById(orderId, (row) => {
+      const nowIso = new Date().toISOString();
+      const pharmd = row?.pharmd && typeof row.pharmd === "object" ? { ...row.pharmd } : {};
+      pharmd.completedAt = nowIso;
+      pharmd.completionSource = isPharmdSkipped(row) ? "skip_pharmd" : "pharmd_report_received";
+      return {
+        ...row,
+        status: "Complete",
+        completedAt: nowIso,
+        updatedAt: nowIso,
+        pharmd,
+      };
+    });
   }
 
   function buildGenericQueueTableMarkup(rows) {
@@ -8866,7 +9076,7 @@ function renderOutputResults() {
                 <td>${escapeHtml(row?.services?.[0]?.serviceName || "Lab Panel")}</td>
                 <td>${escapeHtml(row?.provider || "-")}</td>
                 <td>${escapeHtml(row?.facilityName || "-")}</td>
-                <td>${escapeHtml(formatOutputDate(row?.publishedReports?.final?.publishedAt || row?.processedAt || row?.updatedAt || row?.createdAt || ""))}</td>
+                <td>${escapeHtml(formatOutputDate(resolveOutputLastActivityAt(row)))}</td>
                 <td><span class="history-status ${resolveOutputBadgeClass(row)}">${escapeHtml(resolveOutputStageLabel(row))}</span></td>
               </tr>
             `)
@@ -8890,16 +9100,34 @@ function renderOutputResults() {
             <th>HL7 Message</th>
             <th>Queued / Sent</th>
             <th>Report Received</th>
+            <th>Skip PharmD</th>
+            <th>Validate</th>
+            <th>Mark as Complete</th>
           </tr>
         </thead>
         <tbody>
           ${rows
             .map((row) => {
+              const orderId = String(row?.orderId || "").trim();
               const statusInfo = resolvePharmdStatusInfo(row);
               const message = resolvePharmdOruMessage(row);
               const hasMessage = Boolean(message);
               const fileName = resolvePharmdMessageFileName(row);
-              const isSending = sendingPharmdOrders.has(String(row?.orderId || "").trim());
+              const skipEnabled = isPharmdSkipped(row);
+              const hasSavedFinal = hasSavedFinalReport(row);
+              const canValidate = hasSavedFinal && canValidatePharmdFinalReport(row);
+              const isSending = sendingPharmdOrders.has(orderId);
+              const isWorkflowSaving = workflowSavingOrders.has(orderId);
+              const isPreviewLoading = previewLoadingOrders.has(orderId);
+              const sendDisabled = !hasMessage || isSending || isWorkflowSaving || skipEnabled;
+              const skipDisabled = !hasSavedFinal && !skipEnabled;
+              const validationHint = skipEnabled
+                ? "Preview the saved final report."
+                : !hasSavedFinal
+                ? "Saved final report preview is unavailable."
+                : resolvePharmdReportReceivedAt(row)
+                ? "Final report is ready for validation."
+                : "Wait for PharmD report receipt or enable Skip PharmD.";
               return `
                 <tr>
                   <td>${escapeHtml(row?.orderId || "-")}</td>
@@ -8938,23 +9166,62 @@ function renderOutputResults() {
                       <button
                         type="button"
                         class="table-action-btn"
-                        data-send-pharmd-message="${escapeHtml(row?.orderId || "")}"
-                        ${hasMessage && !isSending ? "" : "disabled"}
+                        data-send-pharmd-message="${escapeHtml(orderId)}"
+                        ${sendDisabled ? "disabled" : ""}
                       >
-                        ${isSending ? "Sending..." : "Send"}
+                        ${skipEnabled ? "Skipped" : isSending ? "Sending..." : "Send"}
                       </button>
                       <button
                         type="button"
                         class="table-action-btn"
-                        data-view-pharmd-log="${escapeHtml(row?.orderId || "")}"
+                        data-view-pharmd-log="${escapeHtml(orderId)}"
                       >
                         Log
                       </button>
                     </div>
-                    <div class="subtle output-results-inline-note">${hasMessage ? escapeHtml(fileName) : "HL7 message unavailable"}</div>
+                    <div class="subtle output-results-inline-note">
+                      ${skipEnabled ? "PharmD send bypassed for this saved final report." : hasMessage ? escapeHtml(fileName) : "HL7 message unavailable"}
+                    </div>
                   </td>
                   <td>${escapeHtml(formatOutputDate(resolvePharmdQueuedOrSentAt(row)))}</td>
                   <td>${escapeHtml(formatOutputDate(resolvePharmdReportReceivedAt(row)))}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class="output-results-toggle ${skipEnabled ? "is-active" : ""}"
+                      data-toggle-skip-pharmd="${escapeHtml(orderId)}"
+                      aria-pressed="${skipEnabled ? "true" : "false"}"
+                      ${isWorkflowSaving || skipDisabled ? "disabled" : ""}
+                    >
+                      <span class="output-results-toggle-knob" aria-hidden="true"></span>
+                      <span>${skipEnabled ? "On" : "Off"}</span>
+                    </button>
+                    <div class="subtle output-results-inline-note">
+                      ${hasSavedFinal ? "Bypass PharmD and validate the saved final report." : "Saved final report preview is unavailable."}
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      class="table-action-btn preview-btn"
+                      data-validate-final-report="${escapeHtml(orderId)}"
+                      ${canValidate && !isPreviewLoading ? "" : "disabled"}
+                    >
+                      ${isPreviewLoading ? "Opening..." : "Validate"}
+                    </button>
+                    <div class="subtle output-results-inline-note">${escapeHtml(validationHint)}</div>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      class="table-action-btn"
+                      data-mark-complete="${escapeHtml(orderId)}"
+                      ${canValidate && !isWorkflowSaving ? "" : "disabled"}
+                    >
+                      ${isWorkflowSaving ? "Saving..." : "Mark as Complete"}
+                    </button>
+                    <div class="subtle output-results-inline-note">Moves the validated report into the Completed queue.</div>
+                  </td>
                 </tr>
               `;
             })
@@ -8967,6 +9234,7 @@ function renderOutputResults() {
   function renderOutputResultsTable() {
     const rows = getFilteredOrders();
     if (!outputTableNode) return;
+    refreshOutputTabCounts();
 
     if (!rows.length) {
       outputTableNode.innerHTML = `
@@ -9019,7 +9287,7 @@ function renderOutputResults() {
     </section>
   `;
 
-  const tabsNode = document.getElementById("output-results-tabs");
+  tabsNode = document.getElementById("output-results-tabs");
   const searchNode = document.getElementById("output-results-search");
   outputTableNode = document.getElementById("output-results-table");
 
@@ -9058,6 +9326,23 @@ function renderOutputResults() {
         })
         .finally(() => {
           sendingPharmdOrders.delete(orderId);
+          renderOutputResultsTable();
+        });
+      return;
+    }
+
+    const skipBtn = event.target.closest("[data-toggle-skip-pharmd]");
+    if (skipBtn) {
+      const orderId = String(skipBtn.getAttribute("data-toggle-skip-pharmd") || "").trim();
+      if (!orderId || workflowSavingOrders.has(orderId)) return;
+      workflowSavingOrders.add(orderId);
+      renderOutputResultsTable();
+      toggleSkipPharmd(orderId)
+        .catch((error) => {
+          alert(error?.message || "Unable to update Skip PharmD for this order.");
+        })
+        .finally(() => {
+          workflowSavingOrders.delete(orderId);
           renderOutputResultsTable();
         });
       return;
@@ -9110,6 +9395,40 @@ function renderOutputResults() {
         fileName: downloadBtn.getAttribute("data-pharmd-file-name") || resolvePharmdMessageFileName(order),
         mimeType: "text/plain;charset=utf-8",
       });
+      return;
+    }
+
+    const validateBtn = event.target.closest("[data-validate-final-report]");
+    if (validateBtn) {
+      const orderId = String(validateBtn.getAttribute("data-validate-final-report") || "").trim();
+      if (!orderId || previewLoadingOrders.has(orderId)) return;
+      previewLoadingOrders.add(orderId);
+      renderOutputResultsTable();
+      openSavedFinalReportPreview(orderId)
+        .catch((error) => {
+          alert(error?.message || "Unable to open the saved final report preview.");
+        })
+        .finally(() => {
+          previewLoadingOrders.delete(orderId);
+          renderOutputResultsTable();
+        });
+      return;
+    }
+
+    const completeBtn = event.target.closest("[data-mark-complete]");
+    if (completeBtn) {
+      const orderId = String(completeBtn.getAttribute("data-mark-complete") || "").trim();
+      if (!orderId || workflowSavingOrders.has(orderId)) return;
+      workflowSavingOrders.add(orderId);
+      renderOutputResultsTable();
+      markOrderComplete(orderId)
+        .catch((error) => {
+          alert(error?.message || "Unable to mark this report as complete.");
+        })
+        .finally(() => {
+          workflowSavingOrders.delete(orderId);
+          renderOutputResultsTable();
+        });
     }
   });
 
@@ -9208,7 +9527,7 @@ function renderOrderHistory(initialTab = "all-orders") {
     generateReport: "Generate Report",
     generateSummaryReport: "Summary Report",
     finalReport: "Final Report",
-    publishReport: "Publish",
+    publishReport: "PrePublish",
   };
   const filters = {
     accessionNo: "",
@@ -11485,12 +11804,12 @@ function renderOrderHistory(initialTab = "all-orders") {
     }
   }
 
-  async function publishFinalReport(orderId) {
+  async function prepublishFinalReport(orderId) {
     if (!facilityDataLoaded) {
       try {
         await loadFacilityData();
       } catch {
-        // Publishing can still validate against whatever order data is available.
+        // PrePublish can still validate against whatever order data is available.
       }
     }
     const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
@@ -11526,17 +11845,7 @@ function renderOrderHistory(initialTab = "all-orders") {
         writeOrders(orders);
       }
     }
-
-    const channelLines = [];
-    if (response?.email) {
-      const recipients = Array.isArray(response.email.recipients) ? response.email.recipients.join(", ") : "";
-      channelLines.push(`Email: ${response.email.status}${recipients ? ` (${recipients})` : ""}`);
-    }
-    if (response?.fax) {
-      channelLines.push(`Fax: ${response.fax.status}${response.fax.recipient ? ` (${response.fax.recipient})` : ""}`);
-    }
-    const summary = [response?.message, ...channelLines].filter(Boolean).join("\n");
-    alert(summary || "Publish completed.");
+    alert(response?.message || "PrePublish completed.");
     return response;
   }
 
@@ -12713,7 +13022,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                   <td class="report-action-cell">
                     ${
                       row.processedResult?.report
-                        ? `<button type="button" class="table-action-btn publish-report-btn" data-publish-final-report-order="${row.orderId}" ${isPublishingFinal ? "disabled" : ""}>${isPublishingFinal ? "Publishing..." : "Publish"}</button>`
+                        ? `<button type="button" class="table-action-btn publish-report-btn" data-publish-final-report-order="${row.orderId}" ${isPublishingFinal ? "disabled" : ""}>${isPublishingFinal ? "PrePublishing..." : "PrePublish"}</button>`
                         : `<span class="subtle">-</span>`
                     }
                   </td>
@@ -12829,9 +13138,9 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       publishingFinalReports.add(numericId);
       renderTable();
       try {
-        await publishFinalReport(orderId);
+        await prepublishFinalReport(orderId);
       } catch (error) {
-        alert(error?.message || "Unable to publish final report.");
+        alert(error?.message || "Unable to prepublish final report.");
       } finally {
         publishingFinalReports.delete(numericId);
         renderTable();
