@@ -2520,6 +2520,8 @@ function writeOrders(items) {
   ordersState = Array.isArray(items) ? items.slice() : [];
 }
 
+// Shared order persistence helper for Order History and Pending PharmD actions.
+// Keeping this outside individual renderers avoids scope-only runtime failures.
 async function updateOrderById(orderId, mutator) {
   const orders = readOrders();
   const idx = orders.findIndex((row) => Number(row.orderId) === Number(orderId));
