@@ -305,7 +305,7 @@ function formatSessionCountdown(remainingMs) {
 function syncBodyModalOpenState() {
   const hasVisibleModal = Boolean(
     document.querySelector(
-      ".facility-modal-backdrop:not(.hidden), .custom-icd-modal:not(.hidden), .history-preview-modal:not(.hidden), .session-expiry-backdrop:not(.hidden)"
+      ".facility-modal-backdrop:not(.hidden), .custom-icd-modal:not(.hidden), .history-preview-modal:not(.hidden), .session-expiry-backdrop:not(.hidden), .output-results-publish-modal:not(.hidden)"
     )
   );
   document.body.classList.toggle("modal-open", hasVisibleModal);
@@ -8754,6 +8754,8 @@ function renderOutputResults() {
   let searchQuery = "";
   let outputTableNode = null;
   let tabsNode = null;
+  let publishModalNode = null;
+  let publishModalOrderId = "";
   const sendingPharmdOrders = new Set();
   const workflowSavingOrders = new Set();
   const previewLoadingOrders = new Set();
@@ -8848,6 +8850,87 @@ function renderOutputResults() {
     if (index >= 0) orders[index] = updatedOrder;
     else orders.unshift(updatedOrder);
     writeOrders(orders);
+  }
+
+  function closeCompletedPublishModal() {
+    publishModalOrderId = "";
+    renderCompletedPublishModal();
+  }
+
+  function renderCompletedPublishModal() {
+    if (!publishModalNode) return;
+    const order = publishModalOrderId ? findOrderById(publishModalOrderId) : null;
+    const isCompletedOrder = Boolean(order && resolveOutputBucket(order) === "completed");
+    if (!isCompletedOrder) {
+      publishModalNode.classList.add("hidden");
+      publishModalNode.setAttribute("aria-hidden", "true");
+      publishModalNode.innerHTML = "";
+      syncBodyModalOpenState();
+      return;
+    }
+
+    publishModalNode.classList.remove("hidden");
+    publishModalNode.setAttribute("aria-hidden", "false");
+    publishModalNode.innerHTML = `
+      <div class="output-results-publish-dialog" role="dialog" aria-modal="true" aria-labelledby="output-results-publish-title">
+        <div class="output-results-publish-head">
+          <div>
+            <p class="badge">Completed Report</p>
+            <h3 id="output-results-publish-title">Publish Report</h3>
+            <p class="subtle output-results-publish-copy">Choose how you want to route this completed report next. We’ll connect the actual delivery workflow after this UI step.</p>
+          </div>
+          <button type="button" class="preview-close-btn" data-close-output-publish-modal aria-label="Close publish dialog">&times;</button>
+        </div>
+        <div class="output-results-publish-body">
+          <div class="output-results-publish-meta">
+            <div>
+              <span>Order #</span>
+              <strong>${escapeHtml(order?.orderId || "-")}</strong>
+            </div>
+            <div>
+              <span>Patient</span>
+              <strong>${escapeHtml(order?.patientName || "-")}</strong>
+            </div>
+            <div>
+              <span>Accession #</span>
+              <strong>${escapeHtml(resolveOrderAccession(order))}</strong>
+            </div>
+            <div>
+              <span>Provider</span>
+              <strong>${escapeHtml(order?.provider || "-")}</strong>
+            </div>
+          </div>
+          <div class="output-results-publish-options">
+            <button type="button" class="output-results-publish-choice" data-publish-channel="email">
+              <span class="output-results-publish-choice-label">Send Email</span>
+              <span class="output-results-publish-choice-copy">Prepare the completed report for email delivery.</span>
+            </button>
+            <button type="button" class="output-results-publish-choice" data-publish-channel="fax">
+              <span class="output-results-publish-choice-label">Send Fax</span>
+              <span class="output-results-publish-choice-copy">Prepare the completed report for fax delivery.</span>
+            </button>
+          </div>
+          <div class="output-results-publish-actions">
+            <button type="button" class="table-action-btn secondary-btn" data-close-output-publish-modal>Cancel</button>
+          </div>
+        </div>
+      </div>
+    `;
+    syncBodyModalOpenState();
+  }
+
+  function openCompletedPublishModal(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) {
+      alert("Order not found.");
+      return;
+    }
+    if (resolveOutputBucket(order) !== "completed") {
+      alert("Only completed reports can be published from this queue.");
+      return;
+    }
+    publishModalOrderId = String(orderId || "").trim();
+    renderCompletedPublishModal();
   }
 
   function resolvePharmdRemotePath(order) {
@@ -9070,6 +9153,7 @@ function renderOutputResults() {
   }
 
   function buildGenericQueueTableMarkup(rows) {
+    const showPublishColumn = activeTab === "completed";
     return `
       <div class="output-results-meta">Rows: ${rows.length}</div>
       <table class="order-history-table">
@@ -9083,6 +9167,7 @@ function renderOutputResults() {
             <th>Facility</th>
             <th>Last Activity</th>
             <th>Stage</th>
+            ${showPublishColumn ? '<th class="output-results-publish-col">Publish</th>' : ""}
           </tr>
         </thead>
         <tbody>
@@ -9100,6 +9185,17 @@ function renderOutputResults() {
                 <td>${escapeHtml(row?.facilityName || "-")}</td>
                 <td>${escapeHtml(formatOutputDate(resolveOutputLastActivityAt(row)))}</td>
                 <td><span class="history-status ${resolveOutputBadgeClass(row)}">${escapeHtml(resolveOutputStageLabel(row))}</span></td>
+                ${showPublishColumn ? `
+                  <td class="output-results-publish-cell">
+                    <button
+                      type="button"
+                      class="table-action-btn publish-report-btn"
+                      data-open-completed-publish="${escapeHtml(row?.orderId || "")}"
+                    >
+                      Publish
+                    </button>
+                  </td>
+                ` : ""}
               </tr>
             `)
             .join("")}
@@ -9306,12 +9402,14 @@ function renderOutputResults() {
       </div>
 
       <div id="output-results-table"></div>
+      <div id="output-results-publish-modal" class="output-results-publish-modal hidden" aria-hidden="true"></div>
     </section>
   `;
 
   tabsNode = document.getElementById("output-results-tabs");
   const searchNode = document.getElementById("output-results-search");
   outputTableNode = document.getElementById("output-results-table");
+  publishModalNode = document.getElementById("output-results-publish-modal");
 
   tabsNode?.addEventListener("click", (event) => {
     const tabBtn = event.target.closest("[data-output-tab]");
@@ -9319,6 +9417,7 @@ function renderOutputResults() {
     const nextTab = String(tabBtn.getAttribute("data-output-tab") || "").trim();
     if (!nextTab || nextTab === activeTab) return;
     activeTab = nextTab;
+    closeCompletedPublishModal();
     tabsNode.querySelectorAll("[data-output-tab]").forEach((node) => {
       const selected = node.getAttribute("data-output-tab") === activeTab;
       node.classList.toggle("active", selected);
@@ -9329,10 +9428,19 @@ function renderOutputResults() {
 
   searchNode?.addEventListener("input", (event) => {
     searchQuery = event.target.value || "";
+    closeCompletedPublishModal();
     renderOutputResultsTable();
   });
 
   outputTableNode?.addEventListener("click", (event) => {
+    const publishBtn = event.target.closest("[data-open-completed-publish]");
+    if (publishBtn) {
+      const orderId = String(publishBtn.getAttribute("data-open-completed-publish") || "").trim();
+      if (!orderId) return;
+      openCompletedPublishModal(orderId);
+      return;
+    }
+
     const sendBtn = event.target.closest("[data-send-pharmd-message]");
     if (sendBtn) {
       const orderId = String(sendBtn.getAttribute("data-send-pharmd-message") || "").trim();
@@ -9454,7 +9562,30 @@ function renderOutputResults() {
     }
   });
 
+  publishModalNode?.addEventListener("click", (event) => {
+    if (event.target === publishModalNode || event.target.closest("[data-close-output-publish-modal]")) {
+      closeCompletedPublishModal();
+      return;
+    }
+
+    const channelBtn = event.target.closest("[data-publish-channel]");
+    if (!channelBtn) return;
+    const channel = String(channelBtn.getAttribute("data-publish-channel") || "").trim();
+    const order = publishModalOrderId ? findOrderById(publishModalOrderId) : null;
+    if (!order) {
+      closeCompletedPublishModal();
+      alert("Order not found.");
+      return;
+    }
+    alert(
+      channel === "fax"
+        ? `Fax publishing for Order #${order?.orderId || "-"} will be connected next.`
+        : `Email publishing for Order #${order?.orderId || "-"} will be connected next.`
+    );
+  });
+
   renderOutputResultsTable();
+  renderCompletedPublishModal();
 }
 
 function renderOrderHistory(initialTab = "all-orders") {
