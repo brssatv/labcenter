@@ -2520,6 +2520,26 @@ function writeOrders(items) {
   ordersState = Array.isArray(items) ? items.slice() : [];
 }
 
+async function updateOrderById(orderId, mutator) {
+  const orders = readOrders();
+  const idx = orders.findIndex((row) => Number(row.orderId) === Number(orderId));
+  if (idx < 0) return false;
+  const updated = mutator({ ...orders[idx] });
+  if (!updated) return false;
+  if (!csrfToken) await fetchCsrfToken();
+  const payload = await requestJson(`/api/portal/orders/${encodeURIComponent(orderId)}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify({ order: updated }),
+  });
+  orders[idx] = payload.order;
+  writeOrders(orders);
+  return true;
+}
+
 function readUploadResultsLog() {
   return Array.isArray(uploadResultsLogState) ? uploadResultsLogState.slice() : [];
 }
@@ -9540,26 +9560,6 @@ function renderOrderHistory(initialTab = "all-orders") {
     due: "",
     status: "",
   };
-
-  async function updateOrderById(orderId, mutator) {
-    const orders = readOrders();
-    const idx = orders.findIndex((row) => Number(row.orderId) === Number(orderId));
-    if (idx < 0) return false;
-    const updated = mutator({ ...orders[idx] });
-    if (!updated) return false;
-    if (!csrfToken) await fetchCsrfToken();
-    const payload = await requestJson(`/api/portal/orders/${encodeURIComponent(orderId)}`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "x-csrf-token": csrfToken,
-      },
-      body: JSON.stringify({ order: updated }),
-    });
-    orders[idx] = payload.order;
-    writeOrders(orders);
-    return true;
-  }
 
   function escapeHtml(value) {
     return String(value || "")
