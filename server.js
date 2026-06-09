@@ -20,6 +20,8 @@ const app = express();
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-only-change-me";
+const SESSION_TTL_MS = 15 * 60 * 1000;
+const SESSION_WARNING_MS = 2 * 60 * 1000;
 const apiBodyLimit = "16mb";
 const sourceDataDir = path.join(__dirname, "data");
 const defaultDataDir = sourceDataDir;
@@ -266,7 +268,7 @@ app.use(
     secret: SESSION_SECRET,
     store: new FileStore({
       path: sessionDir,
-      ttl: Math.ceil((15 * 60 * 1000) / 1000),
+      ttl: Math.ceil(SESSION_TTL_MS / 1000),
       reapInterval: 3600,
       retries: 0,
       logFn: () => {},
@@ -278,20 +280,20 @@ app.use(
       // OIDC callback redirects need the session cookie on the top-level cross-site return from the IdP.
       sameSite: OIDC_ENABLED ? "lax" : "strict",
       secure: isProd,
-      maxAge: 15 * 60 * 1000,
+      maxAge: SESSION_TTL_MS,
     },
   })
 );
 
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: SESSION_TTL_MS,
   limit: 200,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: SESSION_TTL_MS,
   limit: 8,
   standardHeaders: true,
   legacyHeaders: false,
@@ -299,7 +301,7 @@ const loginLimiter = rateLimit({
 });
 
 const failedLoginAttempts = new Map();
-const FAIL_WINDOW_MS = 15 * 60 * 1000;
+const FAIL_WINDOW_MS = SESSION_TTL_MS;
 const LOCKOUT_MS = 30 * 60 * 1000;
 const FAIL_LIMIT = 5;
 
@@ -718,6 +720,33 @@ function destroySessionAsync(req) {
       return resolve();
     });
   });
+}
+
+function hasAuthenticatedSession(req) {
+  return Boolean(req?.session?.user || req?.session?.clientUser);
+}
+
+function resolveSessionExpiresAt(req) {
+  const expires = req?.session?.cookie?.expires;
+  const expiresAt = expires ? new Date(expires).getTime() : Number.NaN;
+  if (Number.isFinite(expiresAt)) return expiresAt;
+
+  const maxAge = Number(req?.session?.cookie?.maxAge);
+  if (Number.isFinite(maxAge) && maxAge >= 0) {
+    return Date.now() + maxAge;
+  }
+
+  return Date.now() + SESSION_TTL_MS;
+}
+
+function buildSessionStatePayload(req) {
+  const expiresAtMs = resolveSessionExpiresAt(req);
+  return {
+    timeoutMs: SESSION_TTL_MS,
+    warningMs: SESSION_WARNING_MS,
+    remainingMs: Math.max(0, expiresAtMs - Date.now()),
+    expiresAt: new Date(expiresAtMs).toISOString(),
+  };
 }
 
 function getClientIp(req) {
@@ -2646,7 +2675,38 @@ app.get("/api/auth/me", (req, res) => {
     return res.status(401).json({ authenticated: false });
   }
 
-  res.json({ authenticated: true, user: req.session.user });
+  res.json({
+    authenticated: true,
+    user: req.session.user,
+    session: buildSessionStatePayload(req),
+  });
+});
+
+app.post("/api/session/refresh", async (req, res) => {
+  if (!hasAuthenticatedSession(req)) {
+    return res.status(401).json({ authenticated: false, error: "Session expired." });
+  }
+
+  try {
+    req.session.csrfToken = randomToken();
+    req.session.cookie.maxAge = SESSION_TTL_MS;
+    await saveSessionAsync(req);
+
+    auditLog(req, "session_refresh", "success", {
+      sessionType: req.session.user ? "doctor" : "client",
+    });
+
+    return res.json({
+      ok: true,
+      csrfToken: req.session.csrfToken,
+      session: buildSessionStatePayload(req),
+    });
+  } catch (error) {
+    auditLog(req, "session_refresh", "failed", {
+      reason: error?.message || "unknown_error",
+    });
+    return res.status(500).json({ error: "Unable to refresh session." });
+  }
 });
 
 app.get("/auth/oidc/login", async (req, res) => {
@@ -2866,7 +2926,12 @@ app.post("/api/auth/login", loginLimiter, (req, res) => {
     clearFailures(key);
 
     auditLog(req, "login", "success", { identifier, userId: user.id, role: user.role });
-    return res.json({ authenticated: true, user: req.session.user, csrfToken: req.session.csrfToken });
+    return res.json({
+      authenticated: true,
+      user: req.session.user,
+      csrfToken: req.session.csrfToken,
+      session: buildSessionStatePayload(req),
+    });
   });
 });
 
@@ -2909,7 +2974,11 @@ app.get("/api/client-auth/me", (req, res) => {
   if (!req.session.clientUser) {
     return res.status(401).json({ authenticated: false });
   }
-  return res.json({ authenticated: true, clientUser: req.session.clientUser });
+  return res.json({
+    authenticated: true,
+    clientUser: req.session.clientUser,
+    session: buildSessionStatePayload(req),
+  });
 });
 
 app.post("/api/client-auth/login", loginLimiter, (req, res) => {
@@ -3003,6 +3072,7 @@ app.post("/api/client-auth/login", loginLimiter, (req, res) => {
       authenticated: true,
       clientUser: req.session.clientUser,
       csrfToken: req.session.csrfToken,
+      session: buildSessionStatePayload(req),
     });
   });
 });

@@ -186,6 +186,16 @@ let ordersState = [];
 let uploadResultsLogState = [];
 let portalDataReady = false;
 let portalDataPromise = null;
+const defaultSessionTimeoutMs = 15 * 60 * 1000;
+const defaultSessionWarningMs = 2 * 60 * 1000;
+let sessionTimeoutMs = defaultSessionTimeoutMs;
+let sessionWarningMs = defaultSessionWarningMs;
+let sessionExpiresAtMs = 0;
+let sessionMonitorTimerId = 0;
+let sessionEditingActive = false;
+let sessionWarningModalVisible = false;
+let sessionRefreshInFlight = false;
+let sessionLogoutInFlight = false;
 
 function createDefaultActiveSession() {
   return {
@@ -283,6 +293,207 @@ function renderSessionSummary() {
   if (sessionDisplayName) sessionDisplayName.textContent = summary.displayName;
   if (sessionLoginDetail) sessionLoginDetail.textContent = summary.detail;
   if (sessionPlanName) sessionPlanName.textContent = summary.plan;
+}
+
+function formatSessionCountdown(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(Math.max(0, remainingMs) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function syncBodyModalOpenState() {
+  const hasVisibleModal = Boolean(
+    document.querySelector(
+      ".facility-modal-backdrop:not(.hidden), .custom-icd-modal:not(.hidden), .history-preview-modal:not(.hidden), .session-expiry-backdrop:not(.hidden)"
+    )
+  );
+  document.body.classList.toggle("modal-open", hasVisibleModal);
+}
+
+function getSessionExpiryModalRefs() {
+  let root = document.getElementById("session-expiry-modal");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "session-expiry-modal";
+    root.className = "session-expiry-backdrop hidden";
+    root.innerHTML = `
+      <div class="session-expiry-dialog" role="dialog" aria-modal="true" aria-labelledby="session-expiry-title">
+        <p class="badge">Session Warning</p>
+        <h3 id="session-expiry-title">Your session is about to expire</h3>
+        <p class="session-expiry-copy">Stay signed in to keep working without interruption, or log out now.</p>
+        <div class="session-expiry-countdown" aria-live="polite">
+          <strong id="session-expiry-timer">2:00</strong>
+          <span>remaining</span>
+        </div>
+        <p id="session-expiry-status" class="subtle session-expiry-status">We’ll refresh your secure session in the background.</p>
+        <div class="session-expiry-actions">
+          <button type="button" id="session-expiry-logout" class="btn-ghost">Log out</button>
+          <button type="button" id="session-expiry-stay" class="btn-primary">Stay logged in</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(root);
+
+    root.addEventListener("click", (event) => {
+      if (event.target === root) {
+        event.preventDefault();
+      }
+    });
+
+    root.querySelector("#session-expiry-stay")?.addEventListener("click", () => {
+      refreshAuthenticatedSession().catch(() => {});
+    });
+    root.querySelector("#session-expiry-logout")?.addEventListener("click", () => {
+      performLogoutFlow().catch(() => {});
+    });
+  }
+
+  return {
+    root,
+    timer: root.querySelector("#session-expiry-timer"),
+    status: root.querySelector("#session-expiry-status"),
+    stayButton: root.querySelector("#session-expiry-stay"),
+    logoutButton: root.querySelector("#session-expiry-logout"),
+  };
+}
+
+function updateSessionExpiryModal(remainingMs, statusText = "") {
+  const refs = getSessionExpiryModalRefs();
+  if (refs.timer) refs.timer.textContent = formatSessionCountdown(remainingMs);
+  if (refs.status) {
+    refs.status.textContent = statusText || "We’ll refresh your secure session in the background.";
+  }
+  if (refs.stayButton) refs.stayButton.disabled = sessionRefreshInFlight || sessionLogoutInFlight;
+  if (refs.logoutButton) refs.logoutButton.disabled = sessionRefreshInFlight || sessionLogoutInFlight;
+}
+
+function openSessionExpiryModal() {
+  const refs = getSessionExpiryModalRefs();
+  refs.root.classList.remove("hidden");
+  sessionWarningModalVisible = true;
+  updateSessionExpiryModal(sessionExpiresAtMs - Date.now());
+  syncBodyModalOpenState();
+}
+
+function closeSessionExpiryModal() {
+  const refs = document.getElementById("session-expiry-modal");
+  if (!refs) return;
+  refs.classList.add("hidden");
+  sessionWarningModalVisible = false;
+  syncBodyModalOpenState();
+}
+
+function applySessionState(sessionState) {
+  if (!sessionState || typeof sessionState !== "object") return;
+
+  sessionTimeoutMs = Math.max(30 * 1000, Math.floor(Number(sessionState.timeoutMs || defaultSessionTimeoutMs) || defaultSessionTimeoutMs));
+  sessionWarningMs = Math.max(
+    15 * 1000,
+    Math.min(
+      sessionTimeoutMs - 5 * 1000,
+      Math.floor(Number(sessionState.warningMs || defaultSessionWarningMs) || defaultSessionWarningMs)
+    )
+  );
+
+  const expiresAtMs = new Date(sessionState.expiresAt || "").getTime();
+  if (Number.isFinite(expiresAtMs)) {
+    sessionExpiresAtMs = expiresAtMs;
+  } else {
+    const remainingMs = Math.max(0, Math.floor(Number(sessionState.remainingMs || sessionTimeoutMs) || sessionTimeoutMs));
+    sessionExpiresAtMs = Date.now() + remainingMs;
+  }
+
+  if (sessionMonitorTimerId) {
+    handleSessionMonitorTick();
+  }
+}
+
+function startSessionMonitor() {
+  if (!sessionExpiresAtMs) return;
+  window.clearInterval(sessionMonitorTimerId);
+  sessionMonitorTimerId = window.setInterval(handleSessionMonitorTick, 1000);
+  handleSessionMonitorTick();
+}
+
+function stopSessionMonitor({ resetEditing = true } = {}) {
+  window.clearInterval(sessionMonitorTimerId);
+  sessionMonitorTimerId = 0;
+  sessionExpiresAtMs = 0;
+  sessionRefreshInFlight = false;
+  sessionLogoutInFlight = false;
+  closeSessionExpiryModal();
+  if (resetEditing) {
+    sessionEditingActive = false;
+  }
+}
+
+function markSessionEditingActivity() {
+  if (appShell.classList.contains("hidden")) return;
+  sessionEditingActive = true;
+  handleSessionMonitorTick();
+}
+
+function handleSessionMonitorTick() {
+  if (!sessionExpiresAtMs || appShell.classList.contains("hidden")) return;
+
+  const remainingMs = sessionExpiresAtMs - Date.now();
+  if (remainingMs <= 0) {
+    if (!sessionLogoutInFlight) {
+      closeSessionExpiryModal();
+      performLogoutFlow({ postMessage: "Your session expired. Sign in again to continue." }).catch(() => {});
+    }
+    return;
+  }
+
+  const shouldWarn = sessionEditingActive && remainingMs <= sessionWarningMs;
+  if (shouldWarn && !sessionWarningModalVisible) {
+    openSessionExpiryModal();
+  } else if (!shouldWarn && sessionWarningModalVisible && !sessionRefreshInFlight) {
+    closeSessionExpiryModal();
+  }
+
+  if (sessionWarningModalVisible) {
+    updateSessionExpiryModal(remainingMs, sessionRefreshInFlight ? "Refreshing your secure session..." : "");
+  }
+}
+
+async function refreshAuthenticatedSession() {
+  if (sessionRefreshInFlight || sessionLogoutInFlight) return;
+  sessionRefreshInFlight = true;
+  updateSessionExpiryModal(sessionExpiresAtMs - Date.now(), "Refreshing your secure session...");
+
+  const attemptRefresh = async () => requestJson("/api/session/refresh", {
+    method: "POST",
+    headers: {
+      "x-csrf-token": csrfToken,
+    },
+  });
+
+  try {
+    if (!csrfToken) await fetchCsrfToken();
+    let result;
+    try {
+      result = await attemptRefresh();
+    } catch (error) {
+      if ((error?.message || "").trim() !== "Invalid CSRF token.") {
+        throw error;
+      }
+      await fetchCsrfToken();
+      result = await attemptRefresh();
+    }
+
+    csrfToken = result?.csrfToken || csrfToken;
+    applySessionState(result?.session);
+    closeSessionExpiryModal();
+  } catch {
+    await performLogoutFlow({ postMessage: "Unable to keep your session active. Sign in again to continue." });
+  } finally {
+    sessionRefreshInFlight = false;
+    if (sessionWarningModalVisible) {
+      updateSessionExpiryModal(sessionExpiresAtMs - Date.now());
+    }
+  }
 }
 
 const patientDirectory = [
@@ -1770,6 +1981,10 @@ function buildMonthlyOrderTrend(orders, monthCount = 6) {
       label: pivot.toLocaleDateString("en-US", { month: "short" }),
       fullLabel: pivot.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
       count: 0,
+      pending: 0,
+      processed: 0,
+      complete: 0,
+      other: 0,
     });
   }
 
@@ -1779,68 +1994,180 @@ function buildMonthlyOrderTrend(orders, monthCount = 6) {
     if (Number.isNaN(created.getTime())) return;
     const key = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}`;
     const bucket = keyToBucket.get(key);
-    if (bucket) bucket.count += 1;
+    if (!bucket) return;
+    bucket.count += 1;
+
+    const status = String(order?.status || "").trim().toLowerCase();
+    if (status === "pending") bucket.pending += 1;
+    else if (status === "processed") bucket.processed += 1;
+    else if (status === "complete") bucket.complete += 1;
+    else bucket.other += 1;
   });
 
   return buckets;
 }
 
-function buildDashboardTrendChartSvg(monthlyTrend) {
-  const chartWidth = 920;
-  const chartHeight = 250;
-  const topPad = 22;
-  const rightPad = 18;
-  const bottomPad = 42;
-  const leftPad = 18;
-  const plotHeight = 160;
-  const plotTop = topPad + 16;
-  const baselineY = plotTop + plotHeight;
-  const slotWidth = (chartWidth - leftPad - rightPad) / Math.max(1, monthlyTrend.length);
-  const barWidth = Math.min(54, slotWidth * 0.42);
-  const maxCount = Math.max(1, ...monthlyTrend.map((item) => Number(item.count) || 0));
+function getDashboardChartSeries() {
+  return [
+    { key: "processed", label: "Processed", color: "#7eb79d" },
+    { key: "pending", label: "Pending", color: "#ee8b73" },
+    { key: "complete", label: "Complete", color: "#f0b748" },
+  ];
+}
 
-  const gridLines = [0.25, 0.5, 0.75, 1]
-    .map((ratio) => {
-      const y = Math.round(baselineY - (plotHeight * ratio));
-      return `<line x1="${leftPad}" y1="${y}" x2="${chartWidth - rightPad}" y2="${y}" stroke="#dfe9f4" stroke-width="1" />`;
-    })
-    .join("");
+function buildDashboardKpiSparkline(toneClass) {
+  return `
+    <svg class="dashboard-kpi-sparkline ${toneClass}" viewBox="0 0 86 34" aria-hidden="true">
+      <polyline points="6,26 28,8 50,16 80,4" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      <circle cx="6" cy="26" r="3.2" fill="#ffffff"></circle>
+      <circle cx="28" cy="8" r="3.2" fill="#ffffff"></circle>
+      <circle cx="50" cy="16" r="3.2" fill="#ffffff"></circle>
+      <circle cx="80" cy="4" r="3.2" fill="#ffffff"></circle>
+    </svg>
+  `;
+}
+
+function getGaugePoint(cx, cy, radius, angleDeg) {
+  const angleRad = (Math.PI / 180) * angleDeg;
+  return {
+    x: cx + (Math.cos(angleRad) * radius),
+    y: cy + (Math.sin(angleRad) * radius),
+  };
+}
+
+function buildGaugeArcPath(cx, cy, outerRadius, innerRadius, startAngle, endAngle) {
+  const outerStart = getGaugePoint(cx, cy, outerRadius, startAngle);
+  const outerEnd = getGaugePoint(cx, cy, outerRadius, endAngle);
+  const innerEnd = getGaugePoint(cx, cy, innerRadius, endAngle);
+  const innerStart = getGaugePoint(cx, cy, innerRadius, startAngle);
+  const largeArcFlag = endAngle - startAngle > 180 ? 1 : 0;
+
+  return `
+    M ${outerStart.x.toFixed(2)} ${outerStart.y.toFixed(2)}
+    A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${outerEnd.x.toFixed(2)} ${outerEnd.y.toFixed(2)}
+    L ${innerEnd.x.toFixed(2)} ${innerEnd.y.toFixed(2)}
+    A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${innerStart.x.toFixed(2)} ${innerStart.y.toFixed(2)}
+    Z
+  `.replace(/\s+/g, " ").trim();
+}
+
+function buildDashboardDispositionGaugeSvg(statusCounts) {
+  const chartWidth = 420;
+  const chartHeight = 280;
+  const cx = chartWidth / 2;
+  const cy = 164;
+  const outerRadius = 124;
+  const innerRadius = 82;
+  const total = statusCounts.pending + statusCounts.processed + statusCounts.complete + statusCounts.other;
+  const segments = [
+    { label: "Other", value: statusCounts.other, color: "#d86a57" },
+    { label: "Pending", value: statusCounts.pending, color: "#f0b447" },
+    { label: "Processed", value: statusCounts.processed, color: "#8cbca1" },
+    { label: "Complete", value: statusCounts.complete, color: "#1f4f68" },
+  ];
+  const resolvedValue = statusCounts.processed + statusCounts.complete;
+  const maxValue = Math.max(1, total);
+  const needleAngle = 180 + ((resolvedValue / maxValue) * 180);
+
+  let angleCursor = 180;
+  const paths = total
+    ? segments
+        .filter((segment) => segment.value > 0)
+        .map((segment) => {
+          const angleSpan = (segment.value / total) * 180;
+          const nextAngle = angleCursor + angleSpan;
+          const path = `<path d="${buildGaugeArcPath(cx, cy, outerRadius, innerRadius, angleCursor, nextAngle)}" fill="${segment.color}"></path>`;
+          angleCursor = nextAngle;
+          return path;
+        })
+        .join("")
+    : `<path d="${buildGaugeArcPath(cx, cy, outerRadius, innerRadius, 180, 360)}" fill="#d8e4ed"></path>`;
+
+  const needleTip = getGaugePoint(cx, cy, outerRadius - 18, needleAngle);
+  const needleLeft = getGaugePoint(cx, cy, 16, needleAngle - 92);
+  const needleRight = getGaugePoint(cx, cy, 16, needleAngle + 92);
+
+  return `
+    <svg class="dashboard-gauge-svg" viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="xMidYMid meet" aria-label="Specimen disposition gauge">
+      <path d="${buildGaugeArcPath(cx, cy, outerRadius, innerRadius, 180, 360)}" fill="#edf3f7"></path>
+      ${paths}
+      <line x1="${cx - outerRadius}" y1="${cy}" x2="${cx + outerRadius}" y2="${cy}" stroke="#e3ebf2" stroke-width="1"></line>
+      <path d="M ${needleLeft.x.toFixed(2)} ${needleLeft.y.toFixed(2)} L ${needleTip.x.toFixed(2)} ${needleTip.y.toFixed(2)} L ${needleRight.x.toFixed(2)} ${needleRight.y.toFixed(2)} Z" fill="#163a4c"></path>
+      <circle cx="${cx}" cy="${cy}" r="16" fill="#ffffff" stroke="#dce7f0" stroke-width="4"></circle>
+      <circle cx="${cx}" cy="${cy}" r="8" fill="#163a4c"></circle>
+      <text x="${cx}" y="${cy + 68}" text-anchor="middle" font-size="34" font-weight="800" fill="#27485d">${formatDashboardNumber(total)}</text>
+      <text x="${cx}" y="${cy + 94}" text-anchor="middle" font-size="16" fill="#667b8e">orders tracked</text>
+      <text x="${cx - outerRadius + 4}" y="${cy + 22}" text-anchor="start" font-size="15" fill="#7d8ea0">0</text>
+      <text x="${cx + outerRadius - 4}" y="${cy + 22}" text-anchor="end" font-size="15" fill="#7d8ea0">${formatDashboardNumber(maxValue)}</text>
+    </svg>
+  `;
+}
+
+function buildDashboardGroupedBarChartSvg(monthlyTrend) {
+  const chartWidth = 860;
+  const chartHeight = 320;
+  const leftPad = 60;
+  const rightPad = 22;
+  const topPad = 18;
+  const bottomPad = 54;
+  const plotWidth = chartWidth - leftPad - rightPad;
+  const plotHeight = chartHeight - topPad - bottomPad;
+  const baselineY = topPad + plotHeight;
+  const slotWidth = plotWidth / Math.max(1, monthlyTrend.length);
+  const series = getDashboardChartSeries();
+  const maxValue = Math.max(
+    1,
+    ...monthlyTrend.flatMap((bucket) => series.map((item) => Number(bucket[item.key]) || 0))
+  );
+  let normalizedMax = maxValue + 1;
+  let stepValue = 1;
+  let stepCount = normalizedMax;
+
+  if (maxValue > 4) {
+    stepCount = 5;
+    stepValue = Math.max(1, Math.ceil(maxValue / stepCount));
+    normalizedMax = stepValue * stepCount;
+  }
+
+  const barWidth = Math.min(28, (slotWidth - 30) / Math.max(1, series.length));
+  const clusterWidth = (barWidth * series.length) + (series.length - 1) * 8;
+
+  const grid = Array.from({ length: stepCount + 1 }, (_, index) => {
+    const value = stepValue * index;
+    const ratio = value / normalizedMax;
+    const y = Math.round(baselineY - (plotHeight * ratio));
+    return `
+      <line x1="${leftPad}" y1="${y}" x2="${chartWidth - rightPad}" y2="${y}" stroke="#e7edf2" stroke-width="1"></line>
+      <text x="${leftPad - 14}" y="${y + 5}" text-anchor="end" font-size="14" fill="#7b8a99">${value}</text>
+    `;
+  }).join("");
 
   const bars = monthlyTrend
     .map((bucket, index) => {
-      const count = Number(bucket.count) || 0;
-      const centerX = leftPad + (slotWidth * index) + (slotWidth / 2);
-      const x = Math.round(centerX - (barWidth / 2));
-      const valueY = topPad + 10;
-      const monthY = chartHeight - 10;
-      if (!count) {
+      const groupCenter = leftPad + (slotWidth * index) + (slotWidth / 2);
+      const startX = groupCenter - (clusterWidth / 2);
+      const monthLabelY = chartHeight - 12;
+      const seriesBars = series.map((item, seriesIndex) => {
+        const value = Number(bucket[item.key]) || 0;
+        const barHeight = value ? Math.max(10, Math.round((value / normalizedMax) * plotHeight)) : 2;
+        const x = Math.round(startX + (seriesIndex * (barWidth + 8)));
+        const y = Math.round(baselineY - barHeight);
         return `
-          <text x="${Math.round(centerX)}" y="${valueY}" text-anchor="middle" font-size="18" font-weight="700" fill="#42617f">${count}</text>
-          <line x1="${x}" y1="${baselineY}" x2="${Math.round(x + barWidth)}" y2="${baselineY}" stroke="#a9c2de" stroke-width="6" stroke-linecap="round" />
-          <text x="${Math.round(centerX)}" y="${monthY}" text-anchor="middle" font-size="18" font-weight="700" fill="#5b6d81">${escapeHtml(bucket.label)}</text>
+          <rect x="${x}" y="${y}" width="${Math.round(barWidth)}" height="${barHeight}" rx="9" ry="9" fill="${item.color}" opacity="${value ? "1" : "0.35"}"></rect>
         `;
-      }
+      }).join("");
 
-      const barHeight = Math.max(16, Math.round((count / maxCount) * plotHeight));
-      const y = baselineY - barHeight;
       return `
-        <text x="${Math.round(centerX)}" y="${valueY}" text-anchor="middle" font-size="18" font-weight="700" fill="#42617f">${count}</text>
-        <rect x="${x}" y="${y}" width="${Math.round(barWidth)}" height="${barHeight}" rx="12" ry="12" fill="url(#dashboardTrendGradient)" />
-        <text x="${Math.round(centerX)}" y="${monthY}" text-anchor="middle" font-size="18" font-weight="700" fill="#5b6d81">${escapeHtml(bucket.label)}</text>
+        ${seriesBars}
+        <text x="${Math.round(groupCenter)}" y="${monthLabelY}" text-anchor="middle" font-size="15" fill="#667788">${escapeHtml(bucket.label)}</text>
       `;
     })
     .join("");
 
   return `
-    <svg class="dashboard-trend-svg" viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" aria-label="Order progression bar chart">
-      <defs>
-        <linearGradient id="dashboardTrendGradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#3d8be0"></stop>
-          <stop offset="100%" stop-color="#2a64ab"></stop>
-        </linearGradient>
-      </defs>
-      ${gridLines}
-      <line x1="${leftPad}" y1="${baselineY}" x2="${chartWidth - rightPad}" y2="${baselineY}" stroke="#cfddeb" stroke-width="1.5" />
+    <svg class="dashboard-bar-svg" viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="xMidYMid meet" aria-label="Grouped order progression chart">
+      ${grid}
+      <line x1="${leftPad}" y1="${baselineY}" x2="${chartWidth - rightPad}" y2="${baselineY}" stroke="#d7e0e8" stroke-width="1.5"></line>
       ${bars}
     </svg>
   `;
@@ -1890,23 +2217,12 @@ function renderDashboard() {
   });
 
   const monthlyTrend = buildMonthlyOrderTrend(orders, 6);
-  const trendMax = Math.max(1, ...monthlyTrend.map((item) => item.count));
   const topPanels = Object.entries(panelCounts)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 7);
   const panelMax = Math.max(1, ...topPanels.map((item) => item[1]));
 
   const totalDisposition = statusCounts.pending + statusCounts.processed + statusCounts.complete + statusCounts.other;
-  const pendingPct = totalDisposition ? (statusCounts.pending / totalDisposition) * 100 : 0;
-  const processedPct = totalDisposition ? (statusCounts.processed / totalDisposition) * 100 : 0;
-  const completePct = totalDisposition ? (statusCounts.complete / totalDisposition) * 100 : 0;
-  const firstBreak = pendingPct;
-  const secondBreak = pendingPct + processedPct;
-  const thirdBreak = pendingPct + processedPct + completePct;
-  const donutStyle = totalDisposition
-    ? `background: conic-gradient(#f2b132 0 ${firstBreak}%, #2f7fd3 ${firstBreak}% ${secondBreak}%, #2ca86d ${secondBreak}% ${thirdBreak}%, #8f9cad ${thirdBreak}% 100%);`
-    : "background: conic-gradient(#d3dbe4 0 100%);";
-
   const recentOrders = orders
     .slice()
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -1920,59 +2236,78 @@ function renderDashboard() {
         <p class="subtle">Live metrics from all collected orders and uploaded test workbooks.</p>
       </div>
 
+      <section class="dashboard-hero-grid">
+        <article class="dashboard-card dashboard-gauge-card">
+          <div class="dashboard-card-head">
+            <h4>Specimen Disposition</h4>
+            <span>Current order statuses</span>
+          </div>
+          <div class="dashboard-gauge-shell">
+            ${buildDashboardDispositionGaugeSvg(statusCounts)}
+          </div>
+          <div class="dashboard-status-grid">
+            <p><span class="dot disposition-pending"></span>Pending <strong>${formatDashboardNumber(statusCounts.pending)}</strong></p>
+            <p><span class="dot disposition-processed"></span>Processed <strong>${formatDashboardNumber(statusCounts.processed)}</strong></p>
+            <p><span class="dot disposition-complete"></span>Complete <strong>${formatDashboardNumber(statusCounts.complete)}</strong></p>
+            <p><span class="dot disposition-other"></span>Other <strong>${formatDashboardNumber(statusCounts.other)}</strong></p>
+          </div>
+          <p class="dashboard-inline-note">Outstanding Due <strong>$${formatDashboardNumber(totalDue)}</strong></p>
+        </article>
+
+        <article class="dashboard-card dashboard-chart-card">
+          <div class="dashboard-card-head">
+            <h4>Order Progression (Last 6 Months)</h4>
+            <span>${formatDashboardNumber(orders.length)} total orders</span>
+          </div>
+          <div class="dashboard-chart-shell">
+            ${buildDashboardGroupedBarChartSvg(monthlyTrend)}
+          </div>
+          <div class="dashboard-chart-legend">
+            ${
+              getDashboardChartSeries()
+                .map((item) => `<span><i style="background:${item.color}"></i>${item.label}</span>`)
+                .join("")
+            }
+          </div>
+        </article>
+      </section>
+
       <section class="dashboard-kpis">
         <article class="dashboard-kpi kpi-specimens">
           <p>Total Specimens Collected</p>
-          <h4>${formatDashboardNumber(specimensCollected)}</h4>
+          <div class="dashboard-kpi-row">
+            <h4>${formatDashboardNumber(specimensCollected)}</h4>
+            ${buildDashboardKpiSparkline("spark-specimens")}
+          </div>
           <span>Across ${formatDashboardNumber(orders.length)} orders</span>
         </article>
         <article class="dashboard-kpi kpi-samples">
           <p>Total Samples Captured</p>
-          <h4>${formatDashboardNumber(samplesCollected)}</h4>
+          <div class="dashboard-kpi-row">
+            <h4>${formatDashboardNumber(samplesCollected)}</h4>
+            ${buildDashboardKpiSparkline("spark-samples")}
+          </div>
           <span>Includes processed workbook sample counts</span>
         </article>
         <article class="dashboard-kpi kpi-detected">
           <p>Detected Pathogens</p>
-          <h4>${formatDashboardNumber(detectedPathogens)}</h4>
+          <div class="dashboard-kpi-row">
+            <h4>${formatDashboardNumber(detectedPathogens)}</h4>
+            ${buildDashboardKpiSparkline("spark-detected")}
+          </div>
           <span>From ${formatDashboardNumber(totalRowsProcessed)} tested targets</span>
         </article>
         <article class="dashboard-kpi kpi-pending">
           <p>Pending Orders</p>
-          <h4>${formatDashboardNumber(statusCounts.pending)}</h4>
+          <div class="dashboard-kpi-row">
+            <h4>${formatDashboardNumber(statusCounts.pending)}</h4>
+            ${buildDashboardKpiSparkline("spark-pending")}
+          </div>
           <span>${formatDashboardNumber(statusCounts.processed + statusCounts.complete)} completed or processed</span>
         </article>
       </section>
 
       <section class="dashboard-grid">
-        <article class="dashboard-card dashboard-trend-card">
-          <div class="dashboard-card-head">
-            <h4>Order Progression (Last 6 Months)</h4>
-            <span>${formatDashboardNumber(orders.length)} total orders</span>
-          </div>
-          <div class="dashboard-trend-chart">
-            ${buildDashboardTrendChartSvg(monthlyTrend)}
-          </div>
-        </article>
-
-        <article class="dashboard-card dashboard-disposition-card">
-          <div class="dashboard-card-head">
-            <h4>Specimen Disposition</h4>
-            <span>Current order statuses</span>
-          </div>
-          <div class="dashboard-disposition">
-            <div class="status-donut" style="${donutStyle}">
-              <div class="status-donut-inner">${formatDashboardNumber(totalDisposition)}</div>
-            </div>
-            <div class="status-legend">
-              <p><span class="dot pending"></span>Pending <strong>${formatDashboardNumber(statusCounts.pending)}</strong></p>
-              <p><span class="dot processed"></span>Processed <strong>${formatDashboardNumber(statusCounts.processed)}</strong></p>
-              <p><span class="dot complete"></span>Complete <strong>${formatDashboardNumber(statusCounts.complete)}</strong></p>
-              <p><span class="dot other"></span>Other <strong>${formatDashboardNumber(statusCounts.other)}</strong></p>
-              <p class="status-due">Outstanding Due: <strong>$${formatDashboardNumber(totalDue)}</strong></p>
-            </div>
-          </div>
-        </article>
-
         <article class="dashboard-card dashboard-type-card">
           <div class="dashboard-card-head">
             <h4>Orders By Panel Type</h4>
@@ -13980,9 +14315,11 @@ async function mountApp() {
   if (getVisibleViews().some((item) => item.key === "facility")) {
     loadFacilityData().catch(() => {});
   }
+  startSessionMonitor();
 }
 
 function mountAuth() {
+  stopSessionMonitor();
   portalDataReady = false;
   portalDataPromise = null;
   applyPortalDataPayload({
@@ -14002,6 +14339,45 @@ function mountAuth() {
   setAuthMode("doctor");
   setAuthStage("gateway");
   loginError.textContent = "";
+}
+
+async function performLogoutFlow({ postMessage = "" } = {}) {
+  if (sessionLogoutInFlight) return;
+  sessionLogoutInFlight = true;
+  setSessionMenuOpen(false);
+  closeSessionExpiryModal();
+
+  let redirectingToIdp = false;
+
+  try {
+    if (!csrfToken) await fetchCsrfToken();
+    const endpoint = activeSession.type === "client" ? "/api/client-auth/logout" : "/api/auth/logout";
+    const logoutResult = await requestJson(endpoint, {
+      method: "POST",
+      headers: {
+        "x-csrf-token": csrfToken,
+      },
+    });
+    if (logoutResult?.logoutUrl) {
+      redirectingToIdp = true;
+      window.location.assign(logoutResult.logoutUrl);
+      return;
+    }
+  } catch {
+    // Ignore logout API failures and still reset UI locally.
+  } finally {
+    if (redirectingToIdp) {
+      sessionLogoutInFlight = false;
+      return;
+    }
+    csrfToken = "";
+    await fetchCsrfToken().catch(() => {});
+    mountAuth();
+    if (postMessage) {
+      loginError.textContent = postMessage;
+    }
+    sessionLogoutInFlight = false;
+  }
 }
 
 authModeButtons.forEach((button) => {
@@ -14092,6 +14468,7 @@ loginForm.addEventListener("submit", (event) => {
         body: JSON.stringify(body),
       });
       csrfToken = loginResult.csrfToken || csrfToken;
+      applySessionState(loginResult?.session);
       if (authMode === "doctor") {
         const doctorUser = loginResult?.user || {};
         activeSession = {
@@ -14128,33 +14505,7 @@ loginForm.addEventListener("submit", (event) => {
 });
 
 logoutBtn.addEventListener("click", () => {
-  (async () => {
-    setSessionMenuOpen(false);
-    let redirectingToIdp = false;
-
-    try {
-      if (!csrfToken) await fetchCsrfToken();
-      const endpoint = activeSession.type === "client" ? "/api/client-auth/logout" : "/api/auth/logout";
-      const logoutResult = await requestJson(endpoint, {
-        method: "POST",
-        headers: {
-          "x-csrf-token": csrfToken,
-        },
-      });
-      if (logoutResult?.logoutUrl) {
-        redirectingToIdp = true;
-        window.location.assign(logoutResult.logoutUrl);
-        return;
-      }
-    } catch {
-      // Ignore logout API failures and still reset UI locally.
-    } finally {
-      if (redirectingToIdp) return;
-      csrfToken = "";
-      await fetchCsrfToken().catch(() => {});
-      mountAuth();
-    }
-  })();
+  performLogoutFlow().catch(() => {});
 });
 
 (async () => {
@@ -14165,6 +14516,7 @@ logoutBtn.addEventListener("click", () => {
     const authState = await requestJson("/api/auth/me");
     if (authState.authenticated) {
       const doctorUser = authState?.user || {};
+      applySessionState(authState?.session);
       activeSession = {
         type: "doctor",
         accessType: "full",
@@ -14185,6 +14537,7 @@ logoutBtn.addEventListener("click", () => {
   try {
     const clientState = await requestJson("/api/client-auth/me");
     if (clientState.authenticated) {
+      applySessionState(clientState?.session);
       activeSession = {
         type: "client",
         accessType: clientState?.clientUser?.accessType || "report_view",
@@ -14210,6 +14563,22 @@ logoutBtn.addEventListener("click", () => {
     loginError.textContent = redirectedAuthMessage;
   }
 })();
+
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!appShell.contains(target)) return;
+  if (!target.matches("input, textarea, select")) return;
+  markSessionEditingActivity();
+}, true);
+
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!appShell.contains(target)) return;
+  if (!target.matches("input, textarea, select")) return;
+  markSessionEditingActivity();
+}, true);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && sessionMenuOpen) {
