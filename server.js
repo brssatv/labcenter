@@ -1346,6 +1346,31 @@ function shouldUseS3ForRequest(req) {
   return !isLoopbackHostname(requestHost);
 }
 
+function buildLocalReportStorageKey({ reportType, orderId, fileName, generatedAt }) {
+  return path.posix.join(
+    "generated-reports",
+    sanitizeS3PathSegment(reportType || "report"),
+    sanitizeS3PathSegment(orderId || "unassigned"),
+    sanitizeS3PathSegment(`${generatedAt}-${fileName}`)
+  );
+}
+
+function resolveLocalReportStoragePath(storageKey) {
+  const normalizedKey = String(storageKey || "").trim().replace(/^\/+/, "");
+  if (!normalizedKey) return null;
+  const absoluteDataDir = path.resolve(dataDir);
+  const absolutePath = path.resolve(dataDir, normalizedKey);
+  if (absolutePath !== absoluteDataDir && !absolutePath.startsWith(`${absoluteDataDir}${path.sep}`)) {
+    return null;
+  }
+  return absolutePath;
+}
+
+function isLocalGeneratedReportRecord(record) {
+  return String(record?.storageType || "").trim().toLowerCase() === "local"
+    || String(record?.bucket || "").trim().toLowerCase() === "local";
+}
+
 function sanitizeReportPdfFileName(value) {
   const raw = String(value || "").trim();
   const cleaned = raw
@@ -1843,6 +1868,54 @@ async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orde
               fileName,
               mimeType: "application/pdf",
               sizeBytes: storedReport.sizeBytes,
+              generatedAt,
+            },
+          },
+          updatedAt: generatedAt,
+        },
+      ]);
+    }
+  } else {
+    const localStorageKey = buildLocalReportStorageKey({
+      reportType,
+      orderId,
+      fileName,
+      generatedAt,
+    });
+    const localStoragePath = resolveLocalReportStoragePath(localStorageKey);
+    if (!localStoragePath) {
+      throw new Error("Unable to resolve local report storage path.");
+    }
+    ensureDir(path.dirname(localStoragePath));
+    fs.writeFileSync(localStoragePath, pdfBuffer);
+    portalStore.saveOrderFile({
+      orderId,
+      fileRole: "report_pdf",
+      reportType,
+      bucket: "local",
+      key: localStorageKey,
+      fileName,
+      mimeType: "application/pdf",
+      sizeBytes: pdfBuffer.length,
+      createdAt: generatedAt,
+      metadata: {
+        generatedAt,
+        storageType: "local",
+      },
+    });
+    if (existingOrder) {
+      portalStore.upsertOrders([
+        {
+          ...existingOrder,
+          generatedReports: {
+            ...(existingOrder.generatedReports || {}),
+            [reportType]: {
+              bucket: "local",
+              key: localStorageKey,
+              storageType: "local",
+              fileName,
+              mimeType: "application/pdf",
+              sizeBytes: pdfBuffer.length,
               generatedAt,
             },
           },
@@ -4087,6 +4160,28 @@ app.get("/api/orders/:orderId/final-report-pdf", requireAuthenticatedUser, async
     if (!bucket || !key) {
       return res.status(404).json({ error: "Saved final report PDF not found for this order." });
     }
+    if (isLocalGeneratedReportRecord(generatedFinal)) {
+      const localReportPath = resolveLocalReportStoragePath(key);
+      if (!localReportPath || !fs.existsSync(localReportPath)) {
+        return res.status(404).json({ error: "Saved final report PDF could not be loaded." });
+      }
+      const storedReport = fs.readFileSync(localReportPath);
+      if (!storedReport?.length) {
+        return res.status(404).json({ error: "Saved final report PDF could not be loaded." });
+      }
+
+      auditLog(req, "view_saved_final_report_pdf", "success", {
+        orderId,
+        storageType: "local",
+        key,
+        bytes: storedReport.length,
+      });
+
+      res.setHeader("Content-Type", generatedFinal?.mimeType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+      res.setHeader("Cache-Control", "private, max-age=0, no-store");
+      return res.status(200).send(storedReport);
+    }
     if (!s3Storage.enabled) {
       return res.status(503).json({ error: "S3 report storage is not configured for this environment." });
     }
@@ -4217,7 +4312,11 @@ app.post("/api/orders/publish-final-report", async (req, res) => {
     auditLog(req, "prepublish_final_report", "success", {
       orderId,
       fileName,
-      storedToS3: Boolean(savedOrder?.generatedReports?.final?.bucket && savedOrder?.generatedReports?.final?.key),
+      storedToS3: Boolean(
+        savedOrder?.generatedReports?.final?.bucket
+        && savedOrder?.generatedReports?.final?.key
+        && !isLocalGeneratedReportRecord(savedOrder?.generatedReports?.final)
+      ),
     });
 
     return res.json({

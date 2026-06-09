@@ -105,6 +105,7 @@ async function startTestServer(seedOrder) {
   return {
     baseUrl,
     cookieJar,
+    dataDir,
     async close() {
       await new Promise((resolve) => server.close(resolve));
       delete require.cache[serverPath];
@@ -161,6 +162,41 @@ test("final report preview route returns 503 when metadata exists but S3 is unav
   assert.equal(payload.error, "S3 report storage is not configured for this environment.");
 });
 
+test("final report preview route returns a locally stored PDF when local metadata exists", async (t) => {
+  const localStorageKey = "generated-reports/final/00001/preview.pdf";
+  const harness = await startTestServer({
+    generatedReports: {
+      final: {
+        bucket: "local",
+        key: localStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_Final_Report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 17,
+        generatedAt: "2026-06-01T08:45:00.000Z",
+      },
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const absoluteLocalPath = path.join(harness.dataDir, "generated-reports", "final", "00001", "preview.pdf");
+  fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
+  fs.writeFileSync(absoluteLocalPath, Buffer.from("%PDF-local-preview", "utf8"));
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/final-report-pdf`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/pdf");
+  const body = Buffer.from(await response.arrayBuffer());
+  assert.equal(body.toString("utf8"), "%PDF-local-preview");
+});
+
 test("prepublish route does not require provider publish settings and marks the order ready for PharmD", async (t) => {
   const harness = await startTestServer({
     provider: "Unmatched Provider",
@@ -199,4 +235,11 @@ test("prepublish route does not require provider publish settings and marks the 
   assert.equal(payload.order?.pharmd?.prePublishedBy, "admin@clinic.local");
   assert.equal(payload.order?.pharmd?.prePublishedFileName, "Order_00001_Final_Report.pdf");
   assert.equal(payload.order?.pharmd?.readyForPharmdAt, payload.order?.pharmd?.prePublishedAt);
+  assert.equal(payload.order?.generatedReports?.final?.bucket, "local");
+  assert.equal(payload.order?.generatedReports?.final?.storageType, "local");
+  assert.ok(String(payload.order?.generatedReports?.final?.key || "").startsWith("generated-reports/final/00001/"));
+  assert.ok(
+    fs.existsSync(path.resolve(harness.dataDir, payload.order.generatedReports.final.key)),
+    "expected local prepublished final report to exist on disk"
+  );
 });
