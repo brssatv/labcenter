@@ -9,6 +9,8 @@
     "dev": "NODE_ENV=development node server.js",
     "start:runtime-data": "node scripts/start-local-runtime.js",
     "hash-password": "node scripts/hash-password.js",
+    "test": "node --test --test-concurrency=1",
+    "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=lib/patient-profile.js --test-coverage-include=lib/portal-store.js",
     "desktop": "electron .",
     "dist:win": "electron-builder --win nsis",
     "dist:win-portable": "electron-builder --win portable"

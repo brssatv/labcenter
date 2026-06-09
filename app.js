@@ -2416,6 +2416,29 @@ async function saveRegistrationData(data) {
   return Number(payload?.totalCount || nextRecords.length);
 }
 
+async function updatePatientProfile(data) {
+  const patientId = String(data?.patientId || "").trim();
+  if (!patientId) {
+    throw new Error("Patient ID is required.");
+  }
+  if (!csrfToken) await fetchCsrfToken();
+  const payload = await requestJson(`/api/portal/patients/${encodeURIComponent(patientId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify({
+      patient: {
+        ...data,
+        patientId,
+      },
+    }),
+  });
+  applyPortalDataPayload(payload);
+  return payload;
+}
+
 function normalizePatientText(value) {
   return String(value || "")
     .trim()
@@ -2595,16 +2618,20 @@ function nowDateTimeLocal() {
 
 function asPatientRecord(record) {
   return {
+    referenceLab: record.referenceLab || "",
+    providerNpi: record.providerNpi || "",
     patientId: record.patientId || "",
     firstName: record.firstName || "",
     middleName: record.middleName || "",
     lastName: record.lastName || "",
+    suffix: record.suffix || "",
     sex: record.sex || "",
     dob: record.dob || "",
     phone: record.phone || "",
     mrn: record.mrn || "",
     provider: record.provider || "",
     facilityName: record.facilityName || "",
+    address2: record.address2 || "",
     city: record.city || "",
     state: record.state || "",
     country: record.country || "",
@@ -2616,8 +2643,55 @@ function asPatientRecord(record) {
     race: record.race || "",
     patientType: record.patientType || "",
     phoneBelongsTo: record.phoneBelongsTo || "Patient",
+    billingType: record.billingType || "",
+    primaryInsurance: record.primaryInsurance || "",
+    primaryMemberPolicy: record.primaryMemberPolicy || "",
+    primaryGroup: record.primaryGroup || "",
+    primaryGroupNo: record.primaryGroupNo || "",
+    primaryAttachments: record.primaryAttachments || "",
+    insurancePhone: record.insurancePhone || "",
+    secondaryInsurance: record.secondaryInsurance || "",
+    secondaryMemberPolicy: record.secondaryMemberPolicy || "",
+    secondaryGroup: record.secondaryGroup || "",
+    secondaryGroupNo: record.secondaryGroupNo || "",
+    secondaryAttachments: record.secondaryAttachments || "",
+    tertiaryInsurance: record.tertiaryInsurance || "",
+    tertiaryMemberPolicy: record.tertiaryMemberPolicy || "",
+    tertiaryGroup: record.tertiaryGroup || "",
+    tertiaryGroupNo: record.tertiaryGroupNo || "",
+    tertiaryAttachments: record.tertiaryAttachments || "",
+    workersCompensation: record.workersCompensation || "",
+    workersMemberPolicy: record.workersMemberPolicy || "",
+    compensationManager: record.compensationManager || "",
+    injuryDate: record.injuryDate || "",
+    collectionDate: record.collectionDate || "",
+    collectionTime: record.collectionTime || "",
+    receivedDate: record.receivedDate || "",
+    additionalInformation: record.additionalInformation || "",
+    age: record.age || "",
+    allergyCustomList: record.allergyCustomList || "",
     createdAt: record.createdAt || "",
   };
+}
+
+function getPatientSearchRecordKey(record) {
+  const patientId = String(record?.patientId || "").trim();
+  if (patientId) return `patient:${patientId}`;
+
+  const mrn = normalizePatientText(record?.mrn);
+  if (mrn) return `mrn:${mrn}`;
+
+  const fullName = normalizePatientText(
+    `${record?.firstName || ""} ${record?.middleName || ""} ${record?.lastName || ""}`
+  );
+  const dob = String(record?.dob || "").trim();
+  const phone = normalizePhoneDigits(record?.phone);
+  const fallback = [fullName, dob, phone].filter(Boolean).join("|");
+  if (fallback) return `person:${fallback}`;
+
+  const createdAt = String(record?.createdAt || "").trim();
+  if (createdAt) return `created:${createdAt}`;
+  return "";
 }
 
 function splitFullNameParts(value) {
@@ -3052,8 +3126,37 @@ function downloadPlainTextFile({ content, fileName, mimeType = "text/plain;chars
 }
 
 function getSearchablePatients() {
-  const saved = readRegistrations().map(asPatientRecord);
-  return [...saved, ...patientDirectory];
+  const merged = new Map();
+
+  patientDirectory.forEach((record) => {
+    const patient = asPatientRecord(record);
+    const key = getPatientSearchRecordKey(patient);
+    if (!key) return;
+    merged.set(key, {
+      ...patient,
+      __patientSearchKey: key,
+      __hasStoredProfile: false,
+    });
+  });
+
+  readRegistrations()
+    .slice()
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+    .forEach((record) => {
+      const patient = asPatientRecord(record);
+      const key = getPatientSearchRecordKey(patient);
+      if (!key) return;
+      const existing = merged.get(key);
+      if (existing?.__hasStoredProfile) return;
+      merged.set(key, {
+        ...(existing || {}),
+        ...patient,
+        __patientSearchKey: key,
+        __hasStoredProfile: true,
+      });
+    });
+
+  return Array.from(merged.values());
 }
 
 function formatDateForCard(isoDate) {
@@ -6083,6 +6186,8 @@ function renderOrderPatient(patient) {
 }
 
 function renderPatientSearch() {
+  const canEditPatients = activeSession.type === "doctor";
+
   panelBody.innerHTML = `
     <section class="patient-search-card">
       <div class="patient-search-grid">
@@ -6117,15 +6222,191 @@ function renderPatientSearch() {
         </div>
       </div>
 
+      <p id="patient-search-feedback" class="patient-search-feedback subtle hidden"></p>
       <div id="patient-search-results" class="patient-search-results hidden"></div>
     </section>
+    ${
+      canEditPatients
+        ? `
+          <div id="patient-edit-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="patient-edit-title">
+            <div class="custom-icd-dialog patient-edit-dialog">
+              <div class="custom-icd-head">
+                <div>
+                  <p class="badge">Patient Search</p>
+                  <h3 id="patient-edit-title">Edit Patient Record</h3>
+                </div>
+                <button type="button" class="custom-icd-close" data-patient-edit-close aria-label="Close">×</button>
+              </div>
+              <form id="patient-edit-form" class="custom-icd-body patient-edit-body" novalidate>
+                <p class="subtle custom-icd-copy">Update the stored patient details below. Changes are written back to LabCenter storage and reflected in Patient Search right away.</p>
+                <div class="patient-edit-summary">
+                  <div>
+                    <span>Patient ID</span>
+                    <strong id="patient-edit-id">-</strong>
+                  </div>
+                  <div>
+                    <span>Record</span>
+                    <strong id="patient-edit-name">Patient</strong>
+                  </div>
+                </div>
+
+                <section class="patient-edit-section">
+                  <h4>Facility and Provider</h4>
+                  <div class="field-grid two-col">
+                    <label><span>Reference Lab</span><input name="referenceLab" placeholder="Reference Lab"></label>
+                    <label><span>Facility</span><input name="facilityName" placeholder="Facility"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Provider</span><input name="provider" placeholder="Provider"></label>
+                    <label><span>Provider NPI</span><input name="providerNpi" placeholder="Provider NPI"></label>
+                  </div>
+                </section>
+
+                <section class="patient-edit-section">
+                  <h4>Patient Information</h4>
+                  <div class="field-grid three-col">
+                    <label><span>First Name</span><input name="firstName" placeholder="First Name"></label>
+                    <label><span>Middle Name</span><input name="middleName" placeholder="Middle Name"></label>
+                    <label><span>Last Name</span><input name="lastName" placeholder="Last Name"></label>
+                  </div>
+                  <div class="field-grid four-col">
+                    <label><span>Suffix</span><input name="suffix" placeholder="Suffix"></label>
+                    <label><span>Date of Birth</span><input type="date" name="dob"></label>
+                    <label><span>Sex</span>
+                      <select name="sex">
+                        <option value="">Select Sex</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </label>
+                    <label><span>Age</span><input type="text" name="age" placeholder="Age" readonly></label>
+                  </div>
+                  <div class="field-grid three-col">
+                    <label><span>MRN</span><input name="mrn" placeholder="MRN"></label>
+                    <label><span>Contact Number</span><input name="phone" placeholder="Contact Number"></label>
+                    <label><span>Email</span><input type="email" name="email" placeholder="Email"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Phone Belongs To</span>
+                      <select name="phoneBelongsTo">
+                        <option value="Patient">Patient</option>
+                        <option value="Relative/Guardian">Relative/Guardian</option>
+                      </select>
+                    </label>
+                    <label><span>Patient Type</span><input name="patientType" placeholder="Patient Type"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Address 1</span><input name="address" placeholder="Address 1"></label>
+                    <label><span>Address 2</span><input name="address2" placeholder="Address 2"></label>
+                  </div>
+                  <div class="field-grid three-col">
+                    <label><span>City</span><input name="city" placeholder="City"></label>
+                    <label><span>State</span><input name="state" placeholder="State"></label>
+                    <label><span>Zip Code</span><input name="zipcode" placeholder="Zip Code"></label>
+                  </div>
+                  <div class="field-grid three-col">
+                    <label><span>County</span><input name="county" placeholder="County"></label>
+                    <label><span>Country</span><input name="country" placeholder="Country"></label>
+                    <label><span>Ethnicity</span><input name="ethnicity" placeholder="Ethnicity"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Race</span><input name="race" placeholder="Race"></label>
+                    <label><span>Patient ID</span><input name="patientId" placeholder="Patient ID" readonly></label>
+                  </div>
+                </section>
+
+                <section class="patient-edit-section">
+                  <h4>Billing and Insurance</h4>
+                  <div class="field-grid two-col">
+                    <label><span>Billing Type</span>
+                      <select name="billingType">
+                        <option value="">Select Billing Type</option>
+                        <option value="selfPay">Self Pay</option>
+                        <option value="commercial">Commercial</option>
+                        <option value="medicare">Medicare</option>
+                        <option value="medicaid">Medicaid</option>
+                        <option value="workersComp">Workers Comp</option>
+                        <option value="clientBill">Client Bill</option>
+                        <option value="uninsured">Uninsured</option>
+                      </select>
+                    </label>
+                    <label><span>Insurance Phone #</span><input name="insurancePhone" placeholder="Insurance Phone #"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Primary Insurance</span><input name="primaryInsurance" placeholder="Primary Insurance"></label>
+                    <label><span>Primary Policy ID</span><input name="primaryMemberPolicy" placeholder="Primary Policy ID"></label>
+                  </div>
+                  <div class="field-grid three-col">
+                    <label><span>Primary Group</span><input name="primaryGroup" placeholder="Primary Group"></label>
+                    <label><span>Primary Group No</span><input name="primaryGroupNo" placeholder="Primary Group No"></label>
+                    <label><span>Primary Attachments</span><input name="primaryAttachments" placeholder="Primary Attachments"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Secondary Insurance</span><input name="secondaryInsurance" placeholder="Secondary Insurance"></label>
+                    <label><span>Secondary Policy ID</span><input name="secondaryMemberPolicy" placeholder="Secondary Policy ID"></label>
+                  </div>
+                  <div class="field-grid three-col">
+                    <label><span>Secondary Group</span><input name="secondaryGroup" placeholder="Secondary Group"></label>
+                    <label><span>Secondary Group No</span><input name="secondaryGroupNo" placeholder="Secondary Group No"></label>
+                    <label><span>Secondary Attachments</span><input name="secondaryAttachments" placeholder="Secondary Attachments"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Tertiary Insurance</span><input name="tertiaryInsurance" placeholder="Tertiary Insurance"></label>
+                    <label><span>Tertiary Policy ID</span><input name="tertiaryMemberPolicy" placeholder="Tertiary Policy ID"></label>
+                  </div>
+                  <div class="field-grid three-col">
+                    <label><span>Tertiary Group</span><input name="tertiaryGroup" placeholder="Tertiary Group"></label>
+                    <label><span>Tertiary Group No</span><input name="tertiaryGroupNo" placeholder="Tertiary Group No"></label>
+                    <label><span>Tertiary Attachments</span><input name="tertiaryAttachments" placeholder="Tertiary Attachments"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Workers Compensation</span><input name="workersCompensation" placeholder="Workers Compensation"></label>
+                    <label><span>Workers Policy</span><input name="workersMemberPolicy" placeholder="Workers Policy"></label>
+                  </div>
+                  <div class="field-grid two-col">
+                    <label><span>Compensation Manager</span><input name="compensationManager" placeholder="Compensation Manager"></label>
+                    <label><span>Injury Date</span><input type="date" name="injuryDate"></label>
+                  </div>
+                </section>
+
+                <section class="patient-edit-section">
+                  <h4>Collection and Notes</h4>
+                  <div class="field-grid three-col">
+                    <label><span>Date Of Collection</span><input type="date" name="collectionDate"></label>
+                    <label><span>Time Of Collection</span><input type="time" name="collectionTime"></label>
+                    <label><span>Date Received</span><input type="date" name="receivedDate"></label>
+                  </div>
+                  <div class="field-grid one-col">
+                    <label><span>Additional Information</span><textarea name="additionalInformation" rows="3" placeholder="Additional patient or billing notes"></textarea></label>
+                  </div>
+                </section>
+
+                <p id="patient-edit-feedback" class="error hidden" aria-live="polite"></p>
+                <div class="custom-icd-footer patient-edit-footer">
+                  <button type="button" class="btn-ghost" data-patient-edit-close>Cancel</button>
+                  <button type="submit" class="btn-primary" id="patient-edit-save">Save Changes</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        `
+        : ""
+    }
   `;
 
-  const allPatients = getSearchablePatients();
+  let allPatients = getSearchablePatients();
   const searchBtn = document.getElementById("patient-search-btn");
   const moreBtn = document.getElementById("patient-search-more");
   const morePanel = document.getElementById("patient-search-more-panel");
+  const feedbackNode = document.getElementById("patient-search-feedback");
   const resultsNode = document.getElementById("patient-search-results");
+  const patientEditModalNode = document.getElementById("patient-edit-modal");
+  const patientEditForm = document.getElementById("patient-edit-form");
+  const patientEditFeedbackNode = document.getElementById("patient-edit-feedback");
+  const patientEditIdNode = document.getElementById("patient-edit-id");
+  const patientEditNameNode = document.getElementById("patient-edit-name");
+  const patientEditSaveBtn = document.getElementById("patient-edit-save");
   let baseResults = [];
   let sortField = "patientId";
   let sortDirection = "asc";
@@ -6133,6 +6414,9 @@ function renderPatientSearch() {
   let textFilterMenuOpen = false;
   let draft = null;
   let valueCache = [];
+  let activePatientActionKey = "";
+  let patientSaveInFlight = false;
+  let patientLookup = new Map();
   const columnFilters = {
     patientId: { mode: "contains", term: "", selectedValues: null },
     name: { mode: "contains", term: "", selectedValues: null },
@@ -6146,6 +6430,165 @@ function renderPatientSearch() {
     return `${patient.firstName || ""} ${patient.middleName || ""} ${patient.lastName || ""}`
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function getPatientKey(patient) {
+    return String(patient?.__patientSearchKey || getPatientSearchRecordKey(patient) || "").trim();
+  }
+
+  function setFeedback(message, tone = "neutral") {
+    if (!feedbackNode) return;
+    const nextMessage = String(message || "").trim();
+    feedbackNode.textContent = nextMessage;
+    feedbackNode.classList.toggle("hidden", !nextMessage);
+    feedbackNode.classList.toggle("error", tone === "error");
+  }
+
+  function setPatientEditFeedback(message = "") {
+    if (!patientEditFeedbackNode) return;
+    const nextMessage = String(message || "").trim();
+    patientEditFeedbackNode.textContent = nextMessage;
+    patientEditFeedbackNode.classList.toggle("hidden", !nextMessage);
+  }
+
+  function closeFilterPopover() {
+    const pop = resultsNode.querySelector("#column-filter-popover");
+    if (pop) pop.classList.add("hidden");
+    activeFilterField = "";
+    draft = null;
+    textFilterMenuOpen = false;
+  }
+
+  function closePatientActionMenu() {
+    const menu = resultsNode.querySelector("#patient-row-action-menu");
+    if (menu) menu.classList.add("hidden");
+    activePatientActionKey = "";
+  }
+
+  function openPatientActionMenu(patientKey, anchorButton) {
+    const menu = resultsNode.querySelector("#patient-row-action-menu");
+    if (!menu || !patientKey) return;
+    menu.innerHTML = `
+      <button type="button" class="patient-row-menu-btn" data-patient-action="edit" data-patient-key="${escapeHtml(patientKey)}">Edit</button>
+    `;
+    menu.classList.remove("hidden");
+    activePatientActionKey = patientKey;
+
+    const anchorRect = anchorButton.getBoundingClientRect();
+    const menuWidth = 160;
+    const viewportPadding = 8;
+    const left = Math.max(
+      viewportPadding,
+      Math.min(anchorRect.right - menuWidth, window.innerWidth - menuWidth - viewportPadding)
+    );
+    const top = anchorRect.bottom + 6;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  function syncPatientEditAge() {
+    if (!patientEditForm?.elements?.dob || !patientEditForm?.elements?.age) return;
+    const nextAge = calcAgeInYearsAndMonths(patientEditForm.elements.dob.value);
+    patientEditForm.elements.age.value = nextAge;
+  }
+
+  function populatePatientEditForm(patient) {
+    if (!patientEditForm) return;
+    const values = asPatientRecord(patient || {});
+    const editableKeys = [
+      "referenceLab",
+      "facilityName",
+      "provider",
+      "providerNpi",
+      "firstName",
+      "middleName",
+      "lastName",
+      "suffix",
+      "dob",
+      "sex",
+      "age",
+      "mrn",
+      "phone",
+      "email",
+      "phoneBelongsTo",
+      "patientType",
+      "address",
+      "address2",
+      "city",
+      "state",
+      "zipcode",
+      "county",
+      "country",
+      "ethnicity",
+      "race",
+      "patientId",
+      "billingType",
+      "insurancePhone",
+      "primaryInsurance",
+      "primaryMemberPolicy",
+      "primaryGroup",
+      "primaryGroupNo",
+      "primaryAttachments",
+      "secondaryInsurance",
+      "secondaryMemberPolicy",
+      "secondaryGroup",
+      "secondaryGroupNo",
+      "secondaryAttachments",
+      "tertiaryInsurance",
+      "tertiaryMemberPolicy",
+      "tertiaryGroup",
+      "tertiaryGroupNo",
+      "tertiaryAttachments",
+      "workersCompensation",
+      "workersMemberPolicy",
+      "compensationManager",
+      "injuryDate",
+      "collectionDate",
+      "collectionTime",
+      "receivedDate",
+      "additionalInformation",
+    ];
+
+    editableKeys.forEach((key) => {
+      const field = patientEditForm.elements[key];
+      if (!field) return;
+      field.value = values[key] || "";
+    });
+
+    if (patientEditIdNode) patientEditIdNode.textContent = values.patientId || "-";
+    if (patientEditNameNode) patientEditNameNode.textContent = getName(values) || values.patientId || "Patient";
+    syncPatientEditAge();
+  }
+
+  function openPatientEditModal(patientKey) {
+    if (!patientEditModalNode || !patientEditForm) return;
+    const patient = patientLookup.get(patientKey);
+    if (!patient) return;
+    populatePatientEditForm(patient);
+    setPatientEditFeedback("");
+    patientEditModalNode.classList.remove("hidden");
+    syncBodyModalOpenState();
+    requestAnimationFrame(() => {
+      const firstField = patientEditForm.querySelector("input, select, textarea, button");
+      firstField?.focus();
+    });
+  }
+
+  function closePatientEditModal() {
+    if (!patientEditModalNode) return;
+    patientEditModalNode.classList.add("hidden");
+    patientSaveInFlight = false;
+    if (patientEditSaveBtn) patientEditSaveBtn.disabled = false;
+    setPatientEditFeedback("");
+    syncBodyModalOpenState();
+  }
+
+  function collectPatientEditValues() {
+    if (!patientEditForm) return {};
+    const values = Object.fromEntries(new FormData(patientEditForm).entries());
+    values.patientId = String(values.patientId || "").trim();
+    values.age = calcAgeInYearsAndMonths(values.dob) || String(values.age || "").trim();
+    return values;
   }
 
   function compareRows(a, b, field, direction) {
@@ -6353,12 +6796,14 @@ function renderPatientSearch() {
 
   function renderResultsTable() {
     if (!baseResults.length) {
+      closePatientActionMenu();
       resultsNode.classList.remove("hidden");
       resultsNode.innerHTML = `<p class="subtle table-empty">No patients found.</p>`;
       return;
     }
 
     const processed = getFilteredSortedRows();
+    patientLookup = new Map(processed.map((patient) => [getPatientKey(patient), patient]));
     resultsNode.classList.remove("hidden");
     resultsNode.innerHTML = `
       <table class="patient-results-table">
@@ -6370,6 +6815,7 @@ function renderPatientSearch() {
             <th><div class="th-wrap"><button type="button" class="sort-btn" data-field="dob">DOB ${sortIndicator("dob")}</button><button type="button" class="filter-toggle ${columnFilters.dob.term || columnFilters.dob.selectedValues !== null ? "active" : ""}" data-field="dob">${filterIndicator("dob")}</button></div></th>
             <th><div class="th-wrap"><button type="button" class="sort-btn" data-field="mrn">MRN ${sortIndicator("mrn")}</button><button type="button" class="filter-toggle ${columnFilters.mrn.term || columnFilters.mrn.selectedValues !== null ? "active" : ""}" data-field="mrn">${filterIndicator("mrn")}</button></div></th>
             <th><div class="th-wrap"><button type="button" class="sort-btn" data-field="provider">Provider ${sortIndicator("provider")}</button><button type="button" class="filter-toggle ${columnFilters.provider.term || columnFilters.provider.selectedValues !== null ? "active" : ""}" data-field="provider">${filterIndicator("provider")}</button></div></th>
+            ${canEditPatients ? '<th class="patient-actions-col">Actions</th>' : ""}
           </tr>
         </thead>
         <tbody>
@@ -6377,6 +6823,7 @@ function renderPatientSearch() {
             .slice(0, 50)
             .map((patient) => {
               const fullName = getName(patient);
+              const patientKey = getPatientKey(patient);
               return `
                 <tr>
                   <td>${patient.patientId || "-"}</td>
@@ -6385,6 +6832,22 @@ function renderPatientSearch() {
                   <td>${formatDateForCard(patient.dob)}</td>
                   <td>${patient.mrn || "-"}</td>
                   <td>${patient.provider || "-"}</td>
+                  ${
+                    canEditPatients
+                      ? `
+                        <td class="patient-actions-cell">
+                          <button
+                            type="button"
+                            class="patient-row-action-trigger"
+                            data-patient-row-menu="${escapeHtml(patientKey)}"
+                            aria-haspopup="menu"
+                            aria-expanded="${activePatientActionKey === patientKey ? "true" : "false"}"
+                            aria-label="Open patient actions"
+                          >⋮</button>
+                        </td>
+                      `
+                      : ""
+                  }
                 </tr>
               `;
             })
@@ -6393,6 +6856,7 @@ function renderPatientSearch() {
       </table>
       <div class="table-meta">${processed.length} result(s)</div>
       <div id="column-filter-popover" class="column-filter-popover hidden"></div>
+      ${canEditPatients ? '<div id="patient-row-action-menu" class="patient-row-action-menu hidden" role="menu"></div>' : ""}
     `;
 
     if (activeFilterField) {
@@ -6404,6 +6868,7 @@ function renderPatientSearch() {
       if (sortButton) {
         const field = sortButton.dataset.field;
         if (!field) return;
+        closePatientActionMenu();
         activeFilterField = "";
         if (sortField === field) sortDirection = sortDirection === "asc" ? "desc" : "asc";
         else {
@@ -6416,17 +6881,36 @@ function renderPatientSearch() {
 
       const filterButton = event.target.closest(".filter-toggle");
       if (filterButton) {
+        closePatientActionMenu();
         const field = filterButton.dataset.field;
         if (!field) return;
         if (activeFilterField === field) {
-          activeFilterField = "";
-          const pop = resultsNode.querySelector("#column-filter-popover");
-          if (pop) pop.classList.add("hidden");
-          draft = null;
+          closeFilterPopover();
           return;
         }
         draft = null;
         openFilterPopover(field, filterButton);
+        return;
+      }
+
+      const patientActionButton = event.target.closest("[data-patient-row-menu]");
+      if (patientActionButton) {
+        const patientKey = patientActionButton.getAttribute("data-patient-row-menu");
+        if (!patientKey) return;
+        if (activePatientActionKey === patientKey) {
+          closePatientActionMenu();
+          return;
+        }
+        closeFilterPopover();
+        openPatientActionMenu(patientKey, patientActionButton);
+        return;
+      }
+
+      const editActionButton = event.target.closest('[data-patient-action="edit"]');
+      if (editActionButton) {
+        const patientKey = editActionButton.getAttribute("data-patient-key");
+        closePatientActionMenu();
+        if (patientKey) openPatientEditModal(patientKey);
         return;
       }
 
@@ -6435,8 +6919,7 @@ function renderPatientSearch() {
         if (!activeFilterField || !dir) return;
         sortField = activeFilterField;
         sortDirection = dir === "desc" ? "desc" : "asc";
-        activeFilterField = "";
-        draft = null;
+        closeFilterPopover();
         renderResultsTable();
         return;
       }
@@ -6463,17 +6946,13 @@ function renderPatientSearch() {
       if (event.target.closest("[data-filter-clear]")) {
         if (!activeFilterField) return;
         clearFieldFilter(activeFilterField);
-        activeFilterField = "";
-        draft = null;
+        closeFilterPopover();
         renderResultsTable();
         return;
       }
 
       if (event.target.closest("[data-filter-cancel]")) {
-        activeFilterField = "";
-        draft = null;
-        const pop = resultsNode.querySelector("#column-filter-popover");
-        if (pop) pop.classList.add("hidden");
+        closeFilterPopover();
         return;
       }
 
@@ -6513,10 +6992,11 @@ function renderPatientSearch() {
       }
 
       if (!event.target.closest(".column-filter-popover")) {
-        const pop = resultsNode.querySelector("#column-filter-popover");
-        if (pop) pop.classList.add("hidden");
-        activeFilterField = "";
-        draft = null;
+        closeFilterPopover();
+      }
+
+      if (!event.target.closest(".patient-row-action-menu")) {
+        closePatientActionMenu();
       }
     };
 
@@ -6555,6 +7035,52 @@ function renderPatientSearch() {
     });
     renderResultsTable();
   }
+
+  patientEditForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (patientSaveInFlight) return;
+
+    const values = collectPatientEditValues();
+    if (!values.patientId) {
+      setPatientEditFeedback("Patient ID is required to save this record.");
+      return;
+    }
+
+    patientSaveInFlight = true;
+    if (patientEditSaveBtn) patientEditSaveBtn.disabled = true;
+    setPatientEditFeedback("");
+
+    try {
+      const payload = await updatePatientProfile(values);
+      allPatients = getSearchablePatients();
+      runPatientSearch();
+      closePatientEditModal();
+      setFeedback(
+        `Patient ${values.patientId} updated in storage. ${Number(payload?.updatedRegistrations || 0)} registration record(s) refreshed.`,
+        "neutral"
+      );
+    } catch (error) {
+      patientSaveInFlight = false;
+      if (patientEditSaveBtn) patientEditSaveBtn.disabled = false;
+      setPatientEditFeedback(error?.message || "Unable to update patient record.");
+    }
+  });
+
+  patientEditForm?.elements?.dob?.addEventListener("input", syncPatientEditAge);
+  patientEditForm?.elements?.dob?.addEventListener("change", syncPatientEditAge);
+  patientEditModalNode?.addEventListener("click", (event) => {
+    if (patientSaveInFlight) return;
+    if (event.target === patientEditModalNode || event.target.closest("[data-patient-edit-close]")) {
+      closePatientEditModal();
+    }
+  });
+  patientEditModalNode?.addEventListener("keydown", (event) => {
+    if (patientSaveInFlight) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePatientEditModal();
+    }
+  });
 
   searchBtn.addEventListener("click", runPatientSearch);
   moreBtn.addEventListener("click", () => {

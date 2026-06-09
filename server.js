@@ -12,6 +12,7 @@ const FileStore = require("session-file-store")(session);
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { createPortalStore } = require("./lib/portal-store");
+const { buildPatientProfileArtifacts } = require("./lib/patient-profile");
 const { createS3Storage, sanitizeS3PathSegment } = require("./lib/s3-storage");
 const { extractRequisitionScanData } = require("./lib/requisition-scan");
 require("dotenv").config();
@@ -19,6 +20,7 @@ require("dotenv").config();
 const app = express();
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 3000);
+const HOST = String(process.env.HOST || (isProd ? "0.0.0.0" : "127.0.0.1")).trim() || (isProd ? "0.0.0.0" : "127.0.0.1");
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-only-change-me";
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const SESSION_WARNING_MS = 2 * 60 * 1000;
@@ -3182,6 +3184,53 @@ app.post("/api/portal/registrations", requireAuthenticatedUser, (req, res) => {
   }
 });
 
+app.patch("/api/portal/patients/:patientId", requireDoctorAuth, (req, res) => {
+  try {
+    const patientId = String(req.params?.patientId || "").trim();
+    const patient = req.body?.patient && typeof req.body.patient === "object" ? req.body.patient : null;
+    if (!patientId) {
+      return res.status(400).json({ error: "Patient ID is required." });
+    }
+    if (!patient) {
+      return res.status(400).json({ error: "Patient payload is required." });
+    }
+
+    const matchingRegistrations = portalStore.listRegistrationsByPatientId(patientId);
+    const matchingOrders = portalStore.listOrders().filter((order) => String(order?.patientId || "").trim() === patientId);
+    const updateArtifacts = buildPatientProfileArtifacts({
+      patientId,
+      patient,
+      registrations: matchingRegistrations,
+      orders: matchingOrders,
+    });
+    const savedRegistrations = matchingRegistrations.length
+      ? portalStore.replaceRegistrations(updateArtifacts.registrationUpdates)
+      : [portalStore.upsertRegistration(updateArtifacts.registrationUpdates[0])];
+
+    if (updateArtifacts.orderUpdates.length) {
+      portalStore.upsertOrders(updateArtifacts.orderUpdates);
+    }
+
+    auditLog(req, "patient_update", "success", {
+      patientId,
+      updatedRegistrations: savedRegistrations.length,
+      updatedOrders: updateArtifacts.orderUpdates.length,
+    });
+    return res.json({
+      patient: savedRegistrations[0] || updateArtifacts.nextProfile,
+      updatedRegistrations: savedRegistrations.length,
+      updatedOrders: updateArtifacts.orderUpdates.length,
+      ...getPortalDataForSession(req),
+    });
+  } catch (error) {
+    auditLog(req, "patient_update", "failed", {
+      patientId: String(req.params?.patientId || "").trim(),
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to update patient record." });
+  }
+});
+
 app.post("/api/portal/orders/bulk", requireAuthenticatedUser, (req, res) => {
   if (!hasRequisitionAccess(req)) {
     return res.status(401).json({ error: "Order creation access is not enabled for this account." });
@@ -4361,8 +4410,39 @@ app.get("/styles.css", (_req, res) => {
   return sendClientFile(res, path.join(__dirname, "styles.css"));
 });
 
-app.listen(PORT, () => {
-  console.log(`LabCenter secure portal running at http://localhost:${PORT}`);
-  console.log(`[runtime] Data directory: ${dataDir}`);
-  console.log(`[runtime] Session directory: ${sessionDir}`);
-});
+let activeServer = null;
+
+function startServer(port = PORT) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, HOST);
+    const handleError = (error) => {
+      server.off("listening", handleListening);
+      reject(error);
+    };
+    const handleListening = () => {
+      server.off("error", handleError);
+      activeServer = server;
+      const resolvedPort = server.address()?.port ?? port;
+      console.log(`LabCenter secure portal running at http://localhost:${resolvedPort}`);
+      console.log(`[runtime] Data directory: ${dataDir}`);
+      console.log(`[runtime] Session directory: ${sessionDir}`);
+      resolve(server);
+    };
+
+    server.once("error", handleError);
+    server.once("listening", handleListening);
+  });
+}
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  app,
+  startServer,
+  portalStore,
+};
