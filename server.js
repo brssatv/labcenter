@@ -56,7 +56,8 @@ const OIDC_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const OIDC_CLOCK_TOLERANCE_SEC = 60;
 const normalizePublishMode = (value) => {
   const raw = String(value || "").trim().toLowerCase();
-  if (!raw || raw === "disabled") return "disabled";
+  if (!raw || raw === "disabled" || raw === "off") return "disabled";
+  if (raw === "live" || raw === "enabled" || raw === "enable" || raw === "send" || raw === "on") return "live";
   if (raw === "log" || raw === "logged") return "log";
   if (raw === "simulate" || raw === "simulated" || raw === "mock") return "simulated";
   return "disabled";
@@ -67,8 +68,19 @@ const reportPdfEnabled = String(process.env.LABCENTER_ENABLE_REPORT_PDF || "").t
 const scanOcrEnabled = String(process.env.LABCENTER_ENABLE_SCAN_OCR || "").trim()
   ? /^(1|true|yes|on)$/i.test(String(process.env.LABCENTER_ENABLE_SCAN_OCR || "").trim())
   : true;
+const SRFAX_ENDPOINT = String(process.env.SRFAX_ENDPOINT || "https://www.srfax.com/SRF_SecWebSvc.php").trim()
+  || "https://www.srfax.com/SRF_SecWebSvc.php";
+const SRFAX_ACCESS_ID = String(process.env.SRFAX_ACCESS_ID || "").trim();
+const SRFAX_ACCESS_PWD = String(process.env.SRFAX_ACCESS_PWD || "").trim();
+const SRFAX_SENDER_EMAIL = String(process.env.SRFAX_SENDER_EMAIL || "").trim().toLowerCase();
+const PUBLISH_FAX_SENDER_DIGITS = "3525654554";
+const PUBLISH_FAX_RECEIVER_DIGITS = "13525654554";
+const PUBLISH_FAX_DISPLAY_NUMBER = "352-565-4554";
+const PUBLISH_FAX_TIMEOUT_MS = Math.max(5000, Math.min(120000, Math.floor(Number(process.env.SRFAX_TIMEOUT_MS || 30000) || 30000)));
 const publishEmailMode = normalizePublishMode(process.env.LABCENTER_PUBLISH_EMAIL_MODE || "disabled");
-const publishFaxMode = normalizePublishMode(process.env.LABCENTER_PUBLISH_FAX_MODE || "disabled");
+const publishFaxMode = normalizePublishMode(
+  process.env.LABCENTER_PUBLISH_FAX_MODE || (SRFAX_ACCESS_ID && SRFAX_ACCESS_PWD ? "live" : "disabled")
+);
 const PHARMD_SFTP_HOST = String(process.env.PHARMD_SFTP_HOST || "18.144.129.54").trim();
 const PHARMD_SFTP_PORT = Math.max(1, Math.floor(Number(process.env.PHARMD_SFTP_PORT || 22) || 22));
 const PHARMD_SFTP_USERNAME = String(process.env.PHARMD_SFTP_USERNAME || "jays-user").trim();
@@ -1925,6 +1937,169 @@ async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orde
     }
   }
   return generatedAt;
+}
+
+function createStatusError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+async function loadGeneratedReportBuffer(generatedReport) {
+  const bucket = String(generatedReport?.bucket || "").trim();
+  const key = String(generatedReport?.key || "").trim();
+  if (!bucket || !key) {
+    throw createStatusError("Saved final report PDF not found for this order.", 404);
+  }
+
+  if (isLocalGeneratedReportRecord(generatedReport)) {
+    const localReportPath = resolveLocalReportStoragePath(key);
+    if (!localReportPath || !fs.existsSync(localReportPath)) {
+      throw createStatusError("Saved final report PDF could not be loaded.", 404);
+    }
+    const storedReport = fs.readFileSync(localReportPath);
+    if (!storedReport?.length) {
+      throw createStatusError("Saved final report PDF could not be loaded.", 404);
+    }
+    return {
+      buffer: storedReport,
+      bucket,
+      key,
+      contentType: generatedReport?.mimeType || "application/pdf",
+      contentDisposition: generatedReport?.fileName ? `inline; filename="${sanitizeReportPdfFileName(generatedReport.fileName)}"` : "",
+      contentLength: storedReport.length,
+      storageType: "local",
+    };
+  }
+
+  if (!s3Storage.enabled) {
+    throw createStatusError("S3 report storage is not configured for this environment.", 503);
+  }
+
+  const storedReport = await s3Storage.downloadBuffer({ bucket, key });
+  if (!storedReport?.body?.length) {
+    throw createStatusError("Saved final report PDF could not be loaded.", 404);
+  }
+
+  return {
+    buffer: storedReport.body,
+    bucket,
+    key,
+    contentType: storedReport.contentType || generatedReport?.mimeType || "application/pdf",
+    contentDisposition: storedReport.contentDisposition || "",
+    contentLength: storedReport.contentLength || storedReport.body.length,
+    storageType: "s3",
+  };
+}
+
+function isLikelyEmailAddress(value) {
+  return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(String(value || "").trim());
+}
+
+function resolvePublishFaxSenderEmail(req) {
+  const candidates = [
+    SRFAX_SENDER_EMAIL,
+    req?.session?.user?.email,
+    req?.session?.clientUser?.email,
+    "innovexlab@innovexlab.com",
+  ];
+  return candidates
+    .map((value) => String(value || "").trim().toLowerCase())
+    .find((value) => isLikelyEmailAddress(value))
+    || "";
+}
+
+function createPublishFaxRecord(existingRecord, patch = {}) {
+  const currentRecord = existingRecord && typeof existingRecord === "object" ? existingRecord : {};
+  return {
+    ...currentRecord,
+    ...patch,
+    senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+    recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+    deliveryVendor: "SRFax",
+    channel: "fax",
+  };
+}
+
+async function queueSrfaxFax({
+  orderId,
+  fileName,
+  pdfBuffer,
+  senderEmail,
+}) {
+  if (!SRFAX_ACCESS_ID || !SRFAX_ACCESS_PWD) {
+    throw new Error("SRFax credentials are not configured.");
+  }
+  if (!isLikelyEmailAddress(senderEmail)) {
+    throw new Error("SRFax sender email is not configured.");
+  }
+  if (!pdfBuffer?.length) {
+    throw new Error("Saved final report PDF could not be loaded.");
+  }
+
+  const payload = new URLSearchParams({
+    action: "Queue_Fax",
+    access_id: SRFAX_ACCESS_ID,
+    access_pwd: SRFAX_ACCESS_PWD,
+    sCallerID: PUBLISH_FAX_SENDER_DIGITS,
+    sSenderEmail: senderEmail,
+    sFaxType: "SINGLE",
+    sToFaxNumber: PUBLISH_FAX_RECEIVER_DIGITS,
+    sResponseFormat: "JSON",
+    sAccountCode: String(orderId || "").trim().slice(0, 20),
+    sCPSubject: `Final Report Order ${String(orderId || "").trim()}`.slice(0, 80),
+    sFaxFromHeader: "LabCenter",
+    sFileName_1: sanitizeReportPdfFileName(fileName || `Order_${orderId}_Final_Report.pdf`),
+    sFileContent_1: pdfBuffer.toString("base64"),
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PUBLISH_FAX_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(SRFAX_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body: payload.toString(),
+      signal: controller.signal,
+    });
+
+    const raw = await response.text();
+    let parsed = null;
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error("SRFax returned an unexpected response.");
+    }
+
+    if (!response.ok) {
+      throw new Error(String(parsed?.Result || parsed?.error || response.statusText || "SRFax request failed.").trim() || "SRFax request failed.");
+    }
+
+    const status = String(parsed?.Status || "").trim().toLowerCase();
+    const result = parsed?.Result;
+    if (status !== "success") {
+      throw new Error(String(result || "SRFax rejected the fax request.").trim() || "SRFax rejected the fax request.");
+    }
+
+    return {
+      status: "queued",
+      faxDetailsId: String(result || "").trim(),
+      result,
+      message: `Fax queued successfully for ${PUBLISH_FAX_DISPLAY_NUMBER}.`,
+      mode: "live",
+    };
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("SRFax request timed out.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function inferMimeTypeFromFileName(fileName) {
@@ -4152,50 +4327,17 @@ app.get("/api/orders/:orderId/final-report-pdf", requireAuthenticatedUser, async
     }
 
     const generatedFinal = existingOrder?.generatedReports?.final;
-    const bucket = String(generatedFinal?.bucket || "").trim();
-    const key = String(generatedFinal?.key || "").trim();
     const fileName = sanitizeReportPdfFileName(
       generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`
     );
-    if (!bucket || !key) {
-      return res.status(404).json({ error: "Saved final report PDF not found for this order." });
-    }
-    if (isLocalGeneratedReportRecord(generatedFinal)) {
-      const localReportPath = resolveLocalReportStoragePath(key);
-      if (!localReportPath || !fs.existsSync(localReportPath)) {
-        return res.status(404).json({ error: "Saved final report PDF could not be loaded." });
-      }
-      const storedReport = fs.readFileSync(localReportPath);
-      if (!storedReport?.length) {
-        return res.status(404).json({ error: "Saved final report PDF could not be loaded." });
-      }
-
-      auditLog(req, "view_saved_final_report_pdf", "success", {
-        orderId,
-        storageType: "local",
-        key,
-        bytes: storedReport.length,
-      });
-
-      res.setHeader("Content-Type", generatedFinal?.mimeType || "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
-      res.setHeader("Cache-Control", "private, max-age=0, no-store");
-      return res.status(200).send(storedReport);
-    }
-    if (!s3Storage.enabled) {
-      return res.status(503).json({ error: "S3 report storage is not configured for this environment." });
-    }
-
-    const storedReport = await s3Storage.downloadBuffer({ bucket, key });
-    if (!storedReport?.body?.length) {
-      return res.status(404).json({ error: "Saved final report PDF could not be loaded." });
-    }
+    const storedReport = await loadGeneratedReportBuffer(generatedFinal);
 
     auditLog(req, "view_saved_final_report_pdf", "success", {
       orderId,
-      bucket,
-      key,
-      bytes: storedReport.body.length,
+      bucket: storedReport.bucket,
+      key: storedReport.key,
+      storageType: storedReport.storageType,
+      bytes: storedReport.buffer.length,
     });
 
     res.setHeader("Content-Type", storedReport.contentType || "application/pdf");
@@ -4204,13 +4346,13 @@ app.get("/api/orders/:orderId/final-report-pdf", requireAuthenticatedUser, async
     if (storedReport.contentLength) {
       res.setHeader("Content-Length", String(storedReport.contentLength));
     }
-    return res.send(storedReport.body);
+    return res.send(storedReport.buffer);
   } catch (error) {
     auditLog(req, "view_saved_final_report_pdf", "failed", {
       orderId: String(req.params.orderId || ""),
       reason: error?.message || "unexpected_error",
     });
-    return res.status(500).json({
+    return res.status(Number(error?.statusCode) || 500).json({
       error: error?.message || "Unable to load saved final report PDF.",
     });
   }
@@ -4330,6 +4472,149 @@ app.post("/api/orders/publish-final-report", async (req, res) => {
     });
     return res.status(500).json({
       error: error?.message || "Unable to prepublish final report.",
+    });
+  }
+});
+
+app.post("/api/orders/:orderId/publish-fax", async (req, res) => {
+  if (!hasReportPdfAccess(req)) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+
+  const orderId = String(req.params.orderId || "").trim();
+  if (!orderId) {
+    return res.status(400).json({ error: "Order ID is required." });
+  }
+  if (!req.body?.confirmed) {
+    return res.status(400).json({ error: "Fax send confirmation is required." });
+  }
+
+  const existingOrder = portalStore.getOrderById(orderId);
+  if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+    return res.status(404).json({ error: "Order not found." });
+  }
+
+  const generatedFinal = existingOrder?.generatedReports?.final;
+  if (!generatedFinal?.bucket || !generatedFinal?.key) {
+    return res.status(404).json({ error: "Saved final report PDF not found for this order." });
+  }
+
+  const requestedBy = String(
+    req?.session?.user?.email
+    || req?.session?.user?.displayName
+    || req?.session?.clientUser?.username
+    || "system"
+  ).trim();
+  const senderEmail = resolvePublishFaxSenderEmail(req);
+  const fileName = sanitizeReportPdfFileName(
+    generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`
+  );
+
+  try {
+    const storedReport = await loadGeneratedReportBuffer(generatedFinal);
+    let faxResult = null;
+
+    if (publishFaxMode === "disabled") {
+      return res.status(503).json({
+        error: "Fax publishing is disabled. Configure SRFax credentials and enable LABCENTER_PUBLISH_FAX_MODE to send faxes.",
+      });
+    }
+
+    if (publishFaxMode === "simulated") {
+      faxResult = {
+        status: "simulated",
+        faxDetailsId: `SIM-${Date.now()}`,
+        result: "Simulated fax queue request",
+        message: `Fax simulated successfully for ${PUBLISH_FAX_DISPLAY_NUMBER}.`,
+        mode: "simulated",
+      };
+    } else if (publishFaxMode === "log") {
+      faxResult = {
+        status: "logged",
+        faxDetailsId: `LOG-${Date.now()}`,
+        result: "Logged fax queue request",
+        message: `Fax request logged for ${PUBLISH_FAX_DISPLAY_NUMBER}.`,
+        mode: "log",
+      };
+      console.info("[publish-fax]", {
+        orderId,
+        senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+        recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+        senderEmail,
+        fileName,
+      });
+    } else {
+      faxResult = await queueSrfaxFax({
+        orderId,
+        fileName,
+        pdfBuffer: storedReport.buffer,
+        senderEmail,
+      });
+    }
+
+    const publishedAt = new Date().toISOString();
+    const savedOrder = portalStore.upsertOrders([
+      {
+        ...existingOrder,
+        updatedAt: publishedAt,
+        publishedReports: {
+          ...(existingOrder?.publishedReports && typeof existingOrder.publishedReports === "object"
+            ? existingOrder.publishedReports
+            : {}),
+          final: createPublishFaxRecord(existingOrder?.publishedReports?.final, {
+            publishedAt,
+            publishedBy: requestedBy,
+            senderEmail,
+            fileName,
+            faxDetailsId: faxResult.faxDetailsId,
+            result: faxResult.result,
+            status: faxResult.status,
+            mode: faxResult.mode,
+            endpoint: faxResult.mode === "live" ? SRFAX_ENDPOINT : "",
+          }),
+        },
+      },
+    ])[0];
+
+    auditLog(req, "publish_final_report_fax", "success", {
+      orderId,
+      mode: faxResult.mode,
+      faxDetailsId: faxResult.faxDetailsId,
+      senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+      recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+      senderEmail,
+      bytes: storedReport.buffer.length,
+    });
+
+    return res.json({
+      ok: true,
+      message: faxResult.message,
+      fax: {
+        mode: faxResult.mode,
+        status: faxResult.status,
+        faxDetailsId: faxResult.faxDetailsId,
+        senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+        recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+        senderEmail,
+      },
+      order: savedOrder,
+    });
+  } catch (error) {
+    const statusCode = Number(error?.statusCode) || (
+      /not found/i.test(String(error?.message || "")) ? 404
+        : /disabled|configured/i.test(String(error?.message || "")) ? 503
+        : 502
+    );
+    auditLog(req, "publish_final_report_fax", "failed", {
+      orderId,
+      mode: publishFaxMode,
+      reason: error?.message || "unexpected_error",
+      senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+      recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+      senderEmail,
+    });
+    return res.status(statusCode).json({
+      error: error?.message || "Unable to send fax.",
     });
   }
 });

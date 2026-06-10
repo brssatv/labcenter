@@ -8756,7 +8756,10 @@ function renderOutputResults() {
   let tabsNode = null;
   let publishModalNode = null;
   let publishModalOrderId = "";
+  let publishModalView = "menu";
+  const publishFaxDisplayNumber = "352-565-4554";
   const sendingPharmdOrders = new Set();
+  const publishingFaxOrders = new Set();
   const workflowSavingOrders = new Set();
   const previewLoadingOrders = new Set();
 
@@ -8854,6 +8857,7 @@ function renderOutputResults() {
 
   function closeCompletedPublishModal() {
     publishModalOrderId = "";
+    publishModalView = "menu";
     renderCompletedPublishModal();
   }
 
@@ -8869,6 +8873,16 @@ function renderOutputResults() {
       return;
     }
 
+    const isFaxConfirmView = publishModalView === "fax-confirm";
+    const isFaxSending = publishingFaxOrders.has(String(order?.orderId || "").trim());
+    const hasFinalReport = hasSavedFinalReport(order);
+    const lastPublishedFax = order?.publishedReports?.final?.channel === "fax"
+      ? order.publishedReports.final
+      : null;
+    const lastPublishedCopy = lastPublishedFax?.publishedAt
+      ? `Last fax activity ${formatOutputDate(lastPublishedFax.publishedAt)}${lastPublishedFax?.status ? ` • ${String(lastPublishedFax.status).replace(/^\w/, (value) => value.toUpperCase())}` : ""}.`
+      : "";
+
     publishModalNode.classList.remove("hidden");
     publishModalNode.setAttribute("aria-hidden", "false");
     publishModalNode.innerHTML = `
@@ -8877,7 +8891,7 @@ function renderOutputResults() {
           <div>
             <p class="badge">Completed Report</p>
             <h3 id="output-results-publish-title">Publish Report</h3>
-            <p class="subtle output-results-publish-copy">Choose how you want to route this completed report next. We’ll connect the actual delivery workflow after this UI step.</p>
+            <p class="subtle output-results-publish-copy">${isFaxConfirmView ? "Review the fax details below and confirm before the report is sent." : "Choose how you want to route this completed report next."}</p>
           </div>
           <button type="button" class="preview-close-btn" data-close-output-publish-modal aria-label="Close publish dialog">&times;</button>
         </div>
@@ -8900,19 +8914,65 @@ function renderOutputResults() {
               <strong>${escapeHtml(order?.provider || "-")}</strong>
             </div>
           </div>
-          <div class="output-results-publish-options">
-            <button type="button" class="output-results-publish-choice" data-publish-channel="email">
-              <span class="output-results-publish-choice-label">Send Email</span>
-              <span class="output-results-publish-choice-copy">Prepare the completed report for email delivery.</span>
-            </button>
-            <button type="button" class="output-results-publish-choice" data-publish-channel="fax">
-              <span class="output-results-publish-choice-label">Send Fax</span>
-              <span class="output-results-publish-choice-copy">Prepare the completed report for fax delivery.</span>
-            </button>
-          </div>
-          <div class="output-results-publish-actions">
-            <button type="button" class="table-action-btn secondary-btn" data-close-output-publish-modal>Cancel</button>
-          </div>
+          ${isFaxConfirmView ? `
+            <section class="output-results-publish-confirm-card">
+              <div class="output-results-publish-confirm-head">
+                <div>
+                  <p class="badge">Fax Confirmation</p>
+                  <h4>Confirm Send Fax</h4>
+                </div>
+                <span class="history-status ${hasFinalReport ? "status-complete" : "status-pending"}">${hasFinalReport ? "PDF Ready" : "PDF Missing"}</span>
+              </div>
+              <div class="output-results-publish-route">
+                <div>
+                  <span>Sender</span>
+                  <strong>${escapeHtml(publishFaxDisplayNumber)}</strong>
+                </div>
+                <div>
+                  <span>Receiver</span>
+                  <strong>${escapeHtml(publishFaxDisplayNumber)}</strong>
+                </div>
+                <div>
+                  <span>Attachment</span>
+                  <strong>${escapeHtml(order?.generatedReports?.final?.fileName || `Order_${order?.orderId || ""}_Final_Report.pdf`)}</strong>
+                </div>
+              </div>
+              <p class="subtle output-results-publish-note">
+                ${hasFinalReport
+                  ? "The saved final report PDF will be queued with SRFax after you confirm."
+                  : "A saved final report PDF is required before this fax can be sent."}
+              </p>
+              ${lastPublishedCopy ? `<p class="subtle output-results-publish-history">${escapeHtml(lastPublishedCopy)}</p>` : ""}
+            </section>
+            <div class="output-results-publish-actions output-results-publish-actions-split">
+              <button type="button" class="table-action-btn secondary-btn" data-publish-view="menu" ${isFaxSending ? "disabled" : ""}>Back</button>
+              <div class="output-results-publish-action-group">
+                <button type="button" class="table-action-btn secondary-btn" data-close-output-publish-modal ${isFaxSending ? "disabled" : ""}>Cancel</button>
+                <button
+                  type="button"
+                  class="table-action-btn publish-report-btn"
+                  data-confirm-publish-fax="${escapeHtml(order?.orderId || "")}"
+                  ${hasFinalReport && !isFaxSending ? "" : "disabled"}
+                >
+                  ${isFaxSending ? "Sending..." : "Confirm Send Fax"}
+                </button>
+              </div>
+            </div>
+          ` : `
+            <div class="output-results-publish-options">
+              <button type="button" class="output-results-publish-choice" data-publish-channel="email">
+                <span class="output-results-publish-choice-label">Send Email</span>
+                <span class="output-results-publish-choice-copy">Prepare the completed report for email delivery.</span>
+              </button>
+              <button type="button" class="output-results-publish-choice" data-publish-channel="fax">
+                <span class="output-results-publish-choice-label">Send Fax</span>
+                <span class="output-results-publish-choice-copy">Review the fax details and confirm before sending the completed report.</span>
+              </button>
+            </div>
+            <div class="output-results-publish-actions">
+              <button type="button" class="table-action-btn secondary-btn" data-close-output-publish-modal>Cancel</button>
+            </div>
+          `}
         </div>
       </div>
     `;
@@ -8930,7 +8990,31 @@ function renderOutputResults() {
       return;
     }
     publishModalOrderId = String(orderId || "").trim();
+    publishModalView = "menu";
     renderCompletedPublishModal();
+  }
+
+  async function sendCompletedReportFax(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    if (!hasSavedFinalReport(order)) {
+      throw new Error("A saved final report PDF is required before a fax can be sent.");
+    }
+    if (!csrfToken) await fetchCsrfToken();
+    const payload = await requestJson(`/api/orders/${encodeURIComponent(orderId)}/publish-fax`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({
+        confirmed: true,
+      }),
+    });
+    if (payload?.order) replaceOrderInState(payload.order);
+    renderOutputResultsTable();
+    renderCompletedPublishModal();
+    return payload;
   }
 
   function resolvePharmdRemotePath(order) {
@@ -9568,20 +9652,51 @@ function renderOutputResults() {
       return;
     }
 
-    const channelBtn = event.target.closest("[data-publish-channel]");
-    if (!channelBtn) return;
-    const channel = String(channelBtn.getAttribute("data-publish-channel") || "").trim();
-    const order = publishModalOrderId ? findOrderById(publishModalOrderId) : null;
-    if (!order) {
-      closeCompletedPublishModal();
-      alert("Order not found.");
+    const publishViewBtn = event.target.closest("[data-publish-view]");
+    if (publishViewBtn) {
+      publishModalView = String(publishViewBtn.getAttribute("data-publish-view") || "menu").trim() || "menu";
+      renderCompletedPublishModal();
       return;
     }
-    alert(
-      channel === "fax"
-        ? `Fax publishing for Order #${order?.orderId || "-"} will be connected next.`
-        : `Email publishing for Order #${order?.orderId || "-"} will be connected next.`
-    );
+
+    const channelBtn = event.target.closest("[data-publish-channel]");
+    if (channelBtn) {
+      const channel = String(channelBtn.getAttribute("data-publish-channel") || "").trim();
+      const order = publishModalOrderId ? findOrderById(publishModalOrderId) : null;
+      if (!order) {
+        closeCompletedPublishModal();
+        alert("Order not found.");
+        return;
+      }
+      if (channel === "fax") {
+        publishModalView = "fax-confirm";
+        renderCompletedPublishModal();
+        return;
+      }
+      alert(`Email publishing for Order #${order?.orderId || "-"} will be connected next.`);
+      return;
+    }
+
+    const confirmFaxBtn = event.target.closest("[data-confirm-publish-fax]");
+    if (!confirmFaxBtn) return;
+    const orderId = String(confirmFaxBtn.getAttribute("data-confirm-publish-fax") || "").trim();
+    if (!orderId || publishingFaxOrders.has(orderId)) return;
+    publishingFaxOrders.add(orderId);
+    renderCompletedPublishModal();
+    sendCompletedReportFax(orderId)
+      .then((payload) => {
+        closeCompletedPublishModal();
+        renderOutputResultsTable();
+        alert(payload?.message || `Fax queued successfully for ${publishFaxDisplayNumber}.`);
+      })
+      .catch((error) => {
+        alert(error?.message || "Unable to send fax.");
+      })
+      .finally(() => {
+        publishingFaxOrders.delete(orderId);
+        renderCompletedPublishModal();
+        renderOutputResultsTable();
+      });
   });
 
   renderOutputResultsTable();
