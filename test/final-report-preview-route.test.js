@@ -294,6 +294,46 @@ test("publish fax route requires an explicit confirmation flag", async (t) => {
   assert.equal(payload.error, "Fax send confirmation is required.");
 });
 
+test("publish fax route returns 503 when fax publishing is disabled", async (t) => {
+  const localStorageKey = "generated-reports/final/00001/preview.pdf";
+  const harness = await startTestServer({
+    generatedReports: {
+      final: {
+        bucket: "local",
+        key: localStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_Final_Report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 17,
+        generatedAt: "2026-06-01T08:45:00.000Z",
+      },
+    },
+  }, {
+    LABCENTER_PUBLISH_FAX_MODE: "disabled",
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const absoluteLocalPath = path.join(harness.dataDir, "generated-reports", "final", "00001", "preview.pdf");
+  fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
+  fs.writeFileSync(absoluteLocalPath, Buffer.from("%PDF-local-preview", "utf8"));
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/publish-fax`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({ confirmed: true }),
+  });
+
+  assert.equal(response.status, 503);
+  const payload = await response.json();
+  assert.match(payload.error, /Fax publishing is disabled/i);
+});
+
 test("publish fax route records a simulated SRFax send using the saved final PDF", async (t) => {
   const localStorageKey = "generated-reports/final/00001/preview.pdf";
   const harness = await startTestServer({

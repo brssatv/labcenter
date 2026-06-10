@@ -3,14 +3,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
-const { spawn, spawnSync } = require("child_process");
-const { pathToFileURL } = require("url");
+const { spawn } = require("child_process");
 
 const express = require("express");
 const session = require("express-session");
 const FileStore = require("session-file-store")(session);
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const { registerReportPublishingRoutes } = require("./server/features/report-publishing");
 const { createPortalStore } = require("./lib/portal-store");
 const { buildPatientProfileArtifacts } = require("./lib/patient-profile");
 const { createS3Storage, sanitizeS3PathSegment } = require("./lib/s3-storage");
@@ -1383,16 +1383,6 @@ function isLocalGeneratedReportRecord(record) {
     || String(record?.bucket || "").trim().toLowerCase() === "local";
 }
 
-function sanitizeReportPdfFileName(value) {
-  const raw = String(value || "").trim();
-  const cleaned = raw
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 120);
-  if (!cleaned) return `Final_Report_${Date.now()}.pdf`;
-  return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : `${cleaned}.pdf`;
-}
-
 function sanitizePharmdHl7FileName(value) {
   const raw = String(value || "").trim();
   const cleaned = raw
@@ -1837,269 +1827,6 @@ function getProviderPublishTargets(providerRow) {
     providerRow?.fax_number || configuration.faxNumber || providerRow?.provider_information?.faxNumber
   );
   return { sendEmail, sendFax, emailRecipients, faxRecipient };
-}
-
-async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType }) {
-  const generatedAt = new Date().toISOString();
-  if (shouldUseS3ForRequest(req)) {
-    const storedReport = await s3Storage.uploadBuffer({
-      key: buildStoredFileKey("reports", reportType, orderId || "unassigned", `${generatedAt}-${fileName}`),
-      body: pdfBuffer,
-      contentType: "application/pdf",
-      metadata: {
-        orderid: orderId,
-        reporttype: reportType,
-        filename: fileName,
-      },
-      contentDisposition: `inline; filename="${fileName}"`,
-      cacheControl: "private, max-age=0, no-store",
-    });
-    portalStore.saveOrderFile({
-      orderId,
-      fileRole: "report_pdf",
-      reportType,
-      bucket: storedReport.bucket,
-      key: storedReport.key,
-      fileName,
-      mimeType: "application/pdf",
-      sizeBytes: storedReport.sizeBytes,
-      createdAt: generatedAt,
-      metadata: {
-        generatedAt,
-      },
-    });
-    if (existingOrder) {
-      portalStore.upsertOrders([
-        {
-          ...existingOrder,
-          generatedReports: {
-            ...(existingOrder.generatedReports || {}),
-            [reportType]: {
-              bucket: storedReport.bucket,
-              key: storedReport.key,
-              fileName,
-              mimeType: "application/pdf",
-              sizeBytes: storedReport.sizeBytes,
-              generatedAt,
-            },
-          },
-          updatedAt: generatedAt,
-        },
-      ]);
-    }
-  } else {
-    const localStorageKey = buildLocalReportStorageKey({
-      reportType,
-      orderId,
-      fileName,
-      generatedAt,
-    });
-    const localStoragePath = resolveLocalReportStoragePath(localStorageKey);
-    if (!localStoragePath) {
-      throw new Error("Unable to resolve local report storage path.");
-    }
-    ensureDir(path.dirname(localStoragePath));
-    fs.writeFileSync(localStoragePath, pdfBuffer);
-    portalStore.saveOrderFile({
-      orderId,
-      fileRole: "report_pdf",
-      reportType,
-      bucket: "local",
-      key: localStorageKey,
-      fileName,
-      mimeType: "application/pdf",
-      sizeBytes: pdfBuffer.length,
-      createdAt: generatedAt,
-      metadata: {
-        generatedAt,
-        storageType: "local",
-      },
-    });
-    if (existingOrder) {
-      portalStore.upsertOrders([
-        {
-          ...existingOrder,
-          generatedReports: {
-            ...(existingOrder.generatedReports || {}),
-            [reportType]: {
-              bucket: "local",
-              key: localStorageKey,
-              storageType: "local",
-              fileName,
-              mimeType: "application/pdf",
-              sizeBytes: pdfBuffer.length,
-              generatedAt,
-            },
-          },
-          updatedAt: generatedAt,
-        },
-      ]);
-    }
-  }
-  return generatedAt;
-}
-
-function createStatusError(message, statusCode) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
-}
-
-async function loadGeneratedReportBuffer(generatedReport) {
-  const bucket = String(generatedReport?.bucket || "").trim();
-  const key = String(generatedReport?.key || "").trim();
-  if (!bucket || !key) {
-    throw createStatusError("Saved final report PDF not found for this order.", 404);
-  }
-
-  if (isLocalGeneratedReportRecord(generatedReport)) {
-    const localReportPath = resolveLocalReportStoragePath(key);
-    if (!localReportPath || !fs.existsSync(localReportPath)) {
-      throw createStatusError("Saved final report PDF could not be loaded.", 404);
-    }
-    const storedReport = fs.readFileSync(localReportPath);
-    if (!storedReport?.length) {
-      throw createStatusError("Saved final report PDF could not be loaded.", 404);
-    }
-    return {
-      buffer: storedReport,
-      bucket,
-      key,
-      contentType: generatedReport?.mimeType || "application/pdf",
-      contentDisposition: generatedReport?.fileName ? `inline; filename="${sanitizeReportPdfFileName(generatedReport.fileName)}"` : "",
-      contentLength: storedReport.length,
-      storageType: "local",
-    };
-  }
-
-  if (!s3Storage.enabled) {
-    throw createStatusError("S3 report storage is not configured for this environment.", 503);
-  }
-
-  const storedReport = await s3Storage.downloadBuffer({ bucket, key });
-  if (!storedReport?.body?.length) {
-    throw createStatusError("Saved final report PDF could not be loaded.", 404);
-  }
-
-  return {
-    buffer: storedReport.body,
-    bucket,
-    key,
-    contentType: storedReport.contentType || generatedReport?.mimeType || "application/pdf",
-    contentDisposition: storedReport.contentDisposition || "",
-    contentLength: storedReport.contentLength || storedReport.body.length,
-    storageType: "s3",
-  };
-}
-
-function isLikelyEmailAddress(value) {
-  return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(String(value || "").trim());
-}
-
-function resolvePublishFaxSenderEmail(req) {
-  const candidates = [
-    SRFAX_SENDER_EMAIL,
-    req?.session?.user?.email,
-    req?.session?.clientUser?.email,
-    "innovexlab@innovexlab.com",
-  ];
-  return candidates
-    .map((value) => String(value || "").trim().toLowerCase())
-    .find((value) => isLikelyEmailAddress(value))
-    || "";
-}
-
-function createPublishFaxRecord(existingRecord, patch = {}) {
-  const currentRecord = existingRecord && typeof existingRecord === "object" ? existingRecord : {};
-  return {
-    ...currentRecord,
-    ...patch,
-    senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-    recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-    deliveryVendor: "SRFax",
-    channel: "fax",
-  };
-}
-
-async function queueSrfaxFax({
-  orderId,
-  fileName,
-  pdfBuffer,
-  senderEmail,
-}) {
-  if (!SRFAX_ACCESS_ID || !SRFAX_ACCESS_PWD) {
-    throw new Error("SRFax credentials are not configured.");
-  }
-  if (!isLikelyEmailAddress(senderEmail)) {
-    throw new Error("SRFax sender email is not configured.");
-  }
-  if (!pdfBuffer?.length) {
-    throw new Error("Saved final report PDF could not be loaded.");
-  }
-
-  const payload = new URLSearchParams({
-    action: "Queue_Fax",
-    access_id: SRFAX_ACCESS_ID,
-    access_pwd: SRFAX_ACCESS_PWD,
-    sCallerID: PUBLISH_FAX_SENDER_DIGITS,
-    sSenderEmail: senderEmail,
-    sFaxType: "SINGLE",
-    sToFaxNumber: PUBLISH_FAX_RECEIVER_DIGITS,
-    sResponseFormat: "JSON",
-    sAccountCode: String(orderId || "").trim().slice(0, 20),
-    sCPSubject: `Final Report Order ${String(orderId || "").trim()}`.slice(0, 80),
-    sFaxFromHeader: "LabCenter",
-    sFileName_1: sanitizeReportPdfFileName(fileName || `Order_${orderId}_Final_Report.pdf`),
-    sFileContent_1: pdfBuffer.toString("base64"),
-  });
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PUBLISH_FAX_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(SRFAX_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        accept: "application/json",
-      },
-      body: payload.toString(),
-      signal: controller.signal,
-    });
-
-    const raw = await response.text();
-    let parsed = null;
-    try {
-      parsed = raw ? JSON.parse(raw) : {};
-    } catch {
-      throw new Error("SRFax returned an unexpected response.");
-    }
-
-    if (!response.ok) {
-      throw new Error(String(parsed?.Result || parsed?.error || response.statusText || "SRFax request failed.").trim() || "SRFax request failed.");
-    }
-
-    const status = String(parsed?.Status || "").trim().toLowerCase();
-    const result = parsed?.Result;
-    if (status !== "success") {
-      throw new Error(String(result || "SRFax rejected the fax request.").trim() || "SRFax rejected the fax request.");
-    }
-
-    return {
-      status: "queued",
-      faxDetailsId: String(result || "").trim(),
-      result,
-      message: `Fax queued successfully for ${PUBLISH_FAX_DISPLAY_NUMBER}.`,
-      mode: "live",
-    };
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error("SRFax request timed out.");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function inferMimeTypeFromFileName(fileName) {
@@ -2682,191 +2409,6 @@ function parseRequisitionScanText(text) {
     values,
     matchedFields,
   };
-}
-
-function renderReportPdfFromHtml(htmlMarkup) {
-  return new Promise((resolve, reject) => {
-    if (!reportPdfEnabled) {
-      reject(new Error("Report PDF rendering is disabled on this deployment."));
-      return;
-    }
-    let tempDir = "";
-    try {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "labcenter-report-"));
-    } catch {
-      reject(new Error("Unable to create temporary workspace for report generation."));
-      return;
-    }
-
-    const htmlPath = path.join(tempDir, "report.html");
-    const pdfPath = path.join(tempDir, "report.pdf");
-    const cleanup = () => {
-      if (!tempDir) return;
-      try {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      } catch {
-        // Cleanup best effort only.
-      }
-      tempDir = "";
-    };
-
-    const finish = (error, pdfBuffer = null) => {
-      cleanup();
-      if (error) reject(error);
-      else resolve(pdfBuffer);
-    };
-
-    try {
-      fs.writeFileSync(htmlPath, htmlMarkup, "utf8");
-    } catch {
-      finish(new Error("Unable to write temporary report template."));
-      return;
-    }
-
-    const runProcessRenderer = (command, args, timeoutMs = 45000) =>
-      new Promise((resolveRenderer, rejectRenderer) => {
-        const child = spawn(command, args, {
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-
-        let stdout = "";
-        let stderr = "";
-        let settled = false;
-
-        const done = (error) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          if (error) rejectRenderer(error);
-          else resolveRenderer();
-        };
-
-        const timer = setTimeout(() => {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // No-op.
-          }
-          done(new Error("Report PDF generation timed out."));
-        }, timeoutMs);
-
-        child.stdout.on("data", (chunk) => {
-          stdout += chunk.toString("utf8");
-        });
-
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk.toString("utf8");
-        });
-
-        child.on("error", (error) => {
-          done(new Error(`Unable to launch PDF renderer: ${error.message}`));
-        });
-
-        child.on("close", (code) => {
-          if (code !== 0) {
-            const details = (stderr || stdout || "").trim();
-            done(new Error(details || `PDF renderer failed with exit code ${code}.`));
-            return;
-          }
-          done(null);
-        });
-      });
-
-    const resolveHeadlessBrowserPath = () => {
-      const envPath = String(process.env.LABCENTER_PDF_BROWSER || "").trim();
-      const commandExists = (command) => {
-        if (!command) return false;
-        const lookupCommand = process.platform === "win32" ? "where" : "which";
-        try {
-          const result = spawnSync(lookupCommand, [command], { stdio: "ignore" });
-          return result.status === 0;
-        } catch {
-          return false;
-        }
-      };
-      if (envPath) {
-        if ((envPath.includes(path.sep) || process.platform === "win32") && fs.existsSync(envPath)) return envPath;
-        if (commandExists(envPath)) return envPath;
-      }
-
-      const candidates = process.platform === "win32"
-        ? [
-            "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-            "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-          ]
-        : process.platform === "darwin"
-        ? [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-          ]
-        : ["microsoft-edge", "google-chrome", "chromium", "chromium-browser"];
-
-      for (const candidate of candidates) {
-        if (candidate.includes(path.sep)) {
-          if (fs.existsSync(candidate)) return candidate;
-        } else {
-          if (commandExists(candidate)) return candidate;
-        }
-      }
-      return "";
-    };
-
-    const runSwiftRenderer = async () => {
-      if (!fs.existsSync(reportPdfRendererPath)) {
-        throw new Error("Swift PDF renderer script is unavailable.");
-      }
-      await runProcessRenderer("swift", [reportPdfRendererPath, htmlPath, pdfPath]);
-    };
-
-    const runHeadlessBrowserRenderer = async () => {
-      const browserBinary = resolveHeadlessBrowserPath();
-      if (!browserBinary) {
-        throw new Error("No compatible headless browser was found for PDF rendering.");
-      }
-      const htmlUrl = pathToFileURL(htmlPath).toString();
-      const args = [
-        "--headless=new",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--allow-file-access-from-files",
-        `--print-to-pdf=${pdfPath}`,
-        htmlUrl,
-      ];
-      await runProcessRenderer(browserBinary, args);
-    };
-
-    const attempts = process.platform === "darwin"
-      ? [
-          { name: "swift", run: runSwiftRenderer },
-          { name: "headless-browser", run: runHeadlessBrowserRenderer },
-        ]
-      : [
-          { name: "headless-browser", run: runHeadlessBrowserRenderer },
-          { name: "swift", run: runSwiftRenderer },
-        ];
-
-    (async () => {
-      const errors = [];
-      for (const attempt of attempts) {
-        try {
-          await attempt.run();
-          const pdfBuffer = fs.readFileSync(pdfPath);
-          if (!pdfBuffer?.length) throw new Error("Renderer completed but produced an empty file.");
-          finish(null, pdfBuffer);
-          return;
-        } catch (error) {
-          errors.push(`${attempt.name}: ${error?.message || "render failed"}`);
-        }
-      }
-      finish(new Error(errors.join(" | ") || "Unable to generate report PDF."));
-    })();
-  });
 }
 
 app.get("/healthz", (_req, res) => {
@@ -3670,6 +3212,110 @@ app.post("/api/portal/upload-log", requireAuthenticatedUser, (req, res) => {
   }
 });
 
+app.post("/api/pharmd/orders/:orderId/send", requireDoctorAuth, async (req, res) => {
+  const orderId = String(req.params.orderId || "").trim();
+  const current = portalStore.getOrderById(orderId);
+  if (!current || !canAccessOrderRecord(req, current)) {
+    return res.status(404).json({ error: "Order not found." });
+  }
+
+  const requestedMessage = String(req.body?.oruMessage || current?.pharmd?.oruMessage || "").trim();
+  const requestedFileName = sanitizePharmdHl7FileName(
+    req.body?.fileName || current?.pharmd?.messageFileName || `Order_${orderId}_PharmD_ORU.hl7`
+  );
+  const pharmdConfig = getPharmdSftpConfig();
+  const publicConfig = getPharmdSftpPublicConfig(pharmdConfig);
+  const requestedBy = String(req?.session?.user?.email || req?.session?.user?.displayName || "doctor").trim();
+  const requestLog = createPharmdLogEntry("info", "request", `PharmD send requested for ${requestedFileName}.`, {
+    requestedBy,
+    host: publicConfig.host,
+    port: publicConfig.port,
+    username: publicConfig.username,
+    remoteDir: publicConfig.remoteDir,
+  });
+
+  const persistOrder = (patch = {}, extraLogs = []) => {
+    const nowIso = new Date().toISOString();
+    const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
+    return portalStore.upsertOrders([
+      {
+        ...current,
+        updatedAt: patch.updatedAt || nowIso,
+        pharmd: {
+          ...existingPharmd,
+          oruMessage: requestedMessage || existingPharmd.oruMessage || "",
+          messageFileName: requestedFileName,
+          host: publicConfig.host,
+          port: publicConfig.port,
+          username: publicConfig.username,
+          remoteDir: publicConfig.remoteDir,
+          lastAttemptAt: patch.lastAttemptAt || nowIso,
+          ...patch,
+          logs: mergePharmdLogs(existingPharmd.logs, [requestLog, ...extraLogs]),
+        },
+      },
+    ])[0];
+  };
+
+  try {
+    const result = await executePharmdSftpUpload({
+      oruMessage: requestedMessage,
+      fileName: requestedFileName,
+      config: pharmdConfig,
+    });
+
+    const savedOrder = persistOrder({
+      status: "sent",
+      sendStatus: "sent",
+      error: "",
+      lastError: "",
+      connectionEstablishedAt: result.connectionEstablishedAt,
+      sentAt: result.sentAt,
+      remotePath: result.remotePath,
+      lastAttemptAt: result.sentAt,
+      updatedAt: result.sentAt,
+    }, result.logs);
+
+    auditLog(req, "pharmd_send", "success", {
+      orderId,
+      remotePath: result.remotePath,
+      host: publicConfig.host,
+      username: publicConfig.username,
+    });
+
+    return res.json({
+      ok: true,
+      message: result.message,
+      order: savedOrder,
+    });
+  } catch (error) {
+    const failureMessage = String(error?.message || "Unable to send PharmD HL7 file.").trim() || "Unable to send PharmD HL7 file.";
+    const failureLogs = Array.isArray(error?.logs) && error.logs.length
+      ? error.logs
+      : [createPharmdLogEntry("error", "send", failureMessage)];
+    const savedOrder = persistOrder({
+      status: "error",
+      sendStatus: "error",
+      error: failureMessage,
+      lastError: failureMessage,
+      lastAttemptAt: new Date().toISOString(),
+    }, failureLogs);
+
+    auditLog(req, "pharmd_send", "failed", {
+      orderId,
+      reason: failureMessage,
+      host: publicConfig.host,
+      username: publicConfig.username,
+    });
+
+    return res.json({
+      ok: false,
+      message: failureMessage,
+      order: savedOrder,
+    });
+  }
+});
+
 app.get("/api/facility/data", requireAuthenticatedUser, (req, res) => {
   return res.json(getFacilityDataForSession(req));
 });
@@ -4314,309 +3960,35 @@ app.put("/api/facility/providers/:providerId", requireDoctorAuth, (req, res) => 
   }
 });
 
-app.get("/api/orders/:orderId/final-report-pdf", requireAuthenticatedUser, async (req, res) => {
-  try {
-    const orderId = String(req.params.orderId || "").trim();
-    if (!orderId) {
-      return res.status(400).json({ error: "Order ID is required." });
-    }
-
-    const existingOrder = portalStore.getOrderById(orderId);
-    if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
-      return res.status(404).json({ error: "Order not found." });
-    }
-
-    const generatedFinal = existingOrder?.generatedReports?.final;
-    const fileName = sanitizeReportPdfFileName(
-      generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`
-    );
-    const storedReport = await loadGeneratedReportBuffer(generatedFinal);
-
-    auditLog(req, "view_saved_final_report_pdf", "success", {
-      orderId,
-      bucket: storedReport.bucket,
-      key: storedReport.key,
-      storageType: storedReport.storageType,
-      bytes: storedReport.buffer.length,
-    });
-
-    res.setHeader("Content-Type", storedReport.contentType || "application/pdf");
-    res.setHeader("Content-Disposition", storedReport.contentDisposition || `inline; filename="${fileName}"`);
-    res.setHeader("Cache-Control", "private, max-age=0, no-store");
-    if (storedReport.contentLength) {
-      res.setHeader("Content-Length", String(storedReport.contentLength));
-    }
-    return res.send(storedReport.buffer);
-  } catch (error) {
-    auditLog(req, "view_saved_final_report_pdf", "failed", {
-      orderId: String(req.params.orderId || ""),
-      reason: error?.message || "unexpected_error",
-    });
-    return res.status(Number(error?.statusCode) || 500).json({
-      error: error?.message || "Unable to load saved final report PDF.",
-    });
-  }
-});
-
-app.post("/api/orders/render-report-pdf", async (req, res) => {
-  if (!hasReportPdfAccess(req)) {
-    return res.status(401).json({ error: "Authentication required." });
-  }
-
-  const html = String(req.body?.html || "");
-  if (!html.trim()) {
-    return res.status(400).json({ error: "Report HTML content is required." });
-  }
-  if (html.length > 4 * 1024 * 1024) {
-    return res.status(413).json({ error: "Report HTML content is too large." });
-  }
-
-  const fileName = sanitizeReportPdfFileName(req.body?.fileName || "");
-  const orderId = String(req.body?.orderId || "").trim();
-  const reportType = String(req.body?.reportType || "final").trim() || "final";
-  try {
-    const existingOrder = orderId ? portalStore.getOrderById(orderId) : null;
-    if (orderId && (!existingOrder || !canAccessOrderRecord(req, existingOrder))) {
-      return res.status(404).json({ error: "Order not found." });
-    }
-
-    const pdfBuffer = await renderReportPdfFromHtml(html);
-    await persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType });
-    auditLog(req, "render_final_report_pdf", "success", {
-      bytes: pdfBuffer.length,
-      fileName,
-      orderId,
-      reportType,
-    });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
-    res.setHeader("Cache-Control", "no-store");
-    return res.send(pdfBuffer);
-  } catch (error) {
-    auditLog(req, "render_final_report_pdf", "failed", {
-      reason: error?.message || "render_error",
-    });
-    const reason = String(error?.message || "").trim();
-    return res.status(500).json({
-      error: reason ? `Unable to generate final report PDF. ${reason}` : "Unable to generate final report PDF.",
-    });
-  }
-});
-
-app.post("/api/orders/publish-final-report", async (req, res) => {
-  if (!hasReportPdfAccess(req)) {
-    return res.status(401).json({ error: "Authentication required." });
-  }
-
-  const orderId = String(req.body?.orderId || "").trim();
-  const html = String(req.body?.html || "");
-  const fileName = sanitizeReportPdfFileName(req.body?.fileName || `Order_${orderId || Date.now()}_Final_Report.pdf`);
-  if (!orderId) {
-    return res.status(400).json({ error: "Order ID is required." });
-  }
-  if (!html.trim()) {
-    return res.status(400).json({ error: "Final report HTML content is required." });
-  }
-  if (html.length > 4 * 1024 * 1024) {
-    return res.status(413).json({ error: "Final report HTML content is too large." });
-  }
-
-  try {
-    const existingOrder = portalStore.getOrderById(orderId);
-    if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
-      return res.status(404).json({ error: "Order not found." });
-    }
-
-    const pdfBuffer = await renderReportPdfFromHtml(html);
-    await persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType: "final" });
-    const refreshedOrder = portalStore.getOrderById(orderId) || existingOrder;
-    const prePublishedAt = new Date().toISOString();
-    const prePublishedBy = String(
-      req?.session?.user?.email
-      || req?.session?.user?.displayName
-      || req?.session?.clientUser?.username
-      || "system"
-    ).trim();
-    const savedOrder = portalStore.upsertOrders([
-      {
-        ...refreshedOrder,
-        updatedAt: prePublishedAt,
-        pharmd: {
-          ...((refreshedOrder?.pharmd && typeof refreshedOrder.pharmd === "object") ? refreshedOrder.pharmd : {}),
-          prePublishedAt,
-          prePublishedBy,
-          prePublishedFileName: fileName,
-          readyForPharmdAt: prePublishedAt,
-        },
-      },
-    ])[0];
-
-    auditLog(req, "prepublish_final_report", "success", {
-      orderId,
-      fileName,
-      storedToS3: Boolean(
-        savedOrder?.generatedReports?.final?.bucket
-        && savedOrder?.generatedReports?.final?.key
-        && !isLocalGeneratedReportRecord(savedOrder?.generatedReports?.final)
-      ),
-    });
-
-    return res.json({
-      message: `PrePublish completed for Order #${orderId}. Final report is ready for PharmD.`,
-      order: savedOrder,
-    });
-  } catch (error) {
-    auditLog(req, "prepublish_final_report", "failed", {
-      orderId,
-      reason: error?.message || "unexpected_error",
-    });
-    return res.status(500).json({
-      error: error?.message || "Unable to prepublish final report.",
-    });
-  }
-});
-
-app.post("/api/orders/:orderId/publish-fax", async (req, res) => {
-  if (!hasReportPdfAccess(req)) {
-    return res.status(401).json({ error: "Authentication required." });
-  }
-
-  const orderId = String(req.params.orderId || "").trim();
-  if (!orderId) {
-    return res.status(400).json({ error: "Order ID is required." });
-  }
-  if (!req.body?.confirmed) {
-    return res.status(400).json({ error: "Fax send confirmation is required." });
-  }
-
-  const existingOrder = portalStore.getOrderById(orderId);
-  if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
-    return res.status(404).json({ error: "Order not found." });
-  }
-
-  const generatedFinal = existingOrder?.generatedReports?.final;
-  if (!generatedFinal?.bucket || !generatedFinal?.key) {
-    return res.status(404).json({ error: "Saved final report PDF not found for this order." });
-  }
-
-  const requestedBy = String(
-    req?.session?.user?.email
-    || req?.session?.user?.displayName
-    || req?.session?.clientUser?.username
-    || "system"
-  ).trim();
-  const senderEmail = resolvePublishFaxSenderEmail(req);
-  const fileName = sanitizeReportPdfFileName(
-    generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`
-  );
-
-  try {
-    const storedReport = await loadGeneratedReportBuffer(generatedFinal);
-    let faxResult = null;
-
-    if (publishFaxMode === "disabled") {
-      return res.status(503).json({
-        error: "Fax publishing is disabled. Configure SRFax credentials and enable LABCENTER_PUBLISH_FAX_MODE to send faxes.",
-      });
-    }
-
-    if (publishFaxMode === "simulated") {
-      faxResult = {
-        status: "simulated",
-        faxDetailsId: `SIM-${Date.now()}`,
-        result: "Simulated fax queue request",
-        message: `Fax simulated successfully for ${PUBLISH_FAX_DISPLAY_NUMBER}.`,
-        mode: "simulated",
-      };
-    } else if (publishFaxMode === "log") {
-      faxResult = {
-        status: "logged",
-        faxDetailsId: `LOG-${Date.now()}`,
-        result: "Logged fax queue request",
-        message: `Fax request logged for ${PUBLISH_FAX_DISPLAY_NUMBER}.`,
-        mode: "log",
-      };
-      console.info("[publish-fax]", {
-        orderId,
-        senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-        recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-        senderEmail,
-        fileName,
-      });
-    } else {
-      faxResult = await queueSrfaxFax({
-        orderId,
-        fileName,
-        pdfBuffer: storedReport.buffer,
-        senderEmail,
-      });
-    }
-
-    const publishedAt = new Date().toISOString();
-    const savedOrder = portalStore.upsertOrders([
-      {
-        ...existingOrder,
-        updatedAt: publishedAt,
-        publishedReports: {
-          ...(existingOrder?.publishedReports && typeof existingOrder.publishedReports === "object"
-            ? existingOrder.publishedReports
-            : {}),
-          final: createPublishFaxRecord(existingOrder?.publishedReports?.final, {
-            publishedAt,
-            publishedBy: requestedBy,
-            senderEmail,
-            fileName,
-            faxDetailsId: faxResult.faxDetailsId,
-            result: faxResult.result,
-            status: faxResult.status,
-            mode: faxResult.mode,
-            endpoint: faxResult.mode === "live" ? SRFAX_ENDPOINT : "",
-          }),
-        },
-      },
-    ])[0];
-
-    auditLog(req, "publish_final_report_fax", "success", {
-      orderId,
-      mode: faxResult.mode,
-      faxDetailsId: faxResult.faxDetailsId,
-      senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-      recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-      senderEmail,
-      bytes: storedReport.buffer.length,
-    });
-
-    return res.json({
-      ok: true,
-      message: faxResult.message,
-      fax: {
-        mode: faxResult.mode,
-        status: faxResult.status,
-        faxDetailsId: faxResult.faxDetailsId,
-        senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-        recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-        senderEmail,
-      },
-      order: savedOrder,
-    });
-  } catch (error) {
-    const statusCode = Number(error?.statusCode) || (
-      /not found/i.test(String(error?.message || "")) ? 404
-        : /disabled|configured/i.test(String(error?.message || "")) ? 503
-        : 502
-    );
-    auditLog(req, "publish_final_report_fax", "failed", {
-      orderId,
-      mode: publishFaxMode,
-      reason: error?.message || "unexpected_error",
-      senderFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-      recipientFaxNumber: PUBLISH_FAX_DISPLAY_NUMBER,
-      senderEmail,
-    });
-    return res.status(statusCode).json({
-      error: error?.message || "Unable to send fax.",
-    });
-  }
+registerReportPublishingRoutes({
+  app,
+  dependencies: {
+    auditLog,
+    buildLocalReportStorageKey,
+    buildStoredFileKey,
+    canAccessOrderRecord,
+    ensureDir,
+    hasReportPdfAccess,
+    isLocalGeneratedReportRecord,
+    portalStore,
+    publishFaxMode,
+    reportPdfEnabled,
+    reportPdfRendererPath,
+    requireAuthenticatedUser,
+    resolveLocalReportStoragePath,
+    s3Storage,
+    shouldUseS3ForRequest,
+    srfaxConfig: {
+      accessId: SRFAX_ACCESS_ID,
+      accessPwd: SRFAX_ACCESS_PWD,
+      displayNumber: PUBLISH_FAX_DISPLAY_NUMBER,
+      endpoint: SRFAX_ENDPOINT,
+      receiverFaxDigits: PUBLISH_FAX_RECEIVER_DIGITS,
+      senderEmail: SRFAX_SENDER_EMAIL,
+      senderFaxDigits: PUBLISH_FAX_SENDER_DIGITS,
+      timeoutMs: PUBLISH_FAX_TIMEOUT_MS,
+    },
+  },
 });
 
 app.post("/api/orders/process-raw", async (req, res) => {
