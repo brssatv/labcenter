@@ -10016,6 +10016,70 @@ function renderOutputResults() {
   renderCompletedPublishModal();
 }
 
+function getOrderHistoryReportMenuApi() {
+  if (typeof window === "undefined") return null;
+  return window.LabCenterOrderHistoryReportMenu || null;
+}
+
+function getOrderHistoryReportMenuLabel() {
+  const label = getOrderHistoryReportMenuApi()?.getOrderHistoryReportMenuLabel?.();
+  return String(label || "Generate Report");
+}
+
+function createOrderHistoryReportMenuModel(options = {}) {
+  const model = getOrderHistoryReportMenuApi()?.createOrderHistoryReportMenuModel?.(options);
+  if (model && typeof model === "object" && typeof model.triggerLabel === "string") {
+    return model;
+  }
+
+  const hasProcessedReport = Boolean(options.hasProcessedReport);
+  const isOpen = Boolean(options.isOpen);
+  const orderId = String(options.orderId || "").trim();
+  if (!hasProcessedReport) {
+    return {
+      available: false,
+      isOpen,
+      orderId,
+      triggerLabel: "Generate Report",
+      triggerState: "unavailable",
+      ariaLabel: orderId ? `Generate report options for order #${orderId}` : "Generate report options",
+      actions: [],
+    };
+  }
+
+  const actions = [
+    {
+      key: "generate-report",
+      label: Boolean(options.isGenerating) ? "Generating Report..." : "Generate Report",
+      disabled: Boolean(options.isGenerating),
+      tone: "generate",
+    },
+    {
+      key: "generate-summary-report",
+      label: Boolean(options.isGeneratingSummary) ? "Generating Summary..." : "Summary Report",
+      disabled: Boolean(options.isGeneratingSummary),
+      tone: "summary",
+    },
+    {
+      key: "generate-final-report",
+      label: Boolean(options.isGeneratingFinal) ? "Generating Final..." : "Final Report",
+      disabled: Boolean(options.isGeneratingFinal),
+      tone: "final",
+    },
+  ];
+  const hasBusyAction = actions.some((action) => action.disabled);
+
+  return {
+    available: true,
+    isOpen,
+    orderId,
+    triggerLabel: "Generate Report",
+    triggerState: hasBusyAction ? "busy" : isOpen ? "open" : "idle",
+    ariaLabel: orderId ? `Generate report options for order #${orderId}` : "Generate report options",
+    actions,
+  };
+}
+
 function renderOrderHistory(initialTab = "all-orders") {
   const historyTabs = [
     { key: "all-orders", label: "All Orders" },
@@ -10082,8 +10146,10 @@ function renderOrderHistory(initialTab = "all-orders") {
   const uploadPanelNode = document.getElementById("upload-results-panel");
   const tableWrapNode = panelBody.querySelector(".order-history-table-wrap");
   const previewModalNode = document.getElementById("order-preview-modal");
+  const orderHistoryPageNode = panelBody.querySelector(".order-history-page");
   let activeTab = startingTab;
   let uploadStatusMessage = "";
+  let openReportMenuOrderId = "";
   const processingOrders = new Set();
   const generatingReports = new Set();
   const generatingSummaryReports = new Set();
@@ -10105,10 +10171,12 @@ function renderOrderHistory(initialTab = "all-orders") {
     status: "Status",
     validate: "Validate",
     preview: "Preview",
-    generateReport: "Generate Report",
-    generateSummaryReport: "Summary Report",
-    finalReport: "Final Report",
+    reportActions: getOrderHistoryReportMenuLabel(),
     publishReport: "PrePublish",
+  };
+  const headerClassMap = {
+    reportActions: "reports-action-col",
+    publishReport: "report-action-col",
   };
   const filters = {
     accessionNo: "",
@@ -10121,6 +10189,100 @@ function renderOrderHistory(initialTab = "all-orders") {
     due: "",
     status: "",
   };
+
+  function shouldShowRawUploadColumn() {
+    return activeTab !== "all-orders";
+  }
+
+  function buildReportsActionMarkup(row, options = {}) {
+    const orderId = String(row?.orderId || "").trim();
+    const model = createOrderHistoryReportMenuModel({
+      orderId,
+      hasProcessedReport: Boolean(row?.processedResult?.report),
+      isGenerating: Boolean(options.isGenerating),
+      isGeneratingSummary: Boolean(options.isGeneratingSummary),
+      isGeneratingFinal: Boolean(options.isGeneratingFinal),
+      isOpen: orderId && openReportMenuOrderId === orderId,
+    });
+
+    if (!model.available) {
+      return `<span class="subtle">-</span>`;
+    }
+
+    return `
+      <div class="report-menu-shell" data-report-menu-shell>
+        <button
+          type="button"
+          class="table-action-btn report-menu-trigger ${model.triggerState === "open" ? "is-open" : ""} ${model.triggerState === "busy" ? "is-busy" : ""}"
+          data-report-menu-trigger="${escapeHtml(orderId)}"
+          aria-haspopup="menu"
+          aria-expanded="${model.isOpen ? "true" : "false"}"
+          aria-label="${escapeHtml(model.ariaLabel)}"
+          aria-controls="report-menu-${escapeHtml(orderId)}"
+        >
+          <span>${escapeHtml(model.triggerLabel)}</span>
+          <span class="report-menu-chevron" aria-hidden="true">▾</span>
+        </button>
+        ${model.isOpen ? `
+          <div id="report-menu-${escapeHtml(orderId)}" class="report-menu-dropdown" role="menu">
+            ${model.actions.map((action) => `
+              <button
+                type="button"
+                class="report-menu-option report-menu-option--${escapeHtml(action.tone)}"
+                data-report-menu-action="${escapeHtml(action.key)}"
+                data-order-id="${escapeHtml(orderId)}"
+                role="menuitem"
+                ${action.disabled ? "disabled" : ""}
+              >
+                <span class="report-menu-option-main">
+                  <span class="report-menu-option-indicator" aria-hidden="true"></span>
+                  <span>${escapeHtml(action.label)}</span>
+                </span>
+              </button>
+            `).join("")}
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }
+
+  function closeReportMenu() {
+    if (!openReportMenuOrderId) return false;
+    openReportMenuOrderId = "";
+    return true;
+  }
+
+  async function runOrderHistoryReportAction(orderId, actionKey) {
+    const numericId = Number(orderId);
+    if (!orderId || Number.isNaN(numericId)) return;
+
+    const actionHandlers = {
+      "generate-report": {
+        busySet: generatingReports,
+        run: openGenerateReport,
+      },
+      "generate-summary-report": {
+        busySet: generatingSummaryReports,
+        run: openGenerateSummaryReport,
+      },
+      "generate-final-report": {
+        busySet: generatingFinalReports,
+        run: openGenerateFinalReport,
+      },
+    };
+
+    const actionConfig = actionHandlers[actionKey];
+    if (!actionConfig || actionConfig.busySet.has(numericId)) return;
+
+    actionConfig.busySet.add(numericId);
+    renderTable();
+    try {
+      await actionConfig.run(orderId);
+    } finally {
+      actionConfig.busySet.delete(numericId);
+      renderTable();
+    }
+  }
 
   function escapeHtml(value) {
     return String(value || "")
@@ -13469,7 +13631,11 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
   }
 
   function renderTable() {
+    const showRawUploadColumn = shouldShowRawUploadColumn();
     const rows = applyFilters(readOrders()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    if (openReportMenuOrderId && !rows.some((row) => String(row?.orderId || "").trim() === openReportMenuOrderId)) {
+      openReportMenuOrderId = "";
+    }
     if (!rows.length) {
       tableNode.innerHTML = `<p class="subtle table-empty">No orders found.</p>`;
       return;
@@ -13481,7 +13647,11 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         <thead>
           <tr>
             ${Object.entries(headerMap)
-              .map(([key, title]) => `<th${key === "generateReport" || key === "generateSummaryReport" || key === "finalReport" || key === "publishReport" ? ' class="generate-report-col"' : ""}>${title}</th>`)
+              .filter(([key]) => showRawUploadColumn || key !== "uploadRaw")
+              .map(([key, title]) => {
+                const headerClass = headerClassMap[key];
+                return `<th${headerClass ? ` class="${headerClass}"` : ""}>${title}</th>`;
+              })
               .join("")}
           </tr>
           <tr>
@@ -13494,14 +13664,12 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
             <th><input data-filter-field="orderDate" class="history-filter-input" placeholder="Filter"></th>
             <th><input data-filter-field="amount" class="history-filter-input" placeholder="Filter"></th>
             <th><input data-filter-field="due" class="history-filter-input" placeholder="Filter"></th>
-            <th></th>
+            ${showRawUploadColumn ? "<th></th>" : ""}
             <th><input data-filter-field="status" class="history-filter-input" placeholder="Filter"></th>
             <th></th>
             <th></th>
-            <th class="generate-report-col"></th>
-            <th class="generate-report-col"></th>
-            <th class="generate-report-col"></th>
-            <th class="generate-report-col"></th>
+            <th class="reports-action-col"></th>
+            <th class="report-action-col"></th>
           </tr>
         </thead>
         <tbody>
@@ -13532,15 +13700,21 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                   <td>${formatOrderDate(row.createdAt)}</td>
                   <td>${money(row.amount)}</td>
                   <td>${money(row.due)}</td>
-                  <td>
-                    <div class="raw-upload-cell">
-                      <input type="file" class="raw-upload-input" data-upload-file="${row.orderId}" accept=".xlsx,.xls,.xlsm">
-                      <button type="button" class="table-action-btn" data-process-order="${row.orderId}" ${isBusy ? "disabled" : ""}>
-                        ${isBusy ? "Processing..." : "Process"}
-                      </button>
-                    </div>
-                    ${row.rawUpload?.fileName ? `<div class="subtle">${escapeHtml(row.rawUpload.fileName)}</div>` : ""}
-                  </td>
+                  ${
+                    showRawUploadColumn
+                      ? `
+                        <td>
+                          <div class="raw-upload-cell">
+                            <input type="file" class="raw-upload-input" data-upload-file="${row.orderId}" accept=".xlsx,.xls,.xlsm">
+                            <button type="button" class="table-action-btn" data-process-order="${row.orderId}" ${isBusy ? "disabled" : ""}>
+                              ${isBusy ? "Processing..." : "Process"}
+                            </button>
+                          </div>
+                          ${row.rawUpload?.fileName ? `<div class="subtle">${escapeHtml(row.rawUpload.fileName)}</div>` : ""}
+                        </td>
+                      `
+                      : ""
+                  }
                   <td><span class="history-status ${statusClass}">${row.status || "-"}</span></td>
                   <td>
                     ${
@@ -13556,26 +13730,8 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                         : `<span class="subtle">-</span>`
                     }
                   </td>
-                  <td class="report-action-cell">
-                    ${
-                      row.processedResult?.report
-                        ? `<button type="button" class="table-action-btn generate-report-btn" data-generate-report-order="${row.orderId}" ${isGenerating ? "disabled" : ""}>${isGenerating ? "Generating..." : "Generate Report"}</button>`
-                        : `<span class="subtle">-</span>`
-                    }
-                  </td>
-                  <td class="report-action-cell">
-                    ${
-                      row.processedResult?.report
-                        ? `<button type="button" class="table-action-btn summary-report-btn" data-generate-summary-report-order="${row.orderId}" ${isGeneratingSummary ? "disabled" : ""}>${isGeneratingSummary ? "Generating..." : "Summary Report"}</button>`
-                        : `<span class="subtle">-</span>`
-                    }
-                  </td>
-                  <td class="report-action-cell">
-                    ${
-                      row.processedResult?.report
-                        ? `<button type="button" class="table-action-btn final-report-btn" data-generate-final-report-order="${row.orderId}" ${isGeneratingFinal ? "disabled" : ""}>${isGeneratingFinal ? "Generating..." : "Final Report"}</button>`
-                        : `<span class="subtle">-</span>`
-                    }
+                  <td class="reports-action-cell">
+                    ${buildReportsActionMarkup(row, { isGenerating, isGeneratingSummary, isGeneratingFinal })}
                   </td>
                   <td class="report-action-cell">
                     ${
@@ -13636,54 +13792,23 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       return;
     }
 
-    const generateReportBtn = event.target.closest("[data-generate-report-order]");
-    if (generateReportBtn) {
-      const orderId = generateReportBtn.getAttribute("data-generate-report-order");
+    const reportMenuTrigger = event.target.closest("[data-report-menu-trigger]");
+    if (reportMenuTrigger) {
+      const orderId = String(reportMenuTrigger.getAttribute("data-report-menu-trigger") || "").trim();
       if (!orderId) return;
-      const numericId = Number(orderId);
-      if (generatingReports.has(numericId)) return;
-      generatingReports.add(numericId);
+      openReportMenuOrderId = openReportMenuOrderId === orderId ? "" : orderId;
       renderTable();
-      try {
-        await openGenerateReport(orderId);
-      } finally {
-        generatingReports.delete(numericId);
-        renderTable();
-      }
       return;
     }
 
-    const generateSummaryReportBtn = event.target.closest("[data-generate-summary-report-order]");
-    if (generateSummaryReportBtn) {
-      const orderId = generateSummaryReportBtn.getAttribute("data-generate-summary-report-order");
+    const reportMenuActionBtn = event.target.closest("[data-report-menu-action]");
+    if (reportMenuActionBtn) {
+      const orderId = String(reportMenuActionBtn.getAttribute("data-order-id") || "").trim();
+      const actionKey = String(reportMenuActionBtn.getAttribute("data-report-menu-action") || "").trim();
       if (!orderId) return;
-      const numericId = Number(orderId);
-      if (generatingSummaryReports.has(numericId)) return;
-      generatingSummaryReports.add(numericId);
+      closeReportMenu();
       renderTable();
-      try {
-        await openGenerateSummaryReport(orderId);
-      } finally {
-        generatingSummaryReports.delete(numericId);
-        renderTable();
-      }
-      return;
-    }
-
-    const generateFinalReportBtn = event.target.closest("[data-generate-final-report-order]");
-    if (generateFinalReportBtn) {
-      const orderId = generateFinalReportBtn.getAttribute("data-generate-final-report-order");
-      if (!orderId) return;
-      const numericId = Number(orderId);
-      if (generatingFinalReports.has(numericId)) return;
-      generatingFinalReports.add(numericId);
-      renderTable();
-      try {
-        await openGenerateFinalReport(orderId);
-      } finally {
-        generatingFinalReports.delete(numericId);
-        renderTable();
-      }
+      await runOrderHistoryReportAction(orderId, actionKey);
       return;
     }
 
@@ -13714,6 +13839,17 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     }
   });
 
+  orderHistoryPageNode?.addEventListener("click", (event) => {
+    if (!openReportMenuOrderId) return;
+    if (event.target.closest("[data-report-menu-shell]")) return;
+    if (closeReportMenu()) renderTable();
+  });
+
+  orderHistoryPageNode?.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (closeReportMenu()) renderTable();
+  });
+
   tableNode.addEventListener("input", (event) => {
     const field = event.target.getAttribute("data-filter-field");
     if (!field) return;
@@ -13734,6 +13870,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const nextTab = tabBtn.getAttribute("data-tab");
     if (!nextTab) return;
     activeTab = nextTab;
+    openReportMenuOrderId = "";
     tabsNode.querySelectorAll(".history-tab").forEach((node) => {
       node.classList.toggle("active", node.getAttribute("data-tab") === activeTab);
     });
