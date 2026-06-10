@@ -4520,7 +4520,7 @@ function renderRegistration(prefillData = null) {
     setFacilityResultsExpanded(true);
   }
 
-  function selectFacilityMatch(match, { hideResultsAfterSelect = true } = {}) {
+  function selectFacilityMatch(match, { hideResultsAfterSelect = true, focusNextField = false } = {}) {
     if (!facilityNameInput || !match) return false;
     facilityNameInput.value = String(match.value || "").trim();
     refreshProviderAutocomplete(facilityNameInput.value, providerNameInput?.value || "");
@@ -4528,6 +4528,11 @@ function renderRegistration(prefillData = null) {
       hideFacilityResults();
     } else {
       renderFacilityResults(facilityNameInput.value, { forceOpen: true });
+    }
+    if (focusNextField) {
+      requestAnimationFrame(() => {
+        focusNextRequisitionField(facilityNameInput, providerNameInput);
+      });
     }
     return true;
   }
@@ -4678,7 +4683,7 @@ function renderRegistration(prefillData = null) {
     setProviderResultsExpanded(true);
   }
 
-  function selectProviderMatch(match, { hideResultsAfterSelect = true } = {}) {
+  function selectProviderMatch(match, { hideResultsAfterSelect = true, focusNextField = false } = {}) {
     if (!providerNameInput || !match) return false;
     providerNameInput.value = String(match.value || "").trim();
     if (providerNpiInput) providerNpiInput.value = String(match.npi || "").trim();
@@ -4686,6 +4691,11 @@ function renderRegistration(prefillData = null) {
       hideProviderResults();
     } else {
       renderProviderResults(providerNameInput.value, { forceOpen: true });
+    }
+    if (focusNextField) {
+      requestAnimationFrame(() => {
+        focusNextRequisitionField(providerNameInput);
+      });
     }
     return true;
   }
@@ -5244,6 +5254,29 @@ function renderRegistration(prefillData = null) {
     refreshFacilityAutocomplete(currentFacilityValue);
     refreshProviderAutocomplete(facilityNameInput?.value || currentFacilityValue, currentProviderValue);
   };
+  const requisitionNavigation = window.LabCenterRequisitionNavigation || {};
+
+  function getRequisitionAdvanceFields() {
+    return Array.from(form.querySelectorAll("input, select, textarea"));
+  }
+
+  function isAdvanceEligibleField(element) {
+    if (!(element instanceof HTMLElement) || !form.contains(element) || element === customAllergyInput) return false;
+    if (typeof requisitionNavigation.isAdvanceEligibleField !== "function") return false;
+    return Boolean(requisitionNavigation.isAdvanceEligibleField(element));
+  }
+
+  function focusNextRequisitionField(currentField, preferredNextField = null) {
+    if (!(currentField instanceof HTMLElement) || typeof requisitionNavigation.focusNextAdvanceField !== "function") {
+      return false;
+    }
+    return Boolean(
+      requisitionNavigation.focusNextAdvanceField(getRequisitionAdvanceFields(), currentField, {
+        preferredNextField,
+        excludedElements: [customAllergyInput],
+      })
+    );
+  }
 
   facilityNameInput?.addEventListener("focus", () => {
     renderFacilityResults(facilityNameInput.value, { forceOpen: true });
@@ -5271,16 +5304,14 @@ function renderRegistration(prefillData = null) {
       activeFacilityMatchIndex = Math.max(activeFacilityMatchIndex - 1, 0);
       renderFacilityResults(facilityNameInput.value, { forceOpen: true });
     } else if (event.key === "Enter") {
-      if (!facilityResultsNode?.classList.contains("hidden")) {
-        event.preventDefault();
-        if (facilityMatchResults[activeFacilityMatchIndex]) {
-          selectFacilityMatch(facilityMatchResults[activeFacilityMatchIndex]);
-          return;
-        }
-        const resolved = resolveFacilityMatchFromInput(facilityNameInput.value);
-        if (resolved) {
-          selectFacilityMatch(resolved);
-        }
+      event.preventDefault();
+      if (!facilityResultsNode?.classList.contains("hidden") && facilityMatchResults[activeFacilityMatchIndex]) {
+        selectFacilityMatch(facilityMatchResults[activeFacilityMatchIndex], { focusNextField: true });
+        return;
+      }
+      const resolved = resolveFacilityMatchFromInput(facilityNameInput.value);
+      if (resolved) {
+        selectFacilityMatch(resolved, { focusNextField: true });
       }
     } else if (event.key === "Escape") {
       hideFacilityResults();
@@ -5314,7 +5345,7 @@ function renderRegistration(prefillData = null) {
     if (!matchButton) return;
     const index = Number(matchButton.getAttribute("data-facility-match-index"));
     if (Number.isInteger(index) && facilityMatchResults[index]) {
-      selectFacilityMatch(facilityMatchResults[index]);
+      selectFacilityMatch(facilityMatchResults[index], { focusNextField: true });
     }
   });
   providerNameInput?.addEventListener("focus", () => {
@@ -5341,16 +5372,14 @@ function renderRegistration(prefillData = null) {
       activeProviderMatchIndex = Math.max(activeProviderMatchIndex - 1, 0);
       renderProviderResults(providerNameInput.value, { forceOpen: true });
     } else if (event.key === "Enter") {
-      if (!providerResultsNode?.classList.contains("hidden")) {
-        event.preventDefault();
-        if (providerMatchResults[activeProviderMatchIndex]) {
-          selectProviderMatch(providerMatchResults[activeProviderMatchIndex]);
-          return;
-        }
-        const resolved = resolveProviderMatchFromInput(providerNameInput.value, facilityNameInput?.value || "");
-        if (resolved) {
-          selectProviderMatch(resolved);
-        }
+      event.preventDefault();
+      if (!providerResultsNode?.classList.contains("hidden") && providerMatchResults[activeProviderMatchIndex]) {
+        selectProviderMatch(providerMatchResults[activeProviderMatchIndex], { focusNextField: true });
+        return;
+      }
+      const resolved = resolveProviderMatchFromInput(providerNameInput.value, facilityNameInput?.value || "");
+      if (resolved) {
+        selectProviderMatch(resolved, { focusNextField: true });
       }
     } else if (event.key === "Escape") {
       hideProviderResults();
@@ -5383,7 +5412,7 @@ function renderRegistration(prefillData = null) {
     if (matchButton) {
       const index = Number(matchButton.getAttribute("data-provider-match-index"));
       if (Number.isInteger(index) && providerMatchResults[index]) {
-        selectProviderMatch(providerMatchResults[index]);
+        selectProviderMatch(providerMatchResults[index], { focusNextField: true });
       }
       return;
     }
@@ -5499,6 +5528,17 @@ function renderRegistration(prefillData = null) {
     form.elements.dob.addEventListener("input", syncAgeFromDob);
     form.elements.dob.addEventListener("change", syncAgeFromDob);
   }
+
+  form.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.defaultPrevented) return;
+    if (!(event.target instanceof HTMLElement)) return;
+    if (event.target.closest("#req-facility-combobox, #req-provider-combobox")) return;
+    if (!isAdvanceEligibleField(event.target)) return;
+    if (focusNextRequisitionField(event.target)) {
+      event.preventDefault();
+    }
+  });
 
   clearBtn.addEventListener("click", () => {
     form.reset();
@@ -13942,14 +13982,18 @@ function buildFacilityGridColumnDefs(columns, entity) {
       suppressNavigable: true,
       lockPinned: true,
       cellClass: "facility-grid-actions-cell",
-      cellRenderer: (params) => `
-        <div class="facility-row-actions">
-          <button type="button" class="table-action-btn" data-facility-row-action="edit" data-facility-entity="${escapeHtml(entity)}" data-facility-id="${escapeHtml(params.data.identifier || "")}">Edit</button>
-          <button type="button" class="table-action-btn" data-facility-row-action="login-status" data-facility-entity="${escapeHtml(entity)}" data-facility-id="${escapeHtml(params.data.identifier || "")}">Login</button>
-        </div>
-      `,
+      cellRenderer: (params) => buildFacilityRowActionsMarkup(entity, params.data.identifier || ""),
     },
   ];
+}
+
+function buildFacilityRowActionsMarkup(entity, identifier = "") {
+  return `
+    <div class="facility-row-actions">
+      <button type="button" class="table-action-btn" data-facility-row-action="edit" data-facility-entity="${escapeHtml(entity)}" data-facility-id="${escapeHtml(identifier)}">Edit</button>
+      <button type="button" class="table-action-btn" data-facility-row-action="login-status" data-facility-entity="${escapeHtml(entity)}" data-facility-id="${escapeHtml(identifier)}">Login</button>
+    </div>
+  `;
 }
 
 function mountFacilityGrid(container, rows, columns, entity) {
@@ -13984,6 +14028,37 @@ function mountFacilityGrid(container, rows, columns, entity) {
     headerHeight: 62,
     rowHeight: 66,
   });
+}
+
+function buildFacilityTableMarkup(entries, columns, entity) {
+  const headerCells = columns
+    .map((columnKey) => `<th>${escapeHtml(formatFacilityColumnLabel(columnKey))}</th>`)
+    .join("");
+  const bodyRows = entries
+    .map((entry) => {
+      const dataCells = columns
+        .map((columnKey) => `<td>${escapeHtml(formatFacilityGridValue(entry.row?.[columnKey]))}</td>`)
+        .join("");
+      return `
+        <tr>
+          ${dataCells}
+          <td class="facility-actions-cell">${buildFacilityRowActionsMarkup(entity, entry.identifier)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <table class="order-history-table facility-table">
+      <thead>
+        <tr>
+          ${headerCells}
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  `;
 }
 
 function parseProviderDisplayName(rawName) {
@@ -15058,6 +15133,7 @@ function renderFacility() {
   const isAccountTab = facilityTab === "accounts";
   const activeFilters = isAccountTab ? facilityAccountFilters : facilityProviderFilters;
   const isExpanded = Boolean(facilitySearchExpanded[facilityTab]);
+  const canUseAgGrid = Boolean(window.agGrid && typeof window.agGrid.createGrid === "function");
   const searchTitle = isAccountTab ? "Account Search" : "Provider Search";
   const searchCopy = isAccountTab
     ? "Find accounts by name, contact, account code, and city."
@@ -15160,14 +15236,16 @@ function renderFacility() {
         <div class="order-history-meta">${rowCountLabel}</div>
         ${
           activeEntries.length
-            ? `<div id="facility-grid" class="ag-theme-quartz facility-grid"></div>`
+            ? canUseAgGrid
+              ? `<div id="facility-grid" class="ag-theme-quartz facility-grid"></div>`
+              : buildFacilityTableMarkup(activeEntries, tableColumns, facilityTab)
             : `<div class="facility-grid-empty req-empty-cell">No ${activeLabel} loaded yet.</div>`
         }
       </div>
     </section>
   `;
 
-  if (activeEntries.length) {
+  if (activeEntries.length && canUseAgGrid) {
     mountFacilityGrid(panelBody.querySelector("#facility-grid"), activeEntries, tableColumns, facilityTab);
   }
 
