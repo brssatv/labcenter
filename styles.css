@@ -4923,6 +4923,109 @@ body.modal-open {
   background: #fff5f5;
 }
 
+.formula-book-page {
+  align-content: start;
+}
+
+.formula-book-card {
+  border: 1px solid #ccd7e2;
+  border-radius: 14px;
+  background: #fff;
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.formula-book-card-head {
+  display: grid;
+  gap: 12px;
+}
+
+.formula-book-card-head h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #21384d;
+}
+
+.formula-book-card-head p {
+  margin: 4px 0 0;
+  color: #5a7087;
+}
+
+.formula-book-toolbar {
+  align-items: center;
+}
+
+.formula-book-toolbar-copy {
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  min-height: 100%;
+}
+
+.formula-book-helper-label {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #48637e;
+}
+
+.formula-book-helper-text {
+  margin: 0;
+  color: #5a7087;
+  line-height: 1.5;
+}
+
+.formula-book-meta {
+  gap: 10px;
+}
+
+.formula-book-placeholder-field {
+  gap: 8px;
+}
+
+.formula-book-placeholder {
+  margin: 0;
+  border: 1px solid #d5deea;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f7fbff 0%, #eef5fb 100%);
+  padding: 16px;
+  color: #1f3650;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.formula-book-note {
+  margin: 0;
+  border: 1px solid #dbe8f5;
+  border-radius: 12px;
+  background: #f4f9ff;
+  padding: 12px 14px;
+  color: #48637e;
+}
+
+.formula-book-empty {
+  border: 1px dashed #c3d3e4;
+  border-radius: 12px;
+  background: #f7fbff;
+  padding: 24px 18px;
+  text-align: center;
+  color: #48637e;
+}
+
+.formula-book-empty h4,
+.formula-book-empty p {
+  margin: 0;
+}
+
+.formula-book-empty p {
+  margin-top: 6px;
+}
+
 .pm-editor {
   border: 1px solid #ccd8e4;
   border-radius: 10px;
