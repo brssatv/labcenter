@@ -7,6 +7,7 @@
   --field-bg: #f8fafc;
   --panel: #eef2f6;
   --warn: #b44343;
+  --success: #2f9552;
   --accent: #2468bf;
   --dark-btn: #4b525c;
   --auth-primary: #1877d2;
@@ -23,6 +24,8 @@
   --ease-apple: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --focus-ring: 0 0 0 3px rgba(36, 104, 191, 0.2);
+  --success-ring: 0 0 0 3px rgba(47, 149, 82, 0.18);
+  --error-ring: 0 0 0 3px rgba(180, 67, 67, 0.16);
   --shadow-soft: 0 10px 24px rgba(28, 45, 68, 0.08);
   --shadow-pop: 0 14px 28px rgba(20, 35, 54, 0.14);
 }
@@ -711,6 +714,28 @@ textarea:focus {
   outline: 0;
   border-color: #8ea8c2;
   box-shadow: var(--focus-ring);
+}
+
+.requisition-form :where(input, select, textarea)[data-validation-state="valid"] {
+  border-color: var(--success);
+  background: #f7fff8;
+  box-shadow: var(--success-ring);
+}
+
+.requisition-form :where(input, select, textarea)[data-validation-state="valid"]:focus {
+  border-color: var(--success);
+  box-shadow: var(--success-ring);
+}
+
+.requisition-form :where(input, select, textarea)[data-validation-state="invalid"] {
+  border-color: var(--warn);
+  background: #fff8f8;
+  box-shadow: var(--error-ring);
+}
+
+.requisition-form :where(input, select, textarea)[data-validation-state="invalid"]:focus {
+  border-color: var(--warn);
+  box-shadow: var(--error-ring);
 }
 
 .btn-primary,
@@ -3232,6 +3257,18 @@ textarea:focus {
 .provider-input-row:focus-within {
   border-color: #8ea8c2;
   box-shadow: var(--focus-ring);
+}
+
+.requisition-form .provider-input-row[data-validation-state="valid"],
+.requisition-form .provider-input-row[data-validation-state="valid"]:focus-within {
+  border-color: var(--success);
+  box-shadow: var(--success-ring);
+}
+
+.requisition-form .provider-input-row[data-validation-state="invalid"],
+.requisition-form .provider-input-row[data-validation-state="invalid"]:focus-within {
+  border-color: var(--warn);
+  box-shadow: var(--error-ring);
 }
 
 .provider-combobox input {

@@ -3,6 +3,9 @@ const assert = require("node:assert/strict");
 
 const {
   isAdvanceEligibleField,
+  isValidationEligibleField,
+  hasCompletedValue,
+  getFieldValidationState,
   findNextAdvanceField,
   focusNextAdvanceField,
 } = require("../assets/requisition-form-navigation.js");
@@ -14,12 +17,17 @@ function createMockField({
   disabled = false,
   readOnly = false,
   visible = true,
+  value = "",
+  valid = true,
+  required = false,
 } = {}) {
   return {
     tagName,
     type,
     disabled,
     readOnly,
+    value,
+    required,
     focusCalls: 0,
     selectCalls: 0,
     closest(selector) {
@@ -33,6 +41,9 @@ function createMockField({
     },
     select() {
       this.selectCalls += 1;
+    },
+    checkValidity() {
+      return valid;
     },
   };
 }
@@ -49,6 +60,28 @@ test("isAdvanceEligibleField rejects blocked, hidden, disabled, and read-only co
   assert.equal(isAdvanceEligibleField(createMockField({ visible: false })), false);
   assert.equal(isAdvanceEligibleField(createMockField({ disabled: true })), false);
   assert.equal(isAdvanceEligibleField(createMockField({ readOnly: true })), false);
+});
+
+test("isValidationEligibleField accepts textarea and rejects non-editable controls", () => {
+  assert.equal(isValidationEligibleField(createMockField()), true);
+  assert.equal(isValidationEligibleField(createMockField({ tagName: "TEXTAREA" })), true);
+  assert.equal(isValidationEligibleField(createMockField({ type: "radio" })), false);
+  assert.equal(isValidationEligibleField(createMockField({ disabled: true })), false);
+  assert.equal(isValidationEligibleField(createMockField({ readOnly: true })), false);
+});
+
+test("hasCompletedValue requires a non-empty trimmed value", () => {
+  assert.equal(hasCompletedValue(createMockField({ value: " Akash " })), true);
+  assert.equal(hasCompletedValue(createMockField({ value: "   " })), false);
+  assert.equal(hasCompletedValue(createMockField({ tagName: "SELECT", value: "" })), false);
+  assert.equal(hasCompletedValue(createMockField({ tagName: "SELECT", value: "Male" })), true);
+});
+
+test("getFieldValidationState returns neutral until completed, then valid or invalid", () => {
+  assert.equal(getFieldValidationState(createMockField({ value: "" })), "neutral");
+  assert.equal(getFieldValidationState(createMockField({ value: "", required: true })), "invalid");
+  assert.equal(getFieldValidationState(createMockField({ value: "hello", valid: true })), "valid");
+  assert.equal(getFieldValidationState(createMockField({ type: "email", value: "not-an-email", valid: false })), "invalid");
 });
 
 test("findNextAdvanceField honors a preferred next field and skips excluded or ineligible entries", () => {

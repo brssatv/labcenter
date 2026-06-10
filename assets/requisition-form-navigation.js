@@ -6,6 +6,7 @@
   root.LabCenterRequisitionNavigation = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, () => {
   const BLOCKED_INPUT_TYPES = new Set(["hidden", "button", "submit", "reset", "file", "checkbox", "radio"]);
+  const NON_COMPLETION_INPUT_TYPES = new Set(["hidden", "button", "submit", "reset", "file"]);
 
   function isElementLike(element) {
     return Boolean(element && typeof element === "object" && typeof element.tagName === "string");
@@ -40,6 +41,51 @@
     }
 
     return tagName === "select";
+  }
+
+  function isValidationEligibleField(element) {
+    if (!isElementLike(element) || !isVisibleField(element) || Boolean(element.disabled)) return false;
+
+    const tagName = getTagName(element);
+    if (tagName === "textarea") {
+      return !Boolean(element.readOnly);
+    }
+
+    if (tagName === "input") {
+      const inputType = String(element.type || "text").toLowerCase();
+      if (BLOCKED_INPUT_TYPES.has(inputType) || Boolean(element.readOnly)) return false;
+      return true;
+    }
+
+    return tagName === "select";
+  }
+
+  function hasCompletedValue(element) {
+    if (!isValidationEligibleField(element)) return false;
+
+    const tagName = getTagName(element);
+    if (tagName === "input") {
+      const inputType = String(element.type || "text").toLowerCase();
+      if (NON_COMPLETION_INPUT_TYPES.has(inputType)) return false;
+    }
+
+    return String(element.value || "").trim().length > 0;
+  }
+
+  function getFieldValidationState(element) {
+    if (!isValidationEligibleField(element)) {
+      return "neutral";
+    }
+
+    if (!hasCompletedValue(element)) {
+      return Boolean(element.required) ? "invalid" : "neutral";
+    }
+
+    if (typeof element.checkValidity === "function") {
+      return element.checkValidity() ? "valid" : "invalid";
+    }
+
+    return "valid";
   }
 
   function focusField(element) {
@@ -87,6 +133,9 @@
 
   return {
     isAdvanceEligibleField,
+    isValidationEligibleField,
+    hasCompletedValue,
+    getFieldValidationState,
     getAdvanceEligibleFields,
     findNextAdvanceField,
     focusField,

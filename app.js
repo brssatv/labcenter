@@ -5255,6 +5255,7 @@ function renderRegistration(prefillData = null) {
     refreshProviderAutocomplete(facilityNameInput?.value || currentFacilityValue, currentProviderValue);
   };
   const requisitionNavigation = window.LabCenterRequisitionNavigation || {};
+  const touchedValidationFields = new Set();
 
   function getRequisitionAdvanceFields() {
     return Array.from(form.querySelectorAll("input, select, textarea"));
@@ -5264,6 +5265,65 @@ function renderRegistration(prefillData = null) {
     if (!(element instanceof HTMLElement) || !form.contains(element) || element === customAllergyInput) return false;
     if (typeof requisitionNavigation.isAdvanceEligibleField !== "function") return false;
     return Boolean(requisitionNavigation.isAdvanceEligibleField(element));
+  }
+
+  function isValidationEligibleField(element) {
+    if (!(element instanceof HTMLElement) || !form.contains(element) || element === customAllergyInput) return false;
+    if (typeof requisitionNavigation.isValidationEligibleField !== "function") return false;
+    return Boolean(requisitionNavigation.isValidationEligibleField(element));
+  }
+
+  function getRequisitionValidationFields() {
+    return getRequisitionAdvanceFields().filter(isValidationEligibleField);
+  }
+
+  function getFieldValidationDecorators(element) {
+    if (!(element instanceof HTMLElement)) return [];
+    const decorators = [element];
+    const row = element.closest(".provider-input-row");
+    if (row instanceof HTMLElement) {
+      decorators.push(row);
+    }
+    return decorators;
+  }
+
+  function setFieldValidationState(element, state = "neutral") {
+    getFieldValidationDecorators(element).forEach((node) => {
+      if (!(node instanceof HTMLElement)) return;
+      if (state === "valid" || state === "invalid") {
+        node.dataset.validationState = state;
+      } else {
+        delete node.dataset.validationState;
+      }
+    });
+  }
+
+  function applyFieldValidationState(element, { markTouched = false, force = false } = {}) {
+    if (!isValidationEligibleField(element)) return "neutral";
+    if (markTouched) touchedValidationFields.add(element);
+    if (!force && !touchedValidationFields.has(element)) return "neutral";
+    if (typeof requisitionNavigation.getFieldValidationState !== "function") return "neutral";
+    const state = requisitionNavigation.getFieldValidationState(element);
+    setFieldValidationState(element, state);
+    return state;
+  }
+
+  function refreshTouchedFieldValidationState(element) {
+    if (!touchedValidationFields.has(element)) return "neutral";
+    return applyFieldValidationState(element, { force: true });
+  }
+
+  function validateRequisitionFields() {
+    getRequisitionValidationFields().forEach((field) => {
+      applyFieldValidationState(field, { markTouched: true, force: true });
+    });
+  }
+
+  function clearRequisitionFieldValidationStates() {
+    getRequisitionValidationFields().forEach((field) => {
+      touchedValidationFields.delete(field);
+      setFieldValidationState(field, "neutral");
+    });
   }
 
   function focusNextRequisitionField(currentField, preferredNextField = null) {
@@ -5277,6 +5337,18 @@ function renderRegistration(prefillData = null) {
       })
     );
   }
+
+  getRequisitionValidationFields().forEach((field) => {
+    field.addEventListener("blur", () => {
+      applyFieldValidationState(field, { markTouched: true, force: true });
+    });
+    field.addEventListener("change", () => {
+      applyFieldValidationState(field, { markTouched: true, force: true });
+    });
+    field.addEventListener("input", () => {
+      refreshTouchedFieldValidationState(field);
+    });
+  });
 
   facilityNameInput?.addEventListener("focus", () => {
     renderFacilityResults(facilityNameInput.value, { forceOpen: true });
@@ -5545,6 +5617,7 @@ function renderRegistration(prefillData = null) {
     clearCustomAllergies();
     syncSpecimenTypeDependentFields();
     syncAgeFromDob();
+    clearRequisitionFieldValidationStates();
     refreshFacilityAutocompleteState();
     refreshPatientIdPreview();
     status.textContent = "Form cleared.";
@@ -5552,6 +5625,7 @@ function renderRegistration(prefillData = null) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    validateRequisitionFields();
     const data = Object.fromEntries(new FormData(form).entries());
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
     patientIdNode.textContent = data.patientId;
@@ -5562,6 +5636,7 @@ function renderRegistration(prefillData = null) {
       clearCustomAllergies();
       syncSpecimenTypeDependentFields();
       syncAgeFromDob();
+      clearRequisitionFieldValidationStates();
       refreshFacilityAutocompleteState();
       refreshPatientIdPreview();
     } catch (error) {
@@ -5570,6 +5645,7 @@ function renderRegistration(prefillData = null) {
   });
 
   registerAndOrderBtn.addEventListener("click", async () => {
+    validateRequisitionFields();
     if (!form.reportValidity()) return;
     const data = Object.fromEntries(new FormData(form).entries());
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
