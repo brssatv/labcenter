@@ -1,0 +1,379 @@
+.transcribe-btn {
+  border-color: #b36b20;
+  background: linear-gradient(180deg, #cc7d2c 0%, #a85c19 100%);
+  color: #fff;
+  box-shadow: 0 10px 18px rgba(122, 70, 19, 0.18);
+}
+
+.transcribe-btn:hover:not(:disabled),
+.transcribe-btn:focus-visible {
+  border-color: #c47a2d;
+  background: linear-gradient(180deg, #d68836 0%, #b66620 100%);
+  color: #fff;
+}
+
+.transcribe-btn:disabled {
+  background: linear-gradient(180deg, #e3bb90 0%, #d4a97b 100%);
+  border-color: #d4a97b;
+  color: #fff;
+  box-shadow: none;
+}
+
+.transcribe-dialog {
+  width: min(1260px, 100%);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.transcribe-dialog .history-preview-head {
+  padding: 16px 20px;
+  border-bottom-color: #d9e5ef;
+  background:
+    radial-gradient(circle at top left, rgba(16, 91, 99, 0.12), transparent 42%),
+    linear-gradient(180deg, #fbfdff 0%, #f2f7fb 100%);
+}
+
+.transcribe-dialog .history-preview-head h3 {
+  color: #163b53;
+  font-size: 1.24rem;
+  letter-spacing: 0.01em;
+}
+
+.transcribe-dialog .history-preview-body {
+  padding: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(198, 124, 47, 0.08), transparent 32%),
+    linear-gradient(180deg, #f6fafc 0%, #eef4f8 100%);
+}
+
+.transcribe-workbench {
+  border: 1px solid #d2dee8;
+  border-radius: 16px;
+  padding: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  box-shadow: 0 16px 32px rgba(23, 48, 73, 0.08);
+}
+
+.transcribe-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.95fr);
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid #d7e3ec;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top left, rgba(198, 124, 47, 0.12), transparent 38%),
+    linear-gradient(135deg, #123d62 0%, #0f6870 100%);
+  color: #fff;
+}
+
+.transcribe-hero-copy {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.transcribe-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.transcribe-hero h4 {
+  margin: 0;
+  font-size: 1.52rem;
+  line-height: 1.08;
+}
+
+.transcribe-hero p {
+  margin: 0;
+  max-width: 60ch;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.98rem;
+  line-height: 1.55;
+}
+
+.transcribe-stat-strip {
+  display: grid;
+  gap: 10px;
+  align-content: center;
+}
+
+.transcribe-stat-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(4px);
+}
+
+.transcribe-stat-card span {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.transcribe-stat-card strong {
+  font-size: 1.08rem;
+  letter-spacing: 0.01em;
+}
+
+.transcribe-guidance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.transcribe-guide-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #d8e3eb;
+  border-radius: 999px;
+  background: #f8fbfd;
+  color: #24425a;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.transcribe-workbench .lab-panel-title {
+  margin: 18px 0 8px;
+  color: #123b63;
+  text-align: left;
+  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-size: 1.55rem;
+  font-weight: 700;
+}
+
+.transcribe-workbench .lab-summary-title,
+.transcribe-workbench .lab-detail-title {
+  color: #173d58;
+  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-size: 1.16rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.transcribe-workbench .lab-blue-bar {
+  border: 1px solid #cae0eb;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f7fbfd 0%, #edf6fa 100%);
+  color: #163e58;
+  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-size: 1.02rem;
+  font-weight: 700;
+  text-align: left;
+  padding: 12px 14px;
+}
+
+.transcribe-workbench .lab-summary-grid {
+  gap: 10px;
+}
+
+.transcribe-workbench .summary-item {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid #d9e4ec;
+  border-radius: 14px;
+  background: #fbfdff;
+  color: #1d3f58;
+  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-size: 1rem;
+}
+
+.transcribe-workbench .summary-item > *:first-child {
+  font-weight: 700;
+}
+
+.transcribe-workbench .summary-empty {
+  padding: 14px 16px;
+  border: 1px dashed #c9d9e6;
+  border-radius: 14px;
+  background: #fafdff;
+  color: #5a7184;
+}
+
+.transcribe-workbench .ct-reference-box {
+  border-color: #d3e0eb;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f3f8fc 100%);
+  color: #24455f;
+  font-size: 0.95rem;
+}
+
+.transcribe-workbench .lab-detail-table {
+  margin-top: 12px;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.transcribe-workbench .lab-detail-table th,
+.transcribe-workbench .lab-detail-table td {
+  border: 1px solid #d6e3ec;
+}
+
+.transcribe-workbench .lab-detail-table th {
+  background: linear-gradient(180deg, #173f58 0%, #123649 100%);
+  color: #fff;
+  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.transcribe-workbench .lab-detail-table td {
+  background: #fff;
+  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-size: 0.98rem;
+  vertical-align: top;
+}
+
+.transcribe-workbench .lab-detail-row-head {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.transcribe-target-shell,
+.transcribe-result-shell {
+  display: grid;
+  gap: 6px;
+}
+
+.transcribe-target-hint,
+.transcribe-result-hint,
+.transcribe-row-meta {
+  color: #5d7486;
+  font-size: 0.83rem;
+  line-height: 1.35;
+}
+
+.transcribe-target-input,
+.transcribe-result-select,
+.transcribe-ct-input {
+  min-height: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border-color: #b7cad9;
+  background: #fbfdff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.transcribe-target-input:focus,
+.transcribe-result-select:focus,
+.transcribe-ct-input:focus,
+.transcribe-dialog .validation-note-input:focus {
+  outline: none;
+  border-color: #0f6870;
+  box-shadow: 0 0 0 3px rgba(15, 104, 112, 0.16);
+}
+
+.transcribe-result-select {
+  cursor: pointer;
+}
+
+.transcribe-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.transcribe-row-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #eef5fa;
+  color: #234863;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.transcribe-workbench .lab-detail-remove-btn {
+  border-color: #e8c9bf;
+  background: #fff6f2;
+  color: #8c452e;
+}
+
+.transcribe-workbench .lab-detail-remove-btn:hover,
+.transcribe-workbench .lab-detail-remove-btn:focus-visible {
+  border-color: #dca68f;
+  background: #fff0ea;
+  color: #753624;
+}
+
+.transcribe-workbench .lab-detail-add-btn {
+  background: linear-gradient(180deg, #f8fbfd 0%, #edf5f9 100%);
+  color: #1f4a63;
+}
+
+.transcribe-workbench .lab-detail-add-btn:hover,
+.transcribe-workbench .lab-detail-add-btn:focus-visible {
+  background: linear-gradient(180deg, #eff6fb 0%, #e5f0f6 100%);
+  color: #163a50;
+}
+
+.transcribe-dialog .validation-note-card {
+  border-color: #d5e1ea;
+  background: linear-gradient(180deg, #fbfdff 0%, #f5f9fc 100%);
+}
+
+.transcribe-dialog .validation-note-label,
+.transcribe-dialog .validation-note-hint {
+  color: #26455d;
+}
+
+.transcribe-dialog .history-preview-actions {
+  margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+  .transcribe-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .transcribe-stat-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .transcribe-dialog .history-preview-head,
+  .transcribe-dialog .history-preview-body,
+  .transcribe-workbench {
+    padding: 14px;
+  }
+
+  .transcribe-stat-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .transcribe-guidance {
+    flex-direction: column;
+  }
+
+  .transcribe-row-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

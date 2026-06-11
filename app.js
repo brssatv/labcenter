@@ -9906,6 +9906,11 @@ function getOrderHistoryReportMenuApi() {
   return window.LabCenterOrderHistoryReportMenu || null;
 }
 
+function getManualTranscriptionApi() {
+  if (typeof window === "undefined") return null;
+  return window.LabCenterManualTranscription || null;
+}
+
 function getOrderHistoryReportMenuLabel() {
   const label = getOrderHistoryReportMenuApi()?.getOrderHistoryReportMenuLabel?.();
   return String(label || "Generate Report");
@@ -10054,6 +10059,7 @@ function renderOrderHistory(initialTab = "all-orders") {
     due: "Due",
     uploadRaw: "Upload Tests Raw",
     status: "Status",
+    transcribe: "Transcribe",
     validate: "Validate",
     preview: "Preview",
     reportActions: getOrderHistoryReportMenuLabel(),
@@ -12994,14 +13000,37 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     });
   }
 
+  function getValidationDialogMode(orderId = "") {
+    const activeOrderId = String(previewModalNode?.getAttribute("data-validate-order-id") || "").trim();
+    if (orderId && activeOrderId && activeOrderId !== String(orderId).trim()) return "validate";
+    return previewModalNode?.getAttribute("data-validation-mode") === "transcribe" ? "transcribe" : "validate";
+  }
+
   function buildReportMarkup(order, options = {}) {
     const editable = Boolean(options.editable);
+    const dialogMode = editable && options.mode === "transcribe" ? "transcribe" : "validate";
+    const isTranscribeMode = editable && dialogMode === "transcribe";
+    const dialogTitle = editable
+      ? isTranscribeMode
+        ? "Result Transcribe"
+        : "Result Validate"
+      : "Result Preview";
+    const manualTranscriptionApi = getManualTranscriptionApi();
+    const transcribeUiModel = isTranscribeMode
+      ? manualTranscriptionApi?.createManualTranscriptionUiModel?.({
+          orderId: String(order?.orderId || "").trim(),
+          panelName: order?.processedResult?.report?.panelName || getOrderPanelName(order),
+          accessionNo: getOrderAccession(order),
+          masterRegistryRecords,
+          masterResistanceGeneCatalog,
+        }) || null
+      : null;
     const report = order?.processedResult?.report;
     if (!report) {
       return `
-        <div class="history-preview-dialog">
+        <div class="history-preview-dialog${isTranscribeMode ? " transcribe-dialog" : ""}">
           <div class="history-preview-head">
-            <h3>${editable ? "Result Validate" : "Result Preview"}</h3>
+            <h3>${dialogTitle}</h3>
             <button type="button" class="preview-close-btn" data-close-preview>×</button>
           </div>
           <div class="history-preview-body">
@@ -13026,12 +13055,12 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
 
     function buildSummaryCards(entries, label) {
       if (!entries.length) {
-        return `<div class="summary-empty">No ${label.toLowerCase()} detected in uploaded workbook.</div>`;
+        return `<div class="summary-empty">${isTranscribeMode ? `Analyze after adding ${label.toLowerCase()} rows to refresh this summary.` : `No ${label.toLowerCase()} detected in this report.`}</div>`;
       }
       return entries
         .slice(0, 8)
         .map(({ item, sourceIndex }) => {
-          if (!editable) {
+          if (!editable || isTranscribeMode) {
             return `
               <div class="summary-item">
                 <div class="summary-pathogen">${escapeHtml(item.pathogen || "-")}</div>
@@ -13065,6 +13094,60 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                     </td>
                     <td>${escapeHtml(item.result || "-")}</td>
                     <td>${escapeHtml((item.ctValue ?? item.ctRaw) || "-")}</td>
+                  </tr>
+                `;
+              }
+              if (isTranscribeMode) {
+                const transcribeTargetMarkup = manualTranscriptionApi?.buildManualTranscriptionTargetFieldMarkup?.({
+                  model: transcribeUiModel,
+                  item,
+                  kind: addType === "abr" ? "abr" : "pathogen",
+                  sourceIndex,
+                  section: "detailed",
+                  escapeHtml,
+                }) || `
+                  <input class="preview-edit-input" data-validate-field="pathogen" data-validate-section="detailed" data-validate-index="${sourceIndex}" value="${escapeHtml(item.pathogen || "")}" placeholder="${escapeHtml(label)}">
+                `;
+                const transcribeResultMarkup = manualTranscriptionApi?.buildManualTranscriptionResultFieldMarkup?.({
+                  model: transcribeUiModel,
+                  value: item.result || "",
+                  sourceIndex,
+                  section: "detailed",
+                  escapeHtml,
+                }) || `
+                  <input class="preview-edit-input" data-validate-field="result" data-validate-section="detailed" data-validate-index="${sourceIndex}" value="${escapeHtml(item.result || "")}" placeholder="Result">
+                `;
+                return `
+                  <tr>
+                    <td class="lab-detail-primary-cell">
+                      <div class="lab-detail-row-head">
+                        ${transcribeTargetMarkup}
+                        <button
+                          type="button"
+                          class="lab-detail-remove-btn"
+                          data-remove-validate-row="${sourceIndex}"
+                          data-order-id="${escapeHtml(order.orderId || "")}"
+                          aria-label="Remove ${escapeHtml(label)} row"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <div class="transcribe-row-meta">
+                        <span class="transcribe-row-chip">${escapeHtml(item.sample || "-")}</span>
+                        ${item.well ? `<span class="transcribe-row-chip">Well ${escapeHtml(item.well)}</span>` : ""}
+                      </div>
+                    </td>
+                    <td>${transcribeResultMarkup}</td>
+                    <td>
+                      <input
+                        class="preview-edit-input transcribe-ct-input"
+                        data-validate-field="ctValue"
+                        data-validate-section="detailed"
+                        data-validate-index="${sourceIndex}"
+                        value="${escapeHtml((item.ctValue ?? item.ctRaw) || "")}"
+                        placeholder="Ct Value"
+                      >
+                    </td>
                   </tr>
                 `;
               }
@@ -13117,16 +13200,33 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const pathogenDetailRowsMarkup = buildDetailedRows(pathogenDetailedEntries, "Pathogen", "pathogen");
     const abrDetailRowsMarkup = buildDetailedRows(abrDetailedEntries, "ABR Gene", "abr");
     const manualEditNote = getValidationManualEditNote(report);
+    const transcribeIntroMarkup = isTranscribeMode
+      ? manualTranscriptionApi?.buildManualTranscriptionIntroMarkup?.(transcribeUiModel, escapeHtml) || ""
+      : "";
+    const transcribeLookupMarkup = isTranscribeMode
+      ? manualTranscriptionApi?.buildManualTranscriptionLookupMarkup?.(transcribeUiModel, escapeHtml) || ""
+      : "";
 
     return `
-      <div class="history-preview-dialog">
+      <div class="history-preview-dialog${isTranscribeMode ? " transcribe-dialog" : ""}">
         <div class="history-preview-head">
-          <h3>${editable ? "Result Validate" : "Result Preview"} • Order #${escapeHtml(order.orderId || "-")}</h3>
+          <h3>${dialogTitle} • Order #${escapeHtml(order.orderId || "-")}</h3>
           <button type="button" class="preview-close-btn" data-close-preview>×</button>
         </div>
         <div class="history-preview-body">
-          <article class="lab-report-preview">
+          <article class="lab-report-preview${isTranscribeMode ? " transcribe-workbench" : ""}">
+            ${transcribeLookupMarkup}
+            ${transcribeIntroMarkup}
             <h2 class="lab-panel-title">${escapeHtml(report.panelName || getOrderPanelName(order))}</h2>
+            ${
+              isTranscribeMode
+                ? `
+                  <section class="validation-note-card">
+                    <p class="subtle">Enter result rows manually for this order, then click Analyze to refresh the detected summary before saving.</p>
+                  </section>
+                `
+                : ""
+            }
             <h3 class="lab-summary-title">Summary Lab Report</h3>
             <div class="lab-blue-bar">Pathogens Detected</div>
             <div class="lab-summary-grid">${pathogenSummaryRows}</div>
@@ -13199,7 +13299,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                 ? `
                   <div class="history-preview-actions">
                     <button type="button" class="table-action-btn preview-btn" data-analyze-validate="${escapeHtml(order.orderId)}">Analyze</button>
-                    <button type="button" class="table-action-btn validate-btn" data-save-validate="${escapeHtml(order.orderId)}">Save Validate</button>
+                    <button type="button" class="table-action-btn validate-btn" data-save-validate="${escapeHtml(order.orderId)}">${isTranscribeMode ? "Save Transcribe" : "Save Validate"}</button>
                     <button type="button" class="table-action-btn" data-close-preview>Cancel</button>
                   </div>
                 `
@@ -13214,6 +13314,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
   function openPreview(orderId) {
     const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
     previewModalNode.removeAttribute("data-validate-order-id");
+    previewModalNode.removeAttribute("data-validation-mode");
     previewModalNode.innerHTML = buildReportMarkup(order, { editable: false });
     previewModalNode.classList.remove("hidden");
   }
@@ -13365,6 +13466,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
     if (!order) return;
     const orderKey = String(orderId);
+    const dialogMode = options.mode === "transcribe" ? "transcribe" : getValidationDialogMode(orderId);
     const draftReport = cloneValidationReport(
       reportOverride
       || validationDraftReports.get(orderKey)
@@ -13381,7 +13483,8 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         }
       : order;
     previewModalNode.setAttribute("data-validate-order-id", orderKey);
-    previewModalNode.innerHTML = buildReportMarkup(orderForMarkup, { editable: true });
+    previewModalNode.setAttribute("data-validation-mode", dialogMode);
+    previewModalNode.innerHTML = buildReportMarkup(orderForMarkup, { editable: true, mode: dialogMode });
     previewModalNode.classList.remove("hidden");
     updateValidationSaveState(orderId);
     if (options.scrollState) {
@@ -13391,28 +13494,65 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     }
   }
 
+  function openTranscribe(orderId) {
+    const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
+    if (!order) return;
+    const orderKey = String(orderId);
+    const draftReport = cloneValidationReport(order?.processedResult?.report)
+      || getManualTranscriptionApi()?.createManualTranscriptionReport?.({
+        panelName: getOrderPanelName(order),
+        accessionNo: getOrderAccession(order),
+      });
+    validationDraftReports.set(orderKey, draftReport);
+    validationUndoState.delete(orderKey);
+    openValidate(orderId, draftReport, { mode: "transcribe" });
+  }
+
   async function saveValidation(orderId) {
     const orderKey = String(orderId);
     const order = readOrders().find((item) => Number(item.orderId) === Number(orderId));
     const baseReport = validationDraftReports.get(orderKey) || order?.processedResult?.report;
     if (!baseReport) return false;
+    const dialogMode = getValidationDialogMode(orderId);
     const nextReport = collectValidationModalReport(baseReport);
     if (!nextReport) return false;
-    validationDraftReports.set(orderKey, nextReport);
+    const normalizedReport = dialogMode === "transcribe"
+      ? getManualTranscriptionApi()?.normalizeManualTranscriptionReport?.(nextReport) || nextReport
+      : recalculateDetectedRows(nextReport) || nextReport;
+    validationDraftReports.set(orderKey, normalizedReport);
     validationUndoState.delete(orderKey);
-    return updateOrderById(orderId, (row) => ({
-      ...row,
-      processedResult: {
-        ...(row.processedResult || {}),
-        report: nextReport,
-      },
-    }));
+    const isFirstManualTranscription = !order?.processedResult?.report;
+    return updateOrderById(orderId, (row) => {
+      const processedAt = row.processedAt || row?.processedResult?.processedAt || new Date().toISOString();
+      const manualMetadata = isFirstManualTranscription
+        ? {
+            fileName: row?.processedResult?.fileName || "Manual transcription",
+            source: row?.processedResult?.source || "manual-transcription",
+          }
+        : {};
+
+      return {
+        ...row,
+        status: isFirstManualTranscription
+          ? getManualTranscriptionApi()?.resolveManualTranscriptionStatus?.(row.status) || row.status || "Processed"
+          : row.status,
+        processedAt,
+        processedResult: {
+          ...(row.processedResult || {}),
+          ...manualMetadata,
+          processedAt: row?.processedResult?.processedAt || processedAt,
+          report: normalizedReport,
+        },
+      };
+    });
   }
 
   function analyzeValidation(orderId) {
     const { report: editedReport } = getCurrentValidationReport(orderId);
     if (!editedReport) return false;
-    const analyzedReport = recalculateDetectedRows(editedReport);
+    const analyzedReport = getValidationDialogMode(orderId) === "transcribe"
+      ? getManualTranscriptionApi()?.normalizeManualTranscriptionReport?.(editedReport)
+      : recalculateDetectedRows(editedReport);
     if (!analyzedReport) return false;
     validationDraftReports.set(String(orderId), analyzedReport);
     openValidate(orderId, analyzedReport, {
@@ -13424,13 +13564,18 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
 
   function addValidationDetailedRow(orderId, type) {
     const orderKey = String(orderId);
-    const { report } = getCurrentValidationReport(orderId);
+    const { order, report } = getCurrentValidationReport(orderId);
     if (!report) return false;
     const nextReport = cloneValidationReport(report);
     if (!nextReport) return false;
     if (!Array.isArray(nextReport.detailed)) nextReport.detailed = [];
+    const defaultSampleId = String(
+      nextReport?.metadata?.defaultSampleId
+      || getOrderAccession(order)
+      || ""
+    ).trim();
     nextReport.detailed.push({
-      sample: "",
+      sample: defaultSampleId && defaultSampleId !== "-" ? defaultSampleId : "",
       well: "",
       pathogen: "",
       ampStatus: "-",
@@ -13513,6 +13658,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (activeValidateOrderId) validationDraftReports.delete(activeValidateOrderId);
     if (activeValidateOrderId) validationUndoState.delete(activeValidateOrderId);
     previewModalNode.removeAttribute("data-validate-order-id");
+    previewModalNode.removeAttribute("data-validation-mode");
     previewModalNode.classList.add("hidden");
     previewModalNode.innerHTML = "";
   }
@@ -13553,6 +13699,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
             <th><input data-filter-field="due" class="history-filter-input" placeholder="Filter"></th>
             ${showRawUploadColumn ? "<th></th>" : ""}
             <th><input data-filter-field="status" class="history-filter-input" placeholder="Filter"></th>
+            <th></th>
             <th></th>
             <th></th>
             <th class="reports-action-col"></th>
@@ -13603,6 +13750,13 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                       : ""
                   }
                   <td><span class="history-status ${statusClass}">${row.status || "-"}</span></td>
+                  <td>
+                    ${
+                      row.processedResult?.report
+                        ? `<span class="subtle">-</span>`
+                        : `<button type="button" class="table-action-btn transcribe-btn" data-transcribe-order="${row.orderId}">Transcribe</button>`
+                    }
+                  </td>
                   <td>
                     ${
                       row.processedResult?.report
@@ -13669,6 +13823,13 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         renderTable();
         alert(error?.message || "Unable to process workbook.");
       }
+      return;
+    }
+
+    const transcribeBtn = event.target.closest("[data-transcribe-order]");
+    if (transcribeBtn) {
+      const orderId = transcribeBtn.getAttribute("data-transcribe-order");
+      if (orderId) openTranscribe(orderId);
       return;
     }
 
@@ -13831,6 +13992,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (saveBtn) {
       const orderId = saveBtn.getAttribute("data-save-validate");
       if (!orderId) return;
+      const dialogMode = getValidationDialogMode(orderId);
       const saveState = getValidationSaveState(orderId);
       if (saveState.noteRequired) {
         updateValidationSaveState(orderId);
@@ -13844,7 +14006,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         return;
       }
       renderTable();
-      openValidate(orderId);
+      openValidate(orderId, null, { mode: dialogMode });
       return;
     }
     if (event.target.closest("[data-close-preview]") || event.target === previewModalNode) {
@@ -13853,6 +14015,13 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
   });
 
   previewModalNode?.addEventListener("input", (event) => {
+    if (!event.target.closest("[data-validate-field]") && !event.target.closest("[data-validate-note]")) return;
+    const orderId = previewModalNode.getAttribute("data-validate-order-id");
+    if (!orderId) return;
+    updateValidationSaveState(orderId);
+  });
+
+  previewModalNode?.addEventListener("change", (event) => {
     if (!event.target.closest("[data-validate-field]") && !event.target.closest("[data-validate-note]")) return;
     const orderId = previewModalNode.getAttribute("data-validate-order-id");
     if (!orderId) return;
