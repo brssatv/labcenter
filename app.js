@@ -147,8 +147,10 @@ let activeSession = createDefaultActiveSession();
 let currentView = "dashboard";
 let requisitionSubtab = "create";
 let facilityTab = "accounts";
-let formulaBookSection = "report-formulas";
-let formulaBookReportType = "";
+let formulaBookState = {
+  section: "report-formulas",
+  reportType: "",
+};
 let facilityAccountsQuery = "";
 let facilityAccountsDisabledOnly = false;
 let facilityProvidersQuery = "";
@@ -8871,189 +8873,72 @@ function getReportFormulasApi() {
   return window.LabCenterReportFormulas || null;
 }
 
-function getFormulaBookSections() {
-  const sections = getReportFormulasApi()?.getFormulaBookSections?.();
-  if (Array.isArray(sections) && sections.length) {
-    return sections.filter((item) => item && item.key && item.label);
-  }
-  return [{ key: "report-formulas", label: "Formula for Reports" }];
+function getFormulaBookApi() {
+  if (typeof window === "undefined") return null;
+  return window.LabCenterFormulaBook || null;
 }
 
-function getFormulaBookReportTypeOptions() {
-  const options = getReportFormulasApi()?.getReportTypeOptions?.();
-  if (Array.isArray(options) && options.length) {
-    return options.filter((item) => item && item.key && item.label);
-  }
-  return [
-    { key: "generateReport", label: "Generate Report" },
-    { key: "generateSummaryReport", label: "Summary Report" },
-    { key: "finalReport", label: "Final Report" },
-  ];
-}
-
-function buildSarsCov2FinalReportPlaceholder(formula) {
-  const normalized = formula || getSarsCov2FinalReportFormulaConfig();
-  const comparisons = normalized.targets.map((target) => `${target.label} Ct <= ${normalized.thresholdCt}`);
-  return [
-    `IF COUNT(${comparisons.join(", ")}) >= ${normalized.minimumPositiveTargets}`,
-    `THEN ${normalized.pathogenLabel} = Positive`,
-    `ELSE ${normalized.pathogenLabel} = Negative`,
-  ].join("\n");
+function isSarsCov2FinalReportFormulaEnabled() {
+  const enabled = getReportFormulasApi()?.isSarsCov2FinalReportFormulaEnabled?.();
+  return enabled !== false;
 }
 
 function getSarsCov2FinalReportFormulaConfig() {
-  const formula = getReportFormulasApi()?.getSarsCov2FinalReportFormula?.();
-  const defaultTargets = [
-    { key: "e", label: "E Gene" },
-    { key: "n", label: "N Gene" },
-    { key: "orf1ab", label: "Orf1ab" },
-  ];
-  const targets = Array.isArray(formula?.targets)
-    ? formula.targets
-        .filter((item) => item && item.key)
-        .map((item) => ({
-          key: String(item.key).trim(),
-          label: String(item.label || item.key).trim(),
-        }))
-    : [];
-  const normalized = {
-    key: String(formula?.key || "sars-cov-2-final-report"),
-    title: String(formula?.title || "SARS-CoV-2 Final Report Formula"),
-    pathogenLabel: String(formula?.pathogenLabel || "SARS-CoV-2"),
-    reportType: String(formula?.reportType || "finalReport"),
-    thresholdCt: Number.isFinite(Number(formula?.thresholdCt)) ? Number(formula.thresholdCt) : 33,
-    minimumPositiveTargets: Number.isFinite(Number(formula?.minimumPositiveTargets))
-      ? Number(formula.minimumPositiveTargets)
-      : 2,
-    targets: targets.length ? targets : defaultTargets,
-  };
+  const formula = getFormulaBookApi()?.getSarsCov2FinalReportFormulaConfig?.()
+    || getReportFormulasApi()?.getSarsCov2FinalReportFormula?.();
+  if (formula) return formula;
 
   return {
-    ...normalized,
-    placeholder: String(formula?.placeholder || buildSarsCov2FinalReportPlaceholder(normalized)),
-  };
-}
-
-function getFormulaBookReportReference(reportType) {
-  if (!reportType) return null;
-  const reference = getReportFormulasApi()?.getReportFormulaReference?.(reportType);
-  if (reference?.selectedReportType?.key && reference?.formula) {
-    return {
-      ...reference,
-      placeholder: String(reference.placeholder || reference.formula.placeholder || ""),
-      note: String(reference.note || "").trim(),
-    };
-  }
-
-  const selectedReportType = getFormulaBookReportTypeOptions().find((item) => item.key === reportType);
-  if (!selectedReportType) return null;
-
-  const formula = getSarsCov2FinalReportFormulaConfig();
-  const isNativeReportType = selectedReportType.key === formula.reportType;
-  return {
-    sectionKey: "report-formulas",
-    selectedReportType,
-    formula,
-    placeholder: formula.placeholder,
-    note: isNativeReportType
-      ? "This is the active SARS-CoV-2 formula used during Final Report generation."
-      : `This placeholder currently references the Final Report SARS-CoV-2 rule while ${selectedReportType.label} formulas are being modularized.`,
+    key: "sars-cov-2-final-report",
+    title: "SARS-CoV-2 Final Report Formula",
+    pathogenLabel: "SARS-CoV-2",
+    reportType: "finalReport",
+    enabled: true,
+    statusLabel: "Enabled",
+    thresholdCt: 33,
+    minimumPositiveTargets: 2,
+    targets: [
+      { key: "e", label: "E Gene" },
+      { key: "n", label: "N Gene" },
+      { key: "orf1ab", label: "Orf1ab" },
+    ],
+    placeholder: [
+      "IF COUNT(E Gene Ct <= 33, N Gene Ct <= 33, Orf1ab Ct <= 33) >= 2",
+      "THEN SARS-CoV-2 = Positive",
+      "ELSE SARS-CoV-2 = Negative",
+    ].join("\n"),
   };
 }
 
 function renderFormulaBook() {
-  const sections = getFormulaBookSections();
-  if (!sections.some((item) => item.key === formulaBookSection)) {
-    formulaBookSection = sections[0]?.key || "report-formulas";
-  }
-
-  const reportTypeOptions = getFormulaBookReportTypeOptions();
-  if (formulaBookReportType && !reportTypeOptions.some((item) => item.key === formulaBookReportType)) {
-    formulaBookReportType = "";
-  }
-
-  const reportReference = formulaBookSection === "report-formulas"
-    ? getFormulaBookReportReference(formulaBookReportType)
-    : null;
-  const formulaConfig = reportReference?.formula || getSarsCov2FinalReportFormulaConfig();
-
-  panelBody.innerHTML = `
-    <section class="master-registry-page formula-book-page">
-      <div class="mr-tabs" role="tablist" aria-label="Formula Book Sections">
-        ${sections.map((section) => `
-          <button
-            type="button"
-            class="mr-tab ${section.key === formulaBookSection ? "active" : ""}"
-            data-formula-book-section="${escapeHtml(section.key)}"
-            aria-selected="${section.key === formulaBookSection ? "true" : "false"}"
-          >
-            ${escapeHtml(section.label)}
-          </button>
-        `).join("")}
-      </div>
-
-      <section class="formula-book-card">
-        <div class="formula-book-card-head">
-          <div>
-            <h3>Formula for Reports</h3>
-            <p>Review modular report placeholders before promoting new logic into the live reporting flow.</p>
-          </div>
-          <div class="master-registry-summary">
-            <span class="mr-stat"><strong>${escapeHtml(formulaConfig.pathogenLabel)}</strong><span>Reference Pathogen</span></span>
-            <span class="mr-stat"><strong>&lt;= ${escapeHtml(String(formulaConfig.thresholdCt))}</strong><span>Ct Threshold</span></span>
-            <span class="mr-stat"><strong>${escapeHtml(String(formulaConfig.minimumPositiveTargets))}</strong><span>Targets Required</span></span>
-          </div>
-        </div>
-
-        <div class="master-registry-toolbar mr-toolbar-two formula-book-toolbar">
-          <label class="mr-field">
-            <span>Report Type</span>
-            <select data-formula-book-report-type>
-              <option value="">Select a report type</option>
-              ${reportTypeOptions.map((item) => `
-                <option value="${escapeHtml(item.key)}" ${item.key === formulaBookReportType ? "selected" : ""}>
-                  ${escapeHtml(item.label)}
-                </option>
-              `).join("")}
-            </select>
-          </label>
-          <div class="formula-book-toolbar-copy">
-            <p class="formula-book-helper-label">Reference Output</p>
-            <p class="formula-book-helper-text">Selecting any report type reveals the current SARS-CoV-2 placeholder used as the Final Report reference.</p>
-          </div>
-        </div>
-
-        ${reportReference ? `
-          <div class="master-registry-summary formula-book-meta">
-            <span class="mr-stat"><strong>${escapeHtml(reportReference.selectedReportType.label)}</strong><span>Selected Report</span></span>
-            <span class="mr-stat"><strong>${escapeHtml(formulaConfig.title)}</strong><span>Source Formula</span></span>
-          </div>
-          <label class="mr-field formula-book-placeholder-field">
-            <span>Formula Placeholder</span>
-            <pre class="formula-book-placeholder">${escapeHtml(reportReference.placeholder)}</pre>
-          </label>
-          <p class="formula-book-note">${escapeHtml(reportReference.note)}</p>
-        ` : `
+  const api = getFormulaBookApi();
+  if (!api?.renderFormulaBookView) {
+    panelBody.innerHTML = `
+      <section class="master-registry-page formula-book-page">
+        <section class="formula-book-card">
           <section class="formula-book-empty">
-            <h4>Select a report type</h4>
-            <p>Choose Generate Report, Summary Report, or Final Report to view the current SARS-CoV-2 formula placeholder.</p>
+            <h4>Formula Book is unavailable</h4>
+            <p>The Formula Book module could not be loaded. Refresh the page and try again.</p>
           </section>
-        `}
+        </section>
       </section>
-    </section>
-  `;
+    `;
+    return;
+  }
 
-  Array.from(panelBody.querySelectorAll("[data-formula-book-section]")).forEach((button) => {
-    button.addEventListener("click", () => {
-      formulaBookSection = button.getAttribute("data-formula-book-section") || "report-formulas";
+  const nextState = api.renderFormulaBookView({
+    panelBody,
+    state: formulaBookState,
+    escapeHtml,
+    onStateChange(updatedState) {
+      formulaBookState = { ...formulaBookState, ...updatedState };
       renderFormulaBook();
-    });
+    },
   });
 
-  panelBody.querySelector("[data-formula-book-report-type]")?.addEventListener("change", (event) => {
-    formulaBookReportType = String(event.target?.value || "");
-    renderFormulaBook();
-  });
+  if (nextState && typeof nextState === "object") {
+    formulaBookState = { ...formulaBookState, ...nextState };
+  }
 }
 
 function renderOutputResults() {
@@ -11554,7 +11439,9 @@ function renderOrderHistory(initialTab = "all-orders") {
     const reportTitle = variant === "final" ? "Final Report" : "Summary Report";
     const reportSectionTitle = variant === "final" ? "Final Lab Report" : "Summary Lab Report";
     const headerVariant = variant === "final" ? "final-summary" : "default";
-    const applyRespiratorySarsRule = variant === "final" && isRespiratoryPathogensPanel(context.panelName);
+    const applyRespiratorySarsRule = variant === "final"
+      && isRespiratoryPathogensPanel(context.panelName)
+      && isSarsCov2FinalReportFormulaEnabled();
     const finalRuleResult = applyRespiratorySarsRule ? buildFinalSarsCov2RuleResult(context.report?.detailed) : null;
     const detectedPathogens = applyRespiratorySarsRule
       ? buildFinalSarsCov2DetectedPathogens(context.detectedPathogens, finalRuleResult)

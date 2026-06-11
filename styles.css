@@ -4963,6 +4963,11 @@ body.modal-open {
   min-height: 100%;
 }
 
+.formula-book-activation-toggle {
+  justify-self: start;
+  margin-top: 4px;
+}
+
 .formula-book-helper-label {
   margin: 0;
   font-size: 0.82rem;
@@ -4982,6 +4987,21 @@ body.modal-open {
   gap: 10px;
 }
 
+.formula-book-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.formula-book-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
 .formula-book-placeholder-field {
   gap: 8px;
 }
@@ -4997,6 +5017,64 @@ body.modal-open {
   font-size: 0.95rem;
   line-height: 1.6;
   white-space: pre-wrap;
+}
+
+.formula-book-logic-card {
+  border: 1px solid #d5deea;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f7fbff 0%, #eef5fb 100%);
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.formula-book-logic-head {
+  display: grid;
+  gap: 6px;
+}
+
+.formula-book-logic-head h4 {
+  margin: 0;
+  color: #1f3650;
+  font-size: 1.05rem;
+}
+
+.formula-book-logic-head p {
+  margin: 0;
+  color: #56708a;
+  line-height: 1.5;
+}
+
+.formula-book-logic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.formula-book-logic-section {
+  display: grid;
+  gap: 8px;
+}
+
+.formula-book-logic-label {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #48637e;
+}
+
+.formula-book-logic-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: #1f3650;
+}
+
+.formula-book-logic-list li {
+  line-height: 1.45;
 }
 
 .formula-book-note {
@@ -5024,6 +5102,13 @@ body.modal-open {
 
 .formula-book-empty p {
   margin-top: 6px;
+}
+
+@media (max-width: 980px) {
+  .formula-book-detail-grid,
+  .formula-book-logic-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pm-editor {
