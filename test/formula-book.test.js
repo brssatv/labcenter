@@ -3,11 +3,14 @@ const assert = require("node:assert/strict");
 
 const reportFormulasApi = require("../assets/report-formulas.js");
 globalThis.LabCenterReportFormulas = reportFormulasApi;
+const formulaPlaygroundApi = require("../assets/formula-playground.js");
+globalThis.LabCenterFormulaPlayground = formulaPlaygroundApi;
 
 const {
   setSarsCov2FinalReportFormulaEnabled,
   resetFormulaSettings,
 } = reportFormulasApi;
+const { resetFormulaPlaygroundDraft } = formulaPlaygroundApi;
 
 const {
   createDefaultFormulaBookState,
@@ -18,6 +21,7 @@ const {
 
 test.afterEach(() => {
   resetFormulaSettings();
+  resetFormulaPlaygroundDraft();
 });
 
 test("formula book default state starts on reports with no selected type", () => {
@@ -62,6 +66,10 @@ test("formula book markup includes the live toggle and display logic alongside t
   assert.match(markup, /Report Display Logic/);
   assert.match(markup, /Report Output/);
   assert.match(markup, /Enabled/);
+  assert.match(markup, /Simple Formula Tester/);
+  assert.match(markup, /Data Input/);
+  assert.match(markup, /Formula Expression/);
+  assert.match(markup, /Processed Output/);
 });
 
 test("formula book config accessor stays aligned with the live final formula", () => {

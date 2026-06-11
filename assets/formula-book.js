@@ -5,6 +5,8 @@
   }
   root.LabCenterFormulaBook = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, (root) => {
+  let pendingFocusDescriptor = null;
+
   function defaultEscapeHtml(value) {
     return String(value === null || value === undefined ? "" : value)
       .replaceAll("&", "&amp;")
@@ -15,6 +17,47 @@
 
   function getReportFormulasApi() {
     return root?.LabCenterReportFormulas || null;
+  }
+
+  function getFormulaPlaygroundApi() {
+    return root?.LabCenterFormulaPlayground || null;
+  }
+
+  function captureFocusDescriptor(node) {
+    if (!node || typeof node.matches !== "function") return null;
+    if (node.matches("[data-formula-playground-data-input]")) {
+      return {
+        selector: "[data-formula-playground-data-input]",
+        selectionStart: node.selectionStart,
+        selectionEnd: node.selectionEnd,
+      };
+    }
+    if (node.matches("[data-formula-playground-expression]")) {
+      return {
+        selector: "[data-formula-playground-expression]",
+        selectionStart: node.selectionStart,
+        selectionEnd: node.selectionEnd,
+      };
+    }
+    return null;
+  }
+
+  function restorePendingFocus(panelBody) {
+    if (!pendingFocusDescriptor?.selector) return;
+    const node = panelBody.querySelector(pendingFocusDescriptor.selector);
+    if (!node || typeof node.focus !== "function") {
+      pendingFocusDescriptor = null;
+      return;
+    }
+    node.focus();
+    if (
+      typeof node.setSelectionRange === "function"
+      && typeof pendingFocusDescriptor.selectionStart === "number"
+      && typeof pendingFocusDescriptor.selectionEnd === "number"
+    ) {
+      node.setSelectionRange(pendingFocusDescriptor.selectionStart, pendingFocusDescriptor.selectionEnd);
+    }
+    pendingFocusDescriptor = null;
   }
 
   function createDefaultFormulaBookState() {
@@ -165,6 +208,84 @@
     };
   }
 
+  function buildFormulaPlaygroundMarkup(playgroundPreview, escapeHtml = defaultEscapeHtml) {
+    if (!playgroundPreview) return "";
+
+    return `
+      <section class="formula-playground-card">
+        <div class="formula-playground-head">
+          <div>
+            <p class="formula-book-helper-label">Interactive Playground</p>
+            <h4>Simple Formula Tester</h4>
+            <p>Enter sample data, edit the formula, and review the processed output live.</p>
+          </div>
+          <div class="formula-playground-actions">
+            <button type="button" class="btn-ghost" data-formula-playground-reset>Reset Draft</button>
+          </div>
+        </div>
+
+        <div class="formula-playground-stack">
+          <label class="mr-field formula-playground-box">
+            <span>Data Input</span>
+            <textarea
+              rows="14"
+              class="formula-playground-editor"
+              data-formula-playground-data-input
+            >${escapeHtml(playgroundPreview.draft.dataInput)}</textarea>
+            <p class="formula-playground-box-note">Enter sample genes, organisms, and pathogens in JSON format.</p>
+          </label>
+
+          <label class="mr-field formula-playground-box">
+            <span>Formula Expression</span>
+            <textarea
+              rows="9"
+              class="formula-playground-editor"
+              data-formula-playground-expression
+            >${escapeHtml(playgroundPreview.draft.formulaExpression)}</textarea>
+            <div class="formula-playground-token-bank">
+              ${playgroundPreview.helperTokens.map((token) => `
+                <span class="mr-stat"><strong>${escapeHtml(token)}</strong><span>Supported Token</span></span>
+              `).join("")}
+            </div>
+          </label>
+
+          <section class="formula-playground-box formula-playground-output-box">
+            <div class="formula-playground-output-head">
+              <span class="formula-playground-output-label">Processed Output</span>
+              <span class="mr-stat"><strong>${escapeHtml(playgroundPreview.formulaResult.status || "Preview")}</strong><span>Formula Result</span></span>
+            </div>
+
+            ${playgroundPreview.dataError
+              ? `
+                  <div class="formula-playground-feedback formula-playground-feedback-error">
+                    <strong>Data Error</strong>
+                    <p>${escapeHtml(playgroundPreview.dataError)}</p>
+                  </div>
+                `
+              : ""}
+
+            ${playgroundPreview.formulaResult.error && !playgroundPreview.dataError
+              ? `
+                  <div class="formula-playground-feedback formula-playground-feedback-error">
+                    <strong>Formula Error</strong>
+                    <p>${escapeHtml(playgroundPreview.formulaResult.error)}</p>
+                  </div>
+                `
+              : `
+                  <div class="formula-playground-feedback">
+                    <strong>Evaluated Formula</strong>
+                    <p>${escapeHtml(playgroundPreview.formulaResult.displayValue || "Empty result")}</p>
+                  </div>
+                `}
+
+            <pre class="formula-playground-output-preview">${escapeHtml(playgroundPreview.outputText)}</pre>
+            <p class="formula-book-note formula-playground-note">Preview only: this box shows the processed result generated from the current sample data and formula.</p>
+          </section>
+        </div>
+      </section>
+    `;
+  }
+
   function buildFormulaBookViewModel(state) {
     const normalized = normalizeFormulaBookState(state);
     const reportReference = normalized.state.section === "report-formulas"
@@ -176,12 +297,16 @@
     const displayLogic = reportReference?.displayLogic && typeof reportReference.displayLogic === "object"
       ? reportReference.displayLogic
       : null;
+    const formulaPlayground = normalized.state.reportType === "finalReport" && reportReference?.configured
+      ? getFormulaPlaygroundApi()?.buildFormulaPlaygroundPreview?.()
+      : null;
 
     return {
       ...normalized,
       reportReference,
       formulaConfig,
       displayLogic,
+      formulaPlayground,
     };
   }
 
@@ -274,6 +399,7 @@
               </label>
               ${formulaBookDisplayLogicMarkup}
             </div>
+            ${buildFormulaPlaygroundMarkup(viewModel.formulaPlayground, escapeHtml)}
             <p class="formula-book-note">${escapeHtml(viewModel.reportReference.note)}</p>
           `
         : `
@@ -370,6 +496,46 @@
         ...viewModel.state,
       });
     });
+
+    const playgroundApi = getFormulaPlaygroundApi();
+    panelBody.querySelector("[data-formula-playground-reset]")?.addEventListener("click", () => {
+      playgroundApi?.resetFormulaPlaygroundDraft?.();
+      onStateChange({
+        ...viewModel.state,
+      });
+    });
+
+    panelBody.querySelector("[data-formula-playground-data-input]")?.addEventListener("input", (event) => {
+      if (typeof playgroundApi?.readFormulaPlaygroundDraft !== "function" || typeof playgroundApi?.writeFormulaPlaygroundDraft !== "function") {
+        return;
+      }
+      const currentDraft = playgroundApi.readFormulaPlaygroundDraft();
+      pendingFocusDescriptor = captureFocusDescriptor(event.target);
+      playgroundApi.writeFormulaPlaygroundDraft({
+        ...currentDraft,
+        dataInput: String(event.target?.value || ""),
+      });
+      onStateChange({
+        ...viewModel.state,
+      });
+    });
+
+    panelBody.querySelector("[data-formula-playground-expression]")?.addEventListener("input", (event) => {
+      if (typeof playgroundApi?.readFormulaPlaygroundDraft !== "function" || typeof playgroundApi?.writeFormulaPlaygroundDraft !== "function") {
+        return;
+      }
+      const currentDraft = playgroundApi.readFormulaPlaygroundDraft();
+      pendingFocusDescriptor = captureFocusDescriptor(event.target);
+      playgroundApi.writeFormulaPlaygroundDraft({
+        ...currentDraft,
+        formulaExpression: String(event.target?.value || ""),
+      });
+      onStateChange({
+        ...viewModel.state,
+      });
+    });
+
+    restorePendingFocus(panelBody);
 
     return viewModel.state;
   }

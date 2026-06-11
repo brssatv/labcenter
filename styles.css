@@ -5086,6 +5086,142 @@ body.modal-open {
   color: #48637e;
 }
 
+.formula-playground-card {
+  border: 1px solid #d8e3ef;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f5f9fd 100%);
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.formula-playground-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.formula-playground-head h4 {
+  margin: 0;
+  color: #1f3650;
+  font-size: 1.05rem;
+}
+
+.formula-playground-head p {
+  margin: 4px 0 0;
+  color: #56708a;
+  line-height: 1.5;
+}
+
+.formula-playground-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.formula-playground-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.formula-playground-box {
+  border: 1px solid #d7e1eb;
+  border-radius: 12px;
+  background: #fff;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.formula-playground-editor {
+  resize: vertical;
+  border: 1px solid #cfd8e4;
+  border-radius: 12px;
+  background: #f8fbfe;
+  padding: 12px 14px;
+  color: #1f3650;
+  font: 0.95rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.formula-playground-editor:focus {
+  outline: 0;
+  border-color: #8cb0d6;
+  box-shadow: 0 0 0 3px rgba(116, 153, 194, 0.14);
+}
+
+.formula-playground-box-note {
+  margin: 0;
+  color: #56708a;
+  line-height: 1.45;
+}
+
+.formula-playground-token-bank {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.formula-playground-feedback {
+  border: 1px solid #d7e1eb;
+  border-radius: 12px;
+  background: #f8fbfe;
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
+  color: #23415e;
+}
+
+.formula-playground-feedback strong {
+  font-size: 0.92rem;
+}
+
+.formula-playground-feedback p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.formula-playground-feedback-error {
+  border-color: #efc3c3;
+  background: #fff7f7;
+  color: #8b2a2a;
+}
+
+.formula-playground-output-box {
+  gap: 12px;
+}
+
+.formula-playground-output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.formula-playground-output-label {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #23415e;
+}
+
+.formula-playground-output-preview {
+  margin: 0;
+  border: 1px solid #d7e1eb;
+  border-radius: 12px;
+  background: #f8fbfe;
+  padding: 14px;
+  color: #1f3650;
+  font: 0.94rem/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.formula-playground-note {
+  margin-top: 2px;
+}
+
 .formula-book-empty {
   border: 1px dashed #c3d3e4;
   border-radius: 12px;
