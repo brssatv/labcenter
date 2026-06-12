@@ -550,6 +550,7 @@ test("PharmD manual receipt check stores a matched pharmd-pdf2 file for the orde
   assert.equal(storedOrder?.pharmd?.sendStatus, "received");
   assert.equal(storedOrder?.pharmd?.deliveryStatus, "received");
   assert.equal(storedOrder?.pharmd?.reportReceivedAccession, accessionNo);
+  assert.equal(storedOrder?.pharmd?.reportReceivedMatchedBy, "accession");
   assert.equal(storedOrder?.pharmd?.reportReceivedFileName, `${accessionNo}_PharmD_Report.pdf`);
   assert.equal(storedOrder?.pharmd?.reportReceivedRemotePath, `pharmd-pdf2/${accessionNo}_PharmD_Report.pdf`);
   assert.ok(storedOrder?.pharmd?.reportReceivedAt);
@@ -562,6 +563,72 @@ test("PharmD manual receipt check stores a matched pharmd-pdf2 file for the orde
     fs.readFileSync(path.join(harness.dataDir, storedOrder.pharmd.receivedReport.key), "utf8"),
     "%PDF-pharmd-report"
   );
+});
+
+test("PharmD manual receipt check falls back to the order number when the accession is not in the filename", async (t) => {
+  const accessionNo = "UT1504202600004";
+  const sftpServer = await startTestSftpServer({
+    username: "labuser",
+    password: "top-secret",
+    remoteDir: "oru",
+    seededFiles: {
+      "pharmd-pdf2/Order_00001_Processed_Report.pdf": "%PDF-pharmd-order-fallback",
+    },
+  });
+  t.after(async () => {
+    await sftpServer.close();
+  });
+
+  const harness = await startPharmdHarness({
+    PHARMD_SFTP_HOST: "127.0.0.1",
+    PHARMD_SFTP_PORT: String(sftpServer.port),
+    PHARMD_SFTP_USERNAME: "labuser",
+    PHARMD_SFTP_PASSWORD: "top-secret",
+    PHARMD_SFTP_ORU_DIR: "oru",
+    PHARMD_SFTP_PDF_DIR: "pharmd-pdf2",
+    PHARMD_SFTP_TIMEOUT_SEC: "10",
+  }, {
+    orderId: "00001",
+    accessionNo,
+    pharmd: {
+      oruMessage: "MSH|^~\\&|LabCenter|Clinic|PharmD|CPD|20260601080000||ORU^R01|CTRL-4|P|2.5.1",
+      messageFileName: `${accessionNo}_PharmD_ORU.hl7`,
+      sentAt: "2026-06-01T08:30:00.000Z",
+      sendStatus: "sent",
+      remotePath: `oru/${accessionNo}_PharmD_ORU.hl7`,
+      receiptRemoteDir: "pharmd-pdf2",
+      receiptIntervalSec: 1200,
+      receiptMaxChecks: 5,
+      receiptNextCheckAt: "2026-06-01T08:50:00.000Z",
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/pharmd/orders/00001/check`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+
+  assert.equal(payload.ok, true);
+  assert.equal(payload.found, true);
+  assert.equal(payload.summary?.checkedOrders, 1);
+  assert.equal(payload.summary?.matchedOrders, 1);
+
+  const storedOrder = harness.portalStore.getOrderById("00001");
+  assert.equal(storedOrder?.pharmd?.sendStatus, "received");
+  assert.equal(storedOrder?.pharmd?.reportReceivedAccession, accessionNo);
+  assert.equal(storedOrder?.pharmd?.reportReceivedMatchedBy, "order_id");
+  assert.equal(storedOrder?.pharmd?.reportReceivedFileName, "Order_00001_Processed_Report.pdf");
+  assert.equal(storedOrder?.pharmd?.reportReceivedRemotePath, "pharmd-pdf2/Order_00001_Processed_Report.pdf");
 });
 
 test("PharmD auto receipt polling stops after five misses and manual checks can still retry later", async (t) => {

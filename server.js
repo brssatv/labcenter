@@ -1715,18 +1715,34 @@ function resolvePharmdReceiptFileName(entry) {
   return String(entry?.filename || "").trim();
 }
 
-function resolvePharmdReceiptMatch(entries, accession) {
-  const accessionKey = normalizeMatchKey(accession);
-  if (!accessionKey) return null;
-  const matches = (Array.isArray(entries) ? entries : [])
-    .filter((entry) => normalizeMatchKey(resolvePharmdReceiptFileName(entry)).includes(accessionKey));
-  if (!matches.length) return null;
-  matches.sort((left, right) => {
-    const leftMtime = Number(left?.attrs?.mtime || 0);
-    const rightMtime = Number(right?.attrs?.mtime || 0);
-    return rightMtime - leftMtime;
-  });
-  return matches[0];
+function resolvePharmdReceiptMatch(entries, order) {
+  const candidates = [
+    {
+      key: normalizeMatchKey(resolvePharmdAccession(order)),
+      matchedBy: "accession",
+    },
+    {
+      key: normalizeMatchKey(order?.orderId),
+      matchedBy: "order_id",
+    },
+  ].filter((candidate, index, array) => candidate.key && array.findIndex((item) => item.key === candidate.key) === index);
+
+  for (const candidate of candidates) {
+    const matches = (Array.isArray(entries) ? entries : [])
+      .filter((entry) => normalizeMatchKey(resolvePharmdReceiptFileName(entry)).includes(candidate.key));
+    if (!matches.length) continue;
+    matches.sort((left, right) => {
+      const leftMtime = Number(left?.attrs?.mtime || 0);
+      const rightMtime = Number(right?.attrs?.mtime || 0);
+      return rightMtime - leftMtime;
+    });
+    return {
+      entry: matches[0],
+      matchedBy: candidate.matchedBy,
+      matchValue: candidate.key,
+    };
+  }
+  return null;
 }
 
 function resolvePharmdReceiptTimestamp(entry) {
@@ -1901,7 +1917,7 @@ async function pollPharmdReceiptFolderOnce({
     const updates = [];
     for (const order of pendingOrders) {
       const accession = resolvePharmdAccession(order);
-      const match = resolvePharmdReceiptMatch(entries, accession);
+      const match = resolvePharmdReceiptMatch(entries, order);
       const current = store.getOrderById(order.orderId) || order;
       const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
       if (hasReceivedReceipt(existingPharmd)) continue;
@@ -1940,8 +1956,8 @@ async function pollPharmdReceiptFolderOnce({
         continue;
       }
 
-      const fileName = resolvePharmdReceiptFileName(match);
-      const receivedAt = resolvePharmdReceiptTimestamp(match);
+      const fileName = resolvePharmdReceiptFileName(match.entry);
+      const receivedAt = resolvePharmdReceiptTimestamp(match.entry);
       const remotePath = buildPharmdRemotePath(pdfDir, fileName);
       try {
         const fileBuffer = await downloadPharmdFileBuffer(sftp, remotePath);
@@ -1958,6 +1974,7 @@ async function pollPharmdReceiptFolderOnce({
           fileName,
           remotePath,
           accession,
+          matchedBy: match.matchedBy,
           storedFile: {
             ...storedFile,
             remotePath,
@@ -1974,8 +1991,9 @@ async function pollPharmdReceiptFolderOnce({
             ...existingPharmd,
             ...matchPatch,
             logs: mergePharmdLogs(existingPharmd.logs, [
-              createPharmdLogEntry("success", "receive", `PharmD return file stored: ${fileName}.`, {
+            createPharmdLogEntry("success", "receive", `PharmD return file stored: ${fileName}.`, {
                 accessionNo: accession,
+                matchedBy: match.matchedBy,
                 remotePath,
                 receivedAt,
                 storageKey: storedFile.key,

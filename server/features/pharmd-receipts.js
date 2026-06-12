@@ -96,6 +96,7 @@ function initializeReceiptTracking(existingPharmd, config = {}, sentAt = new Dat
     reportReceivedFileName: "",
     reportReceivedRemotePath: "",
     reportReceivedAccession: "",
+    reportReceivedMatchedBy: "",
     reportReceivedSource: "",
     receivedReport: null,
   };
@@ -205,6 +206,7 @@ function applyReceiptMatch(existingPharmd, config = {}, {
   fileName = "",
   remotePath = "",
   accession = "",
+  matchedBy = "",
   storedFile = null,
   source = "pharmd_sftp_poll",
   mode = "auto",
@@ -221,6 +223,7 @@ function applyReceiptMatch(existingPharmd, config = {}, {
     reportReceivedFileName: String(fileName || "").trim(),
     reportReceivedRemotePath: String(remotePath || "").trim(),
     reportReceivedAccession: String(accession || "").trim(),
+    reportReceivedMatchedBy: String(matchedBy || "").trim(),
     reportReceivedSource: String(source || "").trim() || "pharmd_sftp_poll",
     receivedReport: storedFile && typeof storedFile === "object" ? storedFile : null,
     receiptAutoCheckCount: mode === "auto" ? state.autoCheckCount + 1 : state.autoCheckCount,
