@@ -546,6 +546,15 @@ test("PharmD manual receipt check stores a matched pharmd-pdf2 file for the orde
   assert.equal(payload.summary?.checkedOrders, 1);
   assert.equal(payload.summary?.matchedOrders, 1);
 
+  const previewResponse = await fetch(`${harness.baseUrl}/api/pharmd/orders/00001/receipt-file`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+  assert.equal(previewResponse.status, 200);
+  assert.equal(previewResponse.headers.get("content-type"), "application/pdf");
+  assert.equal(await previewResponse.text(), "%PDF-pharmd-report");
+
   const storedOrder = harness.portalStore.getOrderById("00001");
   assert.equal(storedOrder?.pharmd?.sendStatus, "received");
   assert.equal(storedOrder?.pharmd?.deliveryStatus, "received");

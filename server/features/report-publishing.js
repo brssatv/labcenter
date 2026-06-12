@@ -14,6 +14,23 @@ function sanitizeReportPdfFileName(value) {
   return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : `${cleaned}.pdf`;
 }
 
+function sanitizeStoredFileName(value, fallbackBase = "document", fallbackExt = ".bin") {
+  const raw = String(value || "").trim();
+  const rawExt = path.extname(raw).toLowerCase();
+  const rawBase = path.basename(raw, rawExt);
+  const cleanedBase = rawBase
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120);
+  const cleanedExt = rawExt
+    .replace(/[^a-z0-9.]+/g, "")
+    .slice(0, 16);
+  if (!cleanedBase) {
+    return `${fallbackBase}_${Date.now()}${cleanedExt || fallbackExt}`;
+  }
+  return `${cleanedBase}${cleanedExt || fallbackExt}`;
+}
+
 function createStatusError(message, statusCode) {
   const error = new Error(message);
   error.statusCode = statusCode;
@@ -159,53 +176,58 @@ async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orde
   return generatedAt;
 }
 
-async function loadGeneratedReportBuffer(generatedReport, dependencies) {
+async function loadStoredPortalFileBuffer(storedFile, dependencies, messages = {}) {
   const {
     resolveLocalReportStoragePath,
     isLocalGeneratedReportRecord,
     s3Storage,
   } = dependencies;
+  const {
+    notFoundMessage = "Stored file not found.",
+    loadFailedMessage = "Stored file could not be loaded.",
+    serviceUnavailableMessage = "S3 file storage is not configured for this environment.",
+  } = messages;
 
-  const bucket = String(generatedReport?.bucket || "").trim();
-  const key = String(generatedReport?.key || "").trim();
+  const bucket = String(storedFile?.bucket || "").trim();
+  const key = String(storedFile?.key || "").trim();
   if (!bucket || !key) {
-    throw createStatusError("Saved final report PDF not found for this order.", 404);
+    throw createStatusError(notFoundMessage, 404);
   }
 
-  if (isLocalGeneratedReportRecord(generatedReport)) {
+  if (isLocalGeneratedReportRecord(storedFile)) {
     const localReportPath = resolveLocalReportStoragePath(key);
     if (!localReportPath || !fs.existsSync(localReportPath)) {
-      throw createStatusError("Saved final report PDF could not be loaded.", 404);
+      throw createStatusError(loadFailedMessage, 404);
     }
     const storedReport = fs.readFileSync(localReportPath);
     if (!storedReport?.length) {
-      throw createStatusError("Saved final report PDF could not be loaded.", 404);
+      throw createStatusError(loadFailedMessage, 404);
     }
     return {
       buffer: storedReport,
       bucket,
       key,
-      contentType: generatedReport?.mimeType || "application/pdf",
-      contentDisposition: generatedReport?.fileName ? `inline; filename="${sanitizeReportPdfFileName(generatedReport.fileName)}"` : "",
+      contentType: storedFile?.mimeType || "application/octet-stream",
+      contentDisposition: storedFile?.fileName ? `inline; filename="${sanitizeStoredFileName(storedFile.fileName)}"` : "",
       contentLength: storedReport.length,
       storageType: "local",
     };
   }
 
   if (!s3Storage.enabled) {
-    throw createStatusError("S3 report storage is not configured for this environment.", 503);
+    throw createStatusError(serviceUnavailableMessage, 503);
   }
 
   const storedReport = await s3Storage.downloadBuffer({ bucket, key });
   if (!storedReport?.body?.length) {
-    throw createStatusError("Saved final report PDF could not be loaded.", 404);
+    throw createStatusError(loadFailedMessage, 404);
   }
 
   return {
     buffer: storedReport.body,
     bucket,
     key,
-    contentType: storedReport.contentType || generatedReport?.mimeType || "application/pdf",
+    contentType: storedReport.contentType || storedFile?.mimeType || "application/octet-stream",
     contentDisposition: storedReport.contentDisposition || "",
     contentLength: storedReport.contentLength || storedReport.body.length,
     storageType: "s3",
@@ -503,7 +525,11 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       const fileName = sanitizeReportPdfFileName(
         generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`
       );
-      const storedReport = await loadGeneratedReportBuffer(generatedFinal, dependencies);
+      const storedReport = await loadStoredPortalFileBuffer(generatedFinal, dependencies, {
+        notFoundMessage: "Saved final report PDF not found for this order.",
+        loadFailedMessage: "Saved final report PDF could not be loaded.",
+        serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
+      });
 
       auditLog(req, "view_saved_final_report_pdf", "success", {
         orderId,
@@ -527,6 +553,56 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       });
       return res.status(Number(error?.statusCode) || 500).json({
         error: error?.message || "Unable to load saved final report PDF.",
+      });
+    }
+  });
+
+  app.get("/api/pharmd/orders/:orderId/receipt-file", requireAuthenticatedUser, async (req, res) => {
+    try {
+      const orderId = String(req.params.orderId || "").trim();
+      if (!orderId) {
+        return res.status(400).json({ error: "Order ID is required." });
+      }
+
+      const existingOrder = portalStore.getOrderById(orderId);
+      if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+
+      const receivedReport = existingOrder?.pharmd?.receivedReport;
+      const fileName = sanitizeStoredFileName(
+        receivedReport?.fileName || existingOrder?.pharmd?.reportReceivedFileName || `Order_${orderId}_PharmD_Receipt.pdf`,
+        "pharmd_receipt",
+        ".pdf"
+      );
+      const storedFile = await loadStoredPortalFileBuffer(receivedReport, dependencies, {
+        notFoundMessage: "PharmD return file not found for this order.",
+        loadFailedMessage: "PharmD return file could not be loaded.",
+        serviceUnavailableMessage: "S3 file storage is not configured for this environment.",
+      });
+
+      auditLog(req, "view_pharmd_receipt_file", "success", {
+        orderId,
+        bucket: storedFile.bucket,
+        key: storedFile.key,
+        storageType: storedFile.storageType,
+        bytes: storedFile.buffer.length,
+      });
+
+      res.setHeader("Content-Type", storedFile.contentType || "application/pdf");
+      res.setHeader("Content-Disposition", storedFile.contentDisposition || `inline; filename="${fileName}"`);
+      res.setHeader("Cache-Control", "private, max-age=0, no-store");
+      if (storedFile.contentLength) {
+        res.setHeader("Content-Length", String(storedFile.contentLength));
+      }
+      return res.send(storedFile.buffer);
+    } catch (error) {
+      auditLog(req, "view_pharmd_receipt_file", "failed", {
+        orderId: String(req.params.orderId || ""),
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(Number(error?.statusCode) || 500).json({
+        error: error?.message || "Unable to load PharmD return file.",
       });
     }
   });
@@ -684,7 +760,11 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     );
 
     try {
-      const storedReport = await loadGeneratedReportBuffer(generatedFinal, dependencies);
+      const storedReport = await loadStoredPortalFileBuffer(generatedFinal, dependencies, {
+        notFoundMessage: "Saved final report PDF not found for this order.",
+        loadFailedMessage: "Saved final report PDF could not be loaded.",
+        serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
+      });
       let faxResult = null;
 
       if (publishFaxMode === "disabled") {

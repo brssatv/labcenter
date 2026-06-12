@@ -3092,6 +3092,28 @@ function resolvePharmdReportReceivedAt(order) {
     || "";
 }
 
+function resolvePharmdReceivedFileRecord(order) {
+  return order?.pharmd?.receivedReport && typeof order.pharmd.receivedReport === "object"
+    ? order.pharmd.receivedReport
+    : null;
+}
+
+function resolvePharmdReceivedFileName(order) {
+  return String(
+    order?.pharmd?.receivedReport?.fileName
+    || order?.pharmd?.reportReceivedFileName
+    || ""
+  ).trim();
+}
+
+function hasPharmdReceivedFile(order) {
+  const record = resolvePharmdReceivedFileRecord(order);
+  return Boolean(
+    String(record?.bucket || "").trim()
+    && String(record?.key || "").trim()
+  );
+}
+
 function resolvePharmdMessageFileName(order) {
   const explicit = String(
     order?.pharmd?.messageFileName
@@ -8976,6 +8998,7 @@ function renderOutputResults() {
   const publishFaxDisplayNumber = "352-565-4554";
   const sendingPharmdOrders = new Set();
   const checkingPharmdOrders = new Set();
+  const openingPharmdReceiptOrders = new Set();
   const publishingFaxOrders = new Set();
   const workflowSavingOrders = new Set();
   const previewLoadingOrders = new Set();
@@ -9449,6 +9472,55 @@ function renderOutputResults() {
     }
   }
 
+  async function openPharmdReceiptPreview(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    if (!hasPharmdReceivedFile(order)) {
+      throw new Error("PharmD return file is not available for this order yet.");
+    }
+
+    const previewWindow = window.open("", "_blank", "popup=yes,width=1080,height=860");
+    if (!previewWindow) {
+      throw new Error("Unable to open preview window. Please allow pop-ups and try again.");
+    }
+    writeLoadingPreviewWindow(
+      previewWindow,
+      `Order #${order?.orderId || "-"} PharmD File`,
+      `Loading the fetched PharmD file for Order #${order?.orderId || "-"}.`
+    );
+
+    try {
+      const response = await fetch(`/api/pharmd/orders/${encodeURIComponent(orderId)}/receipt-file`, {
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        let errorMessage = "Unable to load the PharmD return file.";
+        try {
+          const payload = await response.json();
+          errorMessage = String(payload?.error || errorMessage);
+        } catch {
+          const text = await response.text();
+          if (text.trim()) errorMessage = text.trim();
+        }
+        throw new Error(errorMessage);
+      }
+      const blob = await response.blob();
+      if (!blob.size) {
+        throw new Error("The PharmD return file is empty.");
+      }
+      const blobUrl = URL.createObjectURL(blob);
+      previewWindow.location.replace(blobUrl);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60 * 1000);
+    } catch (error) {
+      writePreviewWindowError(
+        previewWindow,
+        "PharmD File Unavailable",
+        error?.message || "Unable to load the PharmD return file."
+      );
+      throw error;
+    }
+  }
+
   async function markOrderComplete(orderId) {
     const order = findOrderById(orderId);
     if (!order) throw new Error("Order not found.");
@@ -9536,6 +9608,7 @@ function renderOutputResults() {
             <th>HL7 Message</th>
             <th>Queued / Sent</th>
             <th>Report Received</th>
+            <th>PharmD File</th>
             <th>Skip PharmD</th>
             <th>Validate</th>
             <th>Mark as Complete</th>
@@ -9549,8 +9622,10 @@ function renderOutputResults() {
               const message = resolvePharmdOruMessage(row);
               const hasMessage = Boolean(message);
               const fileName = resolvePharmdMessageFileName(row);
+              const receivedFileName = resolvePharmdReceivedFileName(row);
               const skipEnabled = isPharmdSkipped(row);
               const hasSavedFinal = hasSavedFinalReport(row);
+              const hasReceivedFile = hasPharmdReceivedFile(row);
               const canValidate = hasSavedFinal && canValidatePharmdFinalReport(row);
               const pharmdStatusToken = String(
                 row?.pharmd?.sendStatus
@@ -9560,6 +9635,7 @@ function renderOutputResults() {
               ).trim().toLowerCase();
               const isSending = sendingPharmdOrders.has(orderId);
               const isChecking = checkingPharmdOrders.has(orderId);
+              const isOpeningReceipt = openingPharmdReceiptOrders.has(orderId);
               const isWorkflowSaving = workflowSavingOrders.has(orderId);
               const isPreviewLoading = previewLoadingOrders.has(orderId);
               const sendDisabled = !hasMessage || isSending || isWorkflowSaving || skipEnabled;
@@ -9644,6 +9720,19 @@ function renderOutputResults() {
                   </td>
                   <td>${escapeHtml(formatOutputDate(resolvePharmdQueuedOrSentAt(row)))}</td>
                   <td>${escapeHtml(formatOutputDate(resolvePharmdReportReceivedAt(row)))}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class="table-action-btn"
+                      data-view-pharmd-receipt="${escapeHtml(orderId)}"
+                      ${hasReceivedFile && !isOpeningReceipt ? "" : "disabled"}
+                    >
+                      ${isOpeningReceipt ? "Opening..." : "View File"}
+                    </button>
+                    <div class="subtle output-results-inline-note">
+                      ${hasReceivedFile ? escapeHtml(receivedFileName || "Stored PharmD return file") : "No PharmD file stored yet."}
+                    </div>
+                  </td>
                   <td>
                     <button
                       type="button"
@@ -9817,6 +9906,23 @@ function renderOutputResults() {
         })
         .finally(() => {
           checkingPharmdOrders.delete(orderId);
+          renderOutputResultsTable();
+        });
+      return;
+    }
+
+    const receiptBtn = event.target.closest("[data-view-pharmd-receipt]");
+    if (receiptBtn) {
+      const orderId = String(receiptBtn.getAttribute("data-view-pharmd-receipt") || "").trim();
+      if (!orderId || openingPharmdReceiptOrders.has(orderId)) return;
+      openingPharmdReceiptOrders.add(orderId);
+      renderOutputResultsTable();
+      openPharmdReceiptPreview(orderId)
+        .catch((error) => {
+          alert(error?.message || "Unable to open the PharmD return file.");
+        })
+        .finally(() => {
+          openingPharmdReceiptOrders.delete(orderId);
           renderOutputResultsTable();
         });
       return;
