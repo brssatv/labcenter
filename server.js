@@ -16,6 +16,7 @@ const { registerPortalWorkflowRoutes } = require("./server/features/portal-workf
 const { registerReportPublishingRoutes } = require("./server/features/report-publishing");
 const { createPortalStore } = require("./lib/portal-store");
 const { buildPatientProfileArtifacts } = require("./lib/patient-profile");
+const { resolvePharmdSftpRuntime } = require("./lib/runtime-binaries");
 const { createS3Storage, sanitizeS3PathSegment } = require("./lib/s3-storage");
 const { extractRequisitionScanData } = require("./lib/requisition-scan");
 require("dotenv").config();
@@ -90,6 +91,8 @@ const PHARMD_SFTP_USERNAME = String(process.env.PHARMD_SFTP_USERNAME || "jays-us
 const PHARMD_SFTP_PASSWORD = String(process.env.PHARMD_SFTP_PASSWORD || "").trim();
 const PHARMD_SFTP_ORU_DIR = String(process.env.PHARMD_SFTP_ORU_DIR || "oru").trim() || "oru";
 const PHARMD_SFTP_TIMEOUT_SEC = Math.max(5, Math.min(120, Math.floor(Number(process.env.PHARMD_SFTP_TIMEOUT_SEC || 30) || 30)));
+const PHARMD_SFTP_EXPECT_BINARY = String(process.env.PHARMD_SFTP_EXPECT_BINARY || "").trim();
+const PHARMD_SFTP_BINARY = String(process.env.PHARMD_SFTP_BINARY || "").trim();
 
 function ensureDir(targetPath) {
   fs.mkdirSync(targetPath, { recursive: true });
@@ -1420,6 +1423,8 @@ function getPharmdSftpConfig() {
     password: PHARMD_SFTP_PASSWORD,
     remoteDir: PHARMD_SFTP_ORU_DIR,
     timeoutSec: PHARMD_SFTP_TIMEOUT_SEC,
+    expectBinary: PHARMD_SFTP_EXPECT_BINARY,
+    sftpBinary: PHARMD_SFTP_BINARY,
   };
 }
 
@@ -1446,6 +1451,15 @@ function parsePharmdExpectMarkers(output) {
     .filter((line) => line.startsWith("@@"));
 }
 
+function buildMissingPharmdRuntimeMessage(missingTools) {
+  const missing = Array.isArray(missingTools) ? missingTools.filter(Boolean) : [];
+  if (!missing.length) {
+    return "PharmD SFTP tools are missing. Install expect and sftp on this machine or set PHARMD_SFTP_EXPECT_BINARY / PHARMD_SFTP_BINARY.";
+  }
+  const toolList = missing.join(" and ");
+  return `PharmD SFTP tools are missing (${toolList}). Install the missing tool${missing.length === 1 ? "" : "s"} on this machine or set PHARMD_SFTP_EXPECT_BINARY / PHARMD_SFTP_BINARY.`;
+}
+
 function buildPharmdSftpExpectScript() {
   return `#!/usr/bin/expect -f
 set host [lindex $argv 0]
@@ -1456,13 +1470,14 @@ set remoteDir [lindex $argv 4]
 set localPath [lindex $argv 5]
 set remoteFile [lindex $argv 6]
 set timeout [lindex $argv 7]
+set sftpBinary [lindex $argv 8]
 
 proc fail {message code} {
   puts "@@ERROR@@$message"
   exit $code
 }
 
-spawn /usr/bin/sftp -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -P $port "$username@$host"
+spawn -- $sftpBinary -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -P $port "$username@$host"
 expect {
   -re "Are you sure you want to continue connecting.*" { send -- "yes\\r"; exp_continue }
   -re "(?i)password:" { send -- "$password\\r"; exp_continue }
@@ -1510,14 +1525,20 @@ function executePharmdSftpUpload({ oruMessage, fileName, config }) {
     const messageText = String(oruMessage || "");
     const safeFileName = sanitizePharmdHl7FileName(fileName);
     const connection = getPharmdSftpPublicConfig(config);
-    const expectBinary = "/usr/bin/expect";
-    const sftpBinary = "/usr/bin/sftp";
+    const runtime = resolvePharmdSftpRuntime({
+      expectBinary: config?.expectBinary,
+      sftpBinary: config?.sftpBinary,
+    });
+    const expectBinary = runtime.expectBinary;
+    const sftpBinary = runtime.sftpBinary;
     const logs = [
       createPharmdLogEntry("info", "prepare", `Preparing PharmD ORU upload for ${safeFileName}.`, {
         host: connection.host,
         port: connection.port,
         username: connection.username,
         remoteDir: connection.remoteDir,
+        expectBinary: expectBinary || String(config?.expectBinary || "").trim(),
+        sftpBinary: sftpBinary || String(config?.sftpBinary || "").trim(),
       }),
     ];
 
@@ -1553,10 +1574,14 @@ function executePharmdSftpUpload({ oruMessage, fileName, config }) {
       return;
     }
 
-    if (!fs.existsSync(expectBinary) || !fs.existsSync(sftpBinary)) {
+    if (!expectBinary || !sftpBinary) {
+      const message = buildMissingPharmdRuntimeMessage(runtime.missing);
       reject({
-        message: "PharmD SFTP tools are missing. This machine needs both /usr/bin/expect and /usr/bin/sftp.",
-        logs: [...logs, createPharmdLogEntry("error", "runtime", "Required PharmD SFTP tools are missing from this machine.")],
+        message,
+        logs: [...logs, createPharmdLogEntry("error", "runtime", "Required PharmD SFTP tools are missing from this machine.", {
+          missingTools: runtime.missing,
+          checkedPaths: runtime.checkedPaths,
+        })],
       });
       return;
     }
@@ -1606,6 +1631,7 @@ function executePharmdSftpUpload({ oruMessage, fileName, config }) {
       localPath,
       safeFileName,
       String(connection.timeoutSec || 30),
+      sftpBinary,
     ], {
       stdio: ["ignore", "pipe", "pipe"],
     });
