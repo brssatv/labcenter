@@ -3025,7 +3025,9 @@ function resolvePharmdStatusInfo(order) {
     return {
       label: "Report Received",
       className: "status-complete",
-      detail: "",
+      detail: String(pharmd?.reportReceivedFileName || "").trim()
+        ? `Stored return file: ${String(pharmd.reportReceivedFileName).trim()}`
+        : "",
     };
   }
   if (pharmd?.prePublishedAt) {
@@ -3036,10 +3038,26 @@ function resolvePharmdStatusInfo(order) {
     };
   }
   if (["sent", "delivered", "transmitted", "uploaded"].includes(statusToken) || pharmd?.sentAt || pharmd?.submittedAt) {
+    const autoChecks = Math.max(0, Number(pharmd?.receiptAutoCheckCount || 0) || 0);
+    const maxChecks = Math.max(0, Number(pharmd?.receiptMaxChecks || 0) || 0);
+    const nextCheckAt = String(pharmd?.receiptNextCheckAt || "").trim();
+    const lastReceiptError = String(pharmd?.receiptLastError || "").trim();
+    const exhausted = String(pharmd?.receiptPollingStatus || "").trim().toLowerCase() === "exhausted";
+    let detail = "";
+    if (exhausted && maxChecks) {
+      detail = `Auto-check limit reached (${autoChecks}/${maxChecks}). Use Manual Check to retry.`;
+    } else if (lastReceiptError && String(pharmd?.receiptLastCheckResult || "").trim().toLowerCase() === "error") {
+      detail = lastReceiptError;
+    } else if (maxChecks) {
+      detail = `Auto-checks ${autoChecks}/${maxChecks}.`;
+      if (nextCheckAt) {
+        detail += ` Next check ${formatDashboardDateTime(nextCheckAt)}.`;
+      }
+    }
     return {
       label: "Sent",
       className: "status-processed",
-      detail: "",
+      detail,
     };
   }
   if (["queued", "pending", "pending send", "ready", "ready to send"].includes(statusToken) || order?.processedResult?.report) {
@@ -8957,6 +8975,7 @@ function renderOutputResults() {
   let publishModalView = "menu";
   const publishFaxDisplayNumber = "352-565-4554";
   const sendingPharmdOrders = new Set();
+  const checkingPharmdOrders = new Set();
   const publishingFaxOrders = new Set();
   const workflowSavingOrders = new Set();
   const previewLoadingOrders = new Set();
@@ -9281,6 +9300,23 @@ function renderOutputResults() {
     return payload;
   }
 
+  async function checkPharmdReceipt(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    if (!csrfToken) await fetchCsrfToken();
+    const payload = await requestJson(`/api/pharmd/orders/${encodeURIComponent(orderId)}/check`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({}),
+    });
+    if (payload?.order) replaceOrderInState(payload.order);
+    renderOutputResultsTable();
+    return payload;
+  }
+
   async function toggleSkipPharmd(orderId) {
     const order = findOrderById(orderId);
     if (!order) throw new Error("Order not found.");
@@ -9516,10 +9552,25 @@ function renderOutputResults() {
               const skipEnabled = isPharmdSkipped(row);
               const hasSavedFinal = hasSavedFinalReport(row);
               const canValidate = hasSavedFinal && canValidatePharmdFinalReport(row);
+              const pharmdStatusToken = String(
+                row?.pharmd?.sendStatus
+                || row?.pharmd?.deliveryStatus
+                || row?.pharmd?.status
+                || ""
+              ).trim().toLowerCase();
               const isSending = sendingPharmdOrders.has(orderId);
+              const isChecking = checkingPharmdOrders.has(orderId);
               const isWorkflowSaving = workflowSavingOrders.has(orderId);
               const isPreviewLoading = previewLoadingOrders.has(orderId);
               const sendDisabled = !hasMessage || isSending || isWorkflowSaving || skipEnabled;
+              const canManualCheck = !skipEnabled && !resolvePharmdReportReceivedAt(row) && Boolean(
+                resolveOrderAccession(row)
+                && (
+                  row?.pharmd?.sentAt
+                  || row?.pharmd?.submittedAt
+                  || ["sent", "uploaded", "delivered", "transmitted"].includes(pharmdStatusToken)
+                )
+              );
               const skipDisabled = !hasSavedFinal && !skipEnabled;
               const validationHint = skipEnabled
                 ? "Preview the saved final report."
@@ -9570,6 +9621,14 @@ function renderOutputResults() {
                         ${sendDisabled ? "disabled" : ""}
                       >
                         ${skipEnabled ? "Skipped" : isSending ? "Sending..." : "Send"}
+                      </button>
+                      <button
+                        type="button"
+                        class="table-action-btn"
+                        data-check-pharmd-receipt="${escapeHtml(orderId)}"
+                        ${canManualCheck && !isChecking ? "" : "disabled"}
+                      >
+                        ${isChecking ? "Checking..." : "Manual Check"}
                       </button>
                       <button
                         type="button"
@@ -9738,6 +9797,26 @@ function renderOutputResults() {
         })
         .finally(() => {
           sendingPharmdOrders.delete(orderId);
+          renderOutputResultsTable();
+        });
+      return;
+    }
+
+    const checkBtn = event.target.closest("[data-check-pharmd-receipt]");
+    if (checkBtn) {
+      const orderId = String(checkBtn.getAttribute("data-check-pharmd-receipt") || "").trim();
+      if (!orderId || checkingPharmdOrders.has(orderId)) return;
+      checkingPharmdOrders.add(orderId);
+      renderOutputResultsTable();
+      checkPharmdReceipt(orderId)
+        .then((payload) => {
+          alert(payload?.message || "Manual PharmD receipt check completed.");
+        })
+        .catch((error) => {
+          alert(error?.message || "Unable to check for the PharmD return file.");
+        })
+        .finally(() => {
+          checkingPharmdOrders.delete(orderId);
           renderOutputResultsTable();
         });
       return;

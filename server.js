@@ -13,6 +13,17 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { registerAuthRoutes } = require("./server/features/authentication");
 const { registerFacilityRoutes } = require("./server/features/facility-management");
+const {
+  applyReceiptMatch,
+  applyReceiptMiss,
+  hasReceivedReceipt,
+  initializeReceiptTracking,
+  isEligibleForReceiptChecks,
+  listReceiptCandidates,
+  normalizeReceiptConfig,
+  resolveNextReceiptDueAt,
+  resolveReceiptState,
+} = require("./server/features/pharmd-receipts");
 const { registerPortalWorkflowRoutes } = require("./server/features/portal-workflow");
 const { registerReportPublishingRoutes } = require("./server/features/report-publishing");
 const { createPortalStore } = require("./lib/portal-store");
@@ -90,7 +101,21 @@ const PHARMD_SFTP_PORT = Math.max(1, Math.floor(Number(process.env.PHARMD_SFTP_P
 const PHARMD_SFTP_USERNAME = String(process.env.PHARMD_SFTP_USERNAME || "jays-user").trim();
 const PHARMD_SFTP_PASSWORD = String(process.env.PHARMD_SFTP_PASSWORD || "").trim();
 const PHARMD_SFTP_ORU_DIR = String(process.env.PHARMD_SFTP_ORU_DIR || "oru").trim() || "oru";
+const PHARMD_SFTP_PDF_DIR = String(process.env.PHARMD_SFTP_PDF_DIR || "pharmd-pdf2").trim() || "pharmd-pdf2";
 const PHARMD_SFTP_TIMEOUT_SEC = Math.max(5, Math.min(120, Math.floor(Number(process.env.PHARMD_SFTP_TIMEOUT_SEC || 30) || 30)));
+const PHARMD_SFTP_RECEIPT_INTERVAL_SEC = Math.max(
+  60,
+  Math.min(
+    86400,
+    Math.floor(
+      Number(process.env.PHARMD_SFTP_RECEIPT_INTERVAL_SEC || process.env.PHARMD_SFTP_POLL_INTERVAL_SEC || 1200) || 1200
+    )
+  )
+);
+const PHARMD_SFTP_RECEIPT_MAX_CHECKS = Math.max(
+  1,
+  Math.min(100, Math.floor(Number(process.env.PHARMD_SFTP_RECEIPT_MAX_CHECKS || 5) || 5))
+);
 
 function ensureDir(targetPath) {
   fs.mkdirSync(targetPath, { recursive: true });
@@ -1414,13 +1439,21 @@ function mergePharmdLogs(existingLogs, nextLogs, limit = 100) {
 }
 
 function getPharmdSftpConfig() {
+  const receiptConfig = normalizeReceiptConfig({
+    pdfDir: PHARMD_SFTP_PDF_DIR,
+    receiptIntervalSec: PHARMD_SFTP_RECEIPT_INTERVAL_SEC,
+    receiptMaxChecks: PHARMD_SFTP_RECEIPT_MAX_CHECKS,
+  });
   return {
     host: PHARMD_SFTP_HOST,
     port: PHARMD_SFTP_PORT,
     username: PHARMD_SFTP_USERNAME,
     password: PHARMD_SFTP_PASSWORD,
     remoteDir: PHARMD_SFTP_ORU_DIR,
+    pdfDir: receiptConfig.pdfDir,
     timeoutSec: PHARMD_SFTP_TIMEOUT_SEC,
+    receiptIntervalSec: receiptConfig.receiptIntervalSec,
+    receiptMaxChecks: receiptConfig.receiptMaxChecks,
   };
 }
 
@@ -1438,6 +1471,14 @@ function buildPharmdRemotePath(remoteDir, fileName) {
   const dir = String(remoteDir || "").trim().replace(/^\/+|\/+$/g, "");
   if (!dir) return fileName;
   return `${dir}/${fileName}`;
+}
+
+function resolvePharmdAccession(order) {
+  return String(order?.accessionNo || order?.accession || "").trim();
+}
+
+function hasPendingPharmdReceipt(order) {
+  return Boolean(isEligibleForReceiptChecks(order) && !hasReceivedReceipt(order?.pharmd));
 }
 
 function createPharmdTimeoutError(message) {
@@ -1532,6 +1573,18 @@ function createPharmdSftpSession(client) {
   });
 }
 
+function listPharmdRemoteDir(sftp, remoteDir) {
+  return new Promise((resolve, reject) => {
+    sftp.readdir(String(remoteDir || "").trim(), (error, list) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Array.isArray(list) ? list : []);
+    });
+  });
+}
+
 function confirmPharmdRemoteDir(sftp, remoteDir) {
   const target = String(remoteDir || "").trim();
   if (!target) return Promise.resolve();
@@ -1579,6 +1632,33 @@ function uploadPharmdMessageStream(sftp, remotePath, messageText) {
   });
 }
 
+function downloadPharmdFileBuffer(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const stream = sftp.createReadStream(remotePath, {
+      flags: "r",
+      autoClose: true,
+    });
+    let settled = false;
+
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    };
+
+    stream.on("data", (chunk) => {
+      chunks.push(Buffer.from(chunk));
+    });
+    stream.once("error", finish);
+    stream.once("close", () => finish(null));
+  });
+}
+
 function buildPharmdSftpFailureMessage(error, { phase, remoteDir } = {}) {
   const rawMessage = String(error?.message || "").trim();
   const code = String(error?.code || "").trim().toUpperCase();
@@ -1596,10 +1676,12 @@ function buildPharmdSftpFailureMessage(error, { phase, remoteDir } = {}) {
     if (phase === "connect") return "Timed out while connecting to PharmD SFTP.";
     if (phase === "remote_dir") return `Timed out while opening remote directory '${remoteDir}'.`;
     if (phase === "upload") return "Timed out while uploading the PharmD HL7 file.";
+    if (phase === "download") return "Timed out while downloading the PharmD return file.";
     return "Timed out while sending the PharmD HL7 file.";
   }
   if (/all configured authentication methods failed|authentication failed|permission denied/i.test(rawMessage)) {
     if (phase === "upload") return "Permission denied while uploading the PharmD HL7 file.";
+    if (phase === "download") return "Permission denied while downloading the PharmD return file.";
     return "Permission denied while connecting to PharmD SFTP.";
   }
   if (phase === "remote_dir") {
@@ -1617,10 +1699,377 @@ function buildPharmdSftpFailureMessage(error, { phase, remoteDir } = {}) {
     }
     return rawMessage || "Unable to upload the PharmD HL7 file.";
   }
+  if (phase === "download") {
+    if (/failure|no such file|not found/i.test(rawMessage)) {
+      return "Unable to download the PharmD return file.";
+    }
+    return rawMessage || "Unable to download the PharmD return file.";
+  }
   if (/sftp session ended before login completed/i.test(rawMessage)) {
     return "SFTP session ended before login completed.";
   }
   return rawMessage || "PharmD SFTP upload failed.";
+}
+
+function resolvePharmdReceiptFileName(entry) {
+  return String(entry?.filename || "").trim();
+}
+
+function resolvePharmdReceiptMatch(entries, accession) {
+  const accessionKey = normalizeMatchKey(accession);
+  if (!accessionKey) return null;
+  const matches = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => normalizeMatchKey(resolvePharmdReceiptFileName(entry)).includes(accessionKey));
+  if (!matches.length) return null;
+  matches.sort((left, right) => {
+    const leftMtime = Number(left?.attrs?.mtime || 0);
+    const rightMtime = Number(right?.attrs?.mtime || 0);
+    return rightMtime - leftMtime;
+  });
+  return matches[0];
+}
+
+function resolvePharmdReceiptTimestamp(entry) {
+  const mtimeSeconds = Number(entry?.attrs?.mtime || 0);
+  if (Number.isFinite(mtimeSeconds) && mtimeSeconds > 0) {
+    return new Date(mtimeSeconds * 1000).toISOString();
+  }
+  return new Date().toISOString();
+}
+
+async function persistPharmdReceiptBuffer(store, fileBuffer, {
+  orderId,
+  accession,
+  fileName,
+  remotePath,
+  receivedAt,
+} = {}) {
+  const createdAt = new Date().toISOString();
+  const mimeType = inferMimeTypeFromFileName(fileName) || "application/octet-stream";
+  if (s3Storage.enabled) {
+    const storedFile = await s3Storage.uploadBuffer({
+      key: buildStoredFileKey("pharmd", "receipts", orderId || "unassigned", `${createdAt}-${fileName}`),
+      body: fileBuffer,
+      contentType: mimeType,
+      metadata: {
+        orderid: orderId,
+        accessionno: accession,
+        remotepath: remotePath,
+        receivedat: receivedAt,
+        filename: fileName,
+      },
+      contentDisposition: `inline; filename="${fileName}"`,
+      cacheControl: "private, max-age=0, no-store",
+    });
+    store.saveOrderFile({
+      orderId,
+      fileRole: "pharmd_receipt_file",
+      reportType: "pharmdReceipt",
+      bucket: storedFile.bucket,
+      key: storedFile.key,
+      fileName,
+      mimeType,
+      sizeBytes: storedFile.sizeBytes,
+      createdAt,
+      metadata: {
+        accession,
+        remotePath,
+        receivedAt,
+      },
+    });
+    return {
+      bucket: storedFile.bucket,
+      key: storedFile.key,
+      fileName,
+      mimeType,
+      sizeBytes: storedFile.sizeBytes,
+      createdAt,
+    };
+  }
+
+  const localKey = buildStoredFileKey("pharmd-receipts", orderId || "unassigned", `${createdAt}-${fileName}`);
+  const localPath = resolveLocalReportStoragePath(localKey);
+  if (!localPath) {
+    throw new Error("Unable to resolve local PharmD receipt storage path.");
+  }
+  ensureDir(path.dirname(localPath));
+  fs.writeFileSync(localPath, fileBuffer);
+  store.saveOrderFile({
+    orderId,
+    fileRole: "pharmd_receipt_file",
+    reportType: "pharmdReceipt",
+    bucket: "local",
+    key: localKey,
+    fileName,
+    mimeType,
+    sizeBytes: fileBuffer.length,
+    createdAt,
+    metadata: {
+      accession,
+      remotePath,
+      receivedAt,
+      storageType: "local",
+    },
+  });
+  return {
+    bucket: "local",
+    key: localKey,
+    storageType: "local",
+    fileName,
+    mimeType,
+    sizeBytes: fileBuffer.length,
+    createdAt,
+  };
+}
+
+async function pollPharmdReceiptFolderOnce({
+  store = portalStore,
+  config = getPharmdSftpConfig(),
+  logger = console,
+  orderIds = null,
+  force = false,
+  mode = "auto",
+} = {}) {
+  const connection = getPharmdSftpPublicConfig(config);
+  const receiptConfig = normalizeReceiptConfig(config);
+  const pdfDir = receiptConfig.pdfDir;
+  const password = String(config?.password || "").trim();
+  const nowIso = new Date().toISOString();
+  const pendingOrders = listReceiptCandidates(store.listOrders(), receiptConfig, {
+    orderIds,
+    mode,
+    nowIso,
+    force,
+  });
+  const summary = {
+    checkedOrders: pendingOrders.length,
+    matchedOrders: 0,
+    exhaustedOrders: 0,
+    remoteDir: pdfDir,
+    mode,
+  };
+
+  if (!pendingOrders.length) return summary;
+  if (!connection.host || !connection.port || !connection.username || !password || !pdfDir) {
+    const configMessage = "PharmD SFTP host, port, username, password, or receipt folder is not configured.";
+    const missingConfigCheckedAt = new Date().toISOString();
+    if (mode === "auto") {
+      const configUpdates = pendingOrders.map((order) => {
+        const current = store.getOrderById(order.orderId) || order;
+        const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
+        const missPatch = applyReceiptMiss(existingPharmd, receiptConfig, {
+          checkedAt: missingConfigCheckedAt,
+          mode,
+          errorMessage: configMessage,
+        });
+        if (missPatch.receiptPollingStatus === "exhausted") {
+          summary.exhaustedOrders += 1;
+        }
+        return {
+          ...current,
+          updatedAt: missingConfigCheckedAt,
+          pharmd: {
+            ...existingPharmd,
+            ...missPatch,
+            logs: mergePharmdLogs(existingPharmd.logs, [
+              createPharmdLogEntry("error", "receipt_check", configMessage, {
+                accessionNo: resolvePharmdAccession(current),
+                remoteDir: pdfDir,
+                mode,
+              }),
+            ]),
+          },
+        };
+      });
+      if (configUpdates.length) {
+        store.upsertOrders(configUpdates);
+      }
+    }
+    return {
+      ...summary,
+      error: configMessage,
+    };
+  }
+
+  let client = null;
+  try {
+    client = await connectPharmdSftpClient(connection, password);
+    client.on("error", () => {});
+    const sftp = await createPharmdSftpSession(client);
+    await confirmPharmdRemoteDir(sftp, pdfDir);
+    const entries = await listPharmdRemoteDir(sftp, pdfDir);
+    const updates = [];
+    for (const order of pendingOrders) {
+      const accession = resolvePharmdAccession(order);
+      const match = resolvePharmdReceiptMatch(entries, accession);
+      const current = store.getOrderById(order.orderId) || order;
+      const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
+      if (hasReceivedReceipt(existingPharmd)) continue;
+
+      if (!match) {
+        const missPatch = applyReceiptMiss(existingPharmd, receiptConfig, {
+          checkedAt: nowIso,
+          mode,
+        });
+        if (missPatch.receiptPollingStatus === "exhausted") {
+          summary.exhaustedOrders += 1;
+        }
+        updates.push({
+          ...current,
+          updatedAt: nowIso,
+          pharmd: {
+            ...existingPharmd,
+            ...missPatch,
+            logs: mergePharmdLogs(existingPharmd.logs, [
+              createPharmdLogEntry(
+                "info",
+                "receipt_check",
+                missPatch.receiptPollingStatus === "exhausted"
+                  ? `No PharmD return file found after ${missPatch.receiptAutoCheckCount} automatic checks.`
+                  : "No PharmD return file found yet.",
+                {
+                  accessionNo: accession,
+                  remoteDir: pdfDir,
+                  mode,
+                  nextCheckAt: missPatch.receiptNextCheckAt || "",
+                }
+              ),
+            ]),
+          },
+        });
+        continue;
+      }
+
+      const fileName = resolvePharmdReceiptFileName(match);
+      const receivedAt = resolvePharmdReceiptTimestamp(match);
+      const remotePath = buildPharmdRemotePath(pdfDir, fileName);
+      try {
+        const fileBuffer = await downloadPharmdFileBuffer(sftp, remotePath);
+        const storedFile = await persistPharmdReceiptBuffer(store, fileBuffer, {
+          orderId: current.orderId,
+          accession,
+          fileName,
+          remotePath,
+          receivedAt,
+        });
+        const matchPatch = applyReceiptMatch(existingPharmd, receiptConfig, {
+          checkedAt: nowIso,
+          receivedAt,
+          fileName,
+          remotePath,
+          accession,
+          storedFile: {
+            ...storedFile,
+            remotePath,
+            receivedAt,
+            accession,
+          },
+          source: mode === "manual" ? "pharmd_sftp_manual_check" : "pharmd_sftp_poll",
+          mode,
+        });
+        updates.push({
+          ...current,
+          updatedAt: nowIso,
+          pharmd: {
+            ...existingPharmd,
+            ...matchPatch,
+            logs: mergePharmdLogs(existingPharmd.logs, [
+              createPharmdLogEntry("success", "receive", `PharmD return file stored: ${fileName}.`, {
+                accessionNo: accession,
+                remotePath,
+                receivedAt,
+                storageKey: storedFile.key,
+                storageBucket: storedFile.bucket,
+              }),
+            ]),
+          },
+        });
+        summary.matchedOrders += 1;
+      } catch (error) {
+        const failureMessage = buildPharmdSftpFailureMessage(error, {
+          phase: "download",
+          remoteDir: pdfDir,
+        });
+        const missPatch = applyReceiptMiss(existingPharmd, receiptConfig, {
+          checkedAt: nowIso,
+          mode,
+          errorMessage: failureMessage,
+        });
+        if (missPatch.receiptPollingStatus === "exhausted") {
+          summary.exhaustedOrders += 1;
+        }
+        updates.push({
+          ...current,
+          updatedAt: nowIso,
+          pharmd: {
+            ...existingPharmd,
+            ...missPatch,
+            logs: mergePharmdLogs(existingPharmd.logs, [
+              createPharmdLogEntry("error", "receipt_check", failureMessage, {
+                accessionNo: accession,
+                remotePath,
+                mode,
+              }),
+            ]),
+          },
+        });
+      }
+    }
+
+    if (updates.length) {
+      store.upsertOrders(updates);
+    }
+    return summary;
+  } catch (error) {
+    const message = buildPharmdSftpFailureMessage(error, {
+      phase: "remote_dir",
+      remoteDir: pdfDir,
+    });
+    const failureCheckedAt = new Date().toISOString();
+    const failureUpdates = pendingOrders.map((order) => {
+      const current = store.getOrderById(order.orderId) || order;
+      const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
+      const missPatch = applyReceiptMiss(existingPharmd, receiptConfig, {
+        checkedAt: failureCheckedAt,
+        mode,
+        errorMessage: message,
+      });
+      if (missPatch.receiptPollingStatus === "exhausted") {
+        summary.exhaustedOrders += 1;
+      }
+      return {
+        ...current,
+        updatedAt: failureCheckedAt,
+        pharmd: {
+          ...existingPharmd,
+          ...missPatch,
+          logs: mergePharmdLogs(existingPharmd.logs, [
+            createPharmdLogEntry("error", "receipt_check", message, {
+              accessionNo: resolvePharmdAccession(current),
+              remoteDir: pdfDir,
+              mode,
+            }),
+          ]),
+        },
+      };
+    });
+    if (failureUpdates.length) {
+      store.upsertOrders(failureUpdates);
+    }
+    logger?.warn?.(`[pharmd] Receipt poll failed: ${message}`);
+    return {
+      ...summary,
+      error: message,
+    };
+  } finally {
+    if (client) {
+      try {
+        client.end();
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+  }
 }
 
 function executePharmdSftpUpload({ oruMessage, fileName, config }) {
@@ -2543,6 +2992,7 @@ app.post("/api/pharmd/orders/:orderId/send", requireDoctorAuth, async (req, res)
   const pharmdConfig = getPharmdSftpConfig();
   const publicConfig = getPharmdSftpPublicConfig(pharmdConfig);
   const requestedBy = String(req?.session?.user?.email || req?.session?.user?.displayName || "doctor").trim();
+  const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
   const requestLog = createPharmdLogEntry("info", "request", `PharmD send requested for ${requestedFileName}.`, {
     requestedBy,
     host: publicConfig.host,
@@ -2553,7 +3003,6 @@ app.post("/api/pharmd/orders/:orderId/send", requireDoctorAuth, async (req, res)
 
   const persistOrder = (patch = {}, extraLogs = []) => {
     const nowIso = new Date().toISOString();
-    const existingPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
     return portalStore.upsertOrders([
       {
         ...current,
@@ -2580,10 +3029,13 @@ app.post("/api/pharmd/orders/:orderId/send", requireDoctorAuth, async (req, res)
       fileName: requestedFileName,
       config: pharmdConfig,
     });
+    const receiptTrackingPatch = initializeReceiptTracking(existingPharmd, pharmdConfig, result.sentAt);
 
     const savedOrder = persistOrder({
+      ...receiptTrackingPatch,
       status: "sent",
       sendStatus: "sent",
+      deliveryStatus: "sent",
       error: "",
       lastError: "",
       connectionEstablishedAt: result.connectionEstablishedAt,
@@ -2599,6 +3051,8 @@ app.post("/api/pharmd/orders/:orderId/send", requireDoctorAuth, async (req, res)
       host: publicConfig.host,
       username: publicConfig.username,
     });
+
+    schedulePharmdReceiptPolling();
 
     return res.json({
       ok: true,
@@ -2631,6 +3085,60 @@ app.post("/api/pharmd/orders/:orderId/send", requireDoctorAuth, async (req, res)
       order: savedOrder,
     });
   }
+});
+
+app.post("/api/pharmd/orders/:orderId/check", requireDoctorAuth, async (req, res) => {
+  const orderId = String(req.params.orderId || "").trim();
+  const current = portalStore.getOrderById(orderId);
+  if (!current || !canAccessOrderRecord(req, current)) {
+    return res.status(404).json({ error: "Order not found." });
+  }
+
+  if (hasReceivedReceipt(current?.pharmd)) {
+    return res.json({
+      ok: true,
+      found: true,
+      message: "PharmD return file has already been received for this order.",
+      order: current,
+    });
+  }
+
+  if (!hasPendingPharmdReceipt(current)) {
+    return res.json({
+      ok: false,
+      found: false,
+      message: "Send the PharmD HL7 file before checking for a processed return file.",
+      order: current,
+    });
+  }
+
+  const summary = await triggerPharmdReceiptPoll({
+    reason: `manual:${orderId}`,
+    orderIds: [orderId],
+    mode: "manual",
+    force: true,
+  });
+  const updatedOrder = portalStore.getOrderById(orderId) || current;
+  const found = Boolean(hasReceivedReceipt(updatedOrder?.pharmd));
+
+  auditLog(req, "pharmd_receipt_check", found ? "success" : "miss", {
+    orderId,
+    matchedOrders: Number(summary?.matchedOrders || 0),
+    checkedOrders: Number(summary?.checkedOrders || 0),
+    exhaustedOrders: Number(summary?.exhaustedOrders || 0),
+  });
+
+  return res.json({
+    ok: !summary?.error,
+    found,
+    message: summary?.error
+      ? summary.error
+      : found
+      ? `PharmD return file received and stored for accession ${resolvePharmdAccession(updatedOrder)}.`
+      : "No processed PharmD return file was found yet.",
+    order: updatedOrder,
+    summary,
+  });
 });
 
 registerFacilityRoutes({
@@ -2851,6 +3359,66 @@ app.get("/styles.css", (_req, res) => {
 });
 
 let activeServer = null;
+let pharmdReceiptPollTimer = null;
+let pharmdReceiptPollPromise = null;
+
+function schedulePharmdReceiptPolling() {
+  if (process.env.NODE_ENV === "test") return;
+  if (pharmdReceiptPollTimer) {
+    clearTimeout(pharmdReceiptPollTimer);
+    pharmdReceiptPollTimer = null;
+  }
+  const nextDueAt = resolveNextReceiptDueAt(portalStore.listOrders(), getPharmdSftpConfig());
+  if (!nextDueAt) return;
+  const delayMs = Math.max(1000, new Date(nextDueAt).getTime() - Date.now());
+  pharmdReceiptPollTimer = setTimeout(() => {
+    pharmdReceiptPollTimer = null;
+    triggerPharmdReceiptPoll({ reason: "scheduled", mode: "auto" }).catch(() => {});
+  }, delayMs);
+  if (typeof pharmdReceiptPollTimer.unref === "function") {
+    pharmdReceiptPollTimer.unref();
+  }
+}
+
+function triggerPharmdReceiptPoll({
+  reason = "manual",
+  orderIds = null,
+  mode = "auto",
+  force = false,
+} = {}) {
+  const queuedRun = (pharmdReceiptPollPromise || Promise.resolve())
+    .catch(() => {})
+    .then(() => pollPharmdReceiptFolderOnce({
+      logger: console,
+      orderIds,
+      mode,
+      force,
+    }))
+    .then((summary) => {
+      if (summary?.matchedOrders) {
+        console.log(`[pharmd] Receipt poll (${reason}) matched ${summary.matchedOrders} order(s).`);
+      }
+      if (summary?.exhaustedOrders) {
+        console.log(`[pharmd] Receipt poll (${reason}) exhausted ${summary.exhaustedOrders} order(s).`);
+      }
+      return summary;
+    })
+    .finally(() => {
+      if (pharmdReceiptPollPromise === queuedRun) {
+        pharmdReceiptPollPromise = null;
+      }
+      schedulePharmdReceiptPolling();
+    });
+  pharmdReceiptPollPromise = queuedRun;
+  return queuedRun;
+}
+
+function stopPharmdReceiptPolling() {
+  if (pharmdReceiptPollTimer) {
+    clearTimeout(pharmdReceiptPollTimer);
+    pharmdReceiptPollTimer = null;
+  }
+}
 
 function startServer(port = PORT) {
   return new Promise((resolve, reject) => {
@@ -2862,6 +3430,13 @@ function startServer(port = PORT) {
     const handleListening = () => {
       server.off("error", handleError);
       activeServer = server;
+      schedulePharmdReceiptPolling();
+      server.once("close", () => {
+        if (activeServer === server) {
+          activeServer = null;
+          stopPharmdReceiptPolling();
+        }
+      });
       const resolvedPort = server.address()?.port ?? port;
       console.log(`LabCenter secure portal running at http://localhost:${resolvedPort}`);
       console.log(`[runtime] Data directory: ${dataDir}`);
@@ -2883,6 +3458,8 @@ if (require.main === module) {
 
 module.exports = {
   app,
+  pollPharmdReceiptFolderOnce,
   startServer,
   portalStore,
+  triggerPharmdReceiptPoll,
 };

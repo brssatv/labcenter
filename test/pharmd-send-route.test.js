@@ -56,11 +56,44 @@ async function startTestSftpServer({
   username = "jays-user",
   password = "top-secret",
   remoteDir = "oru",
+  seededFiles = {},
 } = {}) {
   const remoteRoot = normalizeRemotePath(remoteDir);
   const uploadedFiles = new Map();
+  const remoteFiles = new Map(
+    Object.entries(seededFiles || {}).map(([remotePath, content]) => {
+      const normalized = normalizeRemotePath(remotePath);
+      const buffer = Buffer.isBuffer(content) ? Buffer.from(content) : Buffer.from(String(content || ""), "utf8");
+      return [normalized, { buffer, mtime: Math.floor(Date.now() / 1000) }];
+    })
+  );
   const { private: privateKey } = generateKeyPairSync("ed25519");
   let nextHandleId = 1;
+
+  const directoryExists = (dirPath) => {
+    const normalized = normalizeRemotePath(dirPath);
+    if (!normalized) return true;
+    if (normalized === remoteRoot) return true;
+    return Array.from(remoteFiles.keys()).some((filePath) => filePath.startsWith(`${normalized}/`));
+  };
+
+  const buildDirEntries = (dirPath) => {
+    const normalized = normalizeRemotePath(dirPath);
+    const entries = [];
+    Array.from(remoteFiles.entries()).forEach(([filePath, file]) => {
+      if (path.posix.dirname(filePath) !== normalized) return;
+      entries.push({
+        filename: path.posix.basename(filePath),
+        longname: path.posix.basename(filePath),
+        attrs: {
+          mode: 0o100644,
+          size: file.buffer.length,
+          mtime: file.mtime,
+        },
+      });
+    });
+    return entries;
+  };
 
   const server = new Server({ hostKeys: [privateKey] }, (client) => {
     client.on("authentication", (ctx) => {
@@ -87,31 +120,66 @@ async function startTestSftpServer({
           const readHandle = (buffer) => openHandles.get(buffer.readUInt32BE(0));
 
           sftp.on("OPENDIR", (reqid, dirPath) => {
-            if (normalizeRemotePath(dirPath) !== remoteRoot) {
+            const normalized = normalizeRemotePath(dirPath);
+            if (!directoryExists(normalized)) {
               sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
               return;
             }
-            sftp.handle(reqid, makeHandle({ type: "dir" }));
+            sftp.handle(reqid, makeHandle({ type: "dir", dirPath: normalized, hasRead: false }));
           }).on("READDIR", (reqid, handle) => {
-            if (!readHandle(handle)) {
+            const entry = readHandle(handle);
+            if (!entry || entry.type !== "dir") {
               sftp.status(reqid, STATUS_CODE.FAILURE);
+              return;
+            }
+            if (entry.hasRead) {
+              sftp.status(reqid, STATUS_CODE.EOF);
+              return;
+            }
+            entry.hasRead = true;
+            const entries = buildDirEntries(entry.dirPath);
+            if (!entries.length) {
+              sftp.status(reqid, STATUS_CODE.EOF);
+              return;
+            }
+            sftp.name(reqid, entries);
+          }).on("LSTAT", (reqid, targetPath) => {
+            const normalized = normalizeRemotePath(targetPath);
+            if (directoryExists(normalized) && !remoteFiles.has(normalized)) {
+              sftp.attrs(reqid, { mode: 0o040755 });
+              return;
+            }
+            const file = remoteFiles.get(normalized);
+            if (file) {
+              sftp.attrs(reqid, { mode: 0o100644, size: file.buffer.length, mtime: file.mtime });
               return;
             }
             sftp.status(reqid, STATUS_CODE.EOF);
           }).on("OPEN", (reqid, filename, flags) => {
             const normalized = normalizeRemotePath(filename);
-            if (!(flags & OPEN_MODE.WRITE) || path.posix.dirname(normalized) !== remoteRoot) {
-              sftp.status(reqid, STATUS_CODE.FAILURE);
+            if (flags & OPEN_MODE.WRITE) {
+              if (path.posix.dirname(normalized) !== remoteRoot) {
+                sftp.status(reqid, STATUS_CODE.FAILURE);
+                return;
+              }
+              sftp.handle(reqid, makeHandle({
+                type: "file-write",
+                remotePath: normalized,
+                chunks: [],
+              }));
+              return;
+            }
+            if (!remoteFiles.has(normalized)) {
+              sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
               return;
             }
             sftp.handle(reqid, makeHandle({
-              type: "file",
+              type: "file-read",
               remotePath: normalized,
-              chunks: [],
             }));
           }).on("WRITE", (reqid, handle, offset, data) => {
             const entry = readHandle(handle);
-            if (!entry || entry.type !== "file") {
+            if (!entry || entry.type !== "file-write") {
               sftp.status(reqid, STATUS_CODE.FAILURE);
               return;
             }
@@ -120,6 +188,24 @@ async function startTestSftpServer({
               data: Buffer.from(data),
             });
             sftp.status(reqid, STATUS_CODE.OK);
+          }).on("READ", (reqid, handle, offset, length) => {
+            const entry = readHandle(handle);
+            if (!entry || entry.type !== "file-read") {
+              sftp.status(reqid, STATUS_CODE.FAILURE);
+              return;
+            }
+            const file = remoteFiles.get(entry.remotePath);
+            if (!file) {
+              sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+              return;
+            }
+            const start = Math.max(0, Number(offset || 0));
+            const end = Math.min(file.buffer.length, start + Math.max(0, Number(length || 0)));
+            if (start >= end) {
+              sftp.status(reqid, STATUS_CODE.EOF);
+              return;
+            }
+            sftp.data(reqid, file.buffer.subarray(start, end));
           }).on("CLOSE", (reqid, handle) => {
             const key = handle.readUInt32BE(0);
             const entry = openHandles.get(key);
@@ -127,8 +213,13 @@ async function startTestSftpServer({
               sftp.status(reqid, STATUS_CODE.FAILURE);
               return;
             }
-            if (entry.type === "file") {
-              uploadedFiles.set(entry.remotePath, assembleChunks(entry.chunks));
+            if (entry.type === "file-write") {
+              const buffer = assembleChunks(entry.chunks);
+              uploadedFiles.set(entry.remotePath, buffer);
+              remoteFiles.set(entry.remotePath, {
+                buffer,
+                mtime: Math.floor(Date.now() / 1000),
+              });
             }
             openHandles.delete(key);
             sftp.status(reqid, STATUS_CODE.OK);
@@ -141,16 +232,28 @@ async function startTestSftpServer({
             }]);
           }).on("STAT", (reqid, targetPath) => {
             const normalized = normalizeRemotePath(targetPath);
-            if (normalized === remoteRoot) {
+            if (directoryExists(normalized) && !remoteFiles.has(normalized)) {
               sftp.attrs(reqid, { mode: 0o040755 });
               return;
             }
-            const buffer = uploadedFiles.get(normalized);
-            if (buffer) {
-              sftp.attrs(reqid, { mode: 0o100644, size: buffer.length });
+            const file = remoteFiles.get(normalized);
+            if (file) {
+              sftp.attrs(reqid, { mode: 0o100644, size: file.buffer.length, mtime: file.mtime });
               return;
             }
             sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+          }).on("FSTAT", (reqid, handle) => {
+            const entry = readHandle(handle);
+            if (!entry || entry.type !== "file-read") {
+              sftp.status(reqid, STATUS_CODE.FAILURE);
+              return;
+            }
+            const file = remoteFiles.get(entry.remotePath);
+            if (!file) {
+              sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+              return;
+            }
+            sftp.attrs(reqid, { mode: 0o100644, size: file.buffer.length, mtime: file.mtime });
           }).on("SETSTAT", (reqid) => {
             sftp.status(reqid, STATUS_CODE.OK);
           }).on("FSETSTAT", (reqid) => {
@@ -172,6 +275,7 @@ async function startTestSftpServer({
   return {
     uploadedFiles,
     port: server.address().port,
+    remoteFiles,
     async close() {
       await new Promise((resolve) => server.close(resolve));
     },
@@ -196,7 +300,11 @@ async function startPharmdHarness(envOverrides = {}, seedOrder = {}) {
     PHARMD_SFTP_USERNAME: process.env.PHARMD_SFTP_USERNAME,
     PHARMD_SFTP_PASSWORD: process.env.PHARMD_SFTP_PASSWORD,
     PHARMD_SFTP_ORU_DIR: process.env.PHARMD_SFTP_ORU_DIR,
+    PHARMD_SFTP_PDF_DIR: process.env.PHARMD_SFTP_PDF_DIR,
     PHARMD_SFTP_TIMEOUT_SEC: process.env.PHARMD_SFTP_TIMEOUT_SEC,
+    PHARMD_SFTP_RECEIPT_INTERVAL_SEC: process.env.PHARMD_SFTP_RECEIPT_INTERVAL_SEC,
+    PHARMD_SFTP_RECEIPT_MAX_CHECKS: process.env.PHARMD_SFTP_RECEIPT_MAX_CHECKS,
+    PHARMD_SFTP_POLL_INTERVAL_SEC: process.env.PHARMD_SFTP_POLL_INTERVAL_SEC,
   };
 
   process.env.DATA_DIR = dataDir;
@@ -211,7 +319,7 @@ async function startPharmdHarness(envOverrides = {}, seedOrder = {}) {
 
   const serverPath = require.resolve("../server.js");
   delete require.cache[serverPath];
-  const { startServer, portalStore } = require("../server.js");
+  const { startServer, portalStore, pollPharmdReceiptFolderOnce, triggerPharmdReceiptPoll } = require("../server.js");
 
   portalStore.upsertOrders([
     {
@@ -262,7 +370,10 @@ async function startPharmdHarness(envOverrides = {}, seedOrder = {}) {
     baseUrl,
     cookieJar,
     csrfToken: loginPayload.csrfToken,
+    dataDir,
+    pollPharmdReceiptFolderOnce,
     portalStore,
+    triggerPharmdReceiptPoll,
     async close() {
       await new Promise((resolve) => server.close(resolve));
       delete require.cache[serverPath];
@@ -279,6 +390,9 @@ test("PharmD send route uploads the ORU message through native ssh2 SFTP", async
     username: "labuser",
     password: "top-secret",
     remoteDir: "oru",
+    seededFiles: {
+      "pharmd-pdf2/placeholder.txt": "noop",
+    },
   });
   t.after(async () => {
     await sftpServer.close();
@@ -314,6 +428,13 @@ test("PharmD send route uploads the ORU message through native ssh2 SFTP", async
   const storedOrder = harness.portalStore.getOrderById("00001");
   assert.equal(storedOrder?.pharmd?.sendStatus, "sent");
   assert.equal(storedOrder?.pharmd?.remotePath, "oru/Order_00001_PharmD_ORU.hl7");
+  assert.equal(storedOrder?.pharmd?.receiptRemoteDir, "pharmd-pdf2");
+  assert.equal(storedOrder?.pharmd?.receiptIntervalSec, 1200);
+  assert.equal(storedOrder?.pharmd?.receiptMaxChecks, 5);
+  assert.equal(storedOrder?.pharmd?.receiptAutoCheckCount, 0);
+  assert.equal(storedOrder?.pharmd?.receiptManualCheckCount, 0);
+  assert.equal(storedOrder?.pharmd?.receiptPollingStatus, "pending");
+  assert.ok(storedOrder?.pharmd?.receiptNextCheckAt);
 
   const uploaded = sftpServer.uploadedFiles.get("oru/Order_00001_PharmD_ORU.hl7");
   assert.ok(uploaded);
@@ -328,6 +449,9 @@ test("PharmD send route returns a clear error when the configured remote folder 
     username: "labuser",
     password: "top-secret",
     remoteDir: "oru",
+    seededFiles: {
+      "pharmd-pdf2/placeholder.txt": "noop",
+    },
   });
   t.after(async () => {
     await sftpServer.close();
@@ -363,4 +487,165 @@ test("PharmD send route returns a clear error when the configured remote folder 
   const storedOrder = harness.portalStore.getOrderById("00001");
   assert.equal(storedOrder?.pharmd?.sendStatus, "error");
   assert.equal(storedOrder?.pharmd?.lastError, "Remote directory 'missing' was not found.");
+});
+
+test("PharmD manual receipt check stores a matched pharmd-pdf2 file for the order accession", async (t) => {
+  const accessionNo = "UT1504202600003";
+  const sftpServer = await startTestSftpServer({
+    username: "labuser",
+    password: "top-secret",
+    remoteDir: "oru",
+    seededFiles: {
+      [`pharmd-pdf2/${accessionNo}_PharmD_Report.pdf`]: "%PDF-pharmd-report",
+    },
+  });
+  t.after(async () => {
+    await sftpServer.close();
+  });
+
+  const harness = await startPharmdHarness({
+    PHARMD_SFTP_HOST: "127.0.0.1",
+    PHARMD_SFTP_PORT: String(sftpServer.port),
+    PHARMD_SFTP_USERNAME: "labuser",
+    PHARMD_SFTP_PASSWORD: "top-secret",
+    PHARMD_SFTP_ORU_DIR: "oru",
+    PHARMD_SFTP_PDF_DIR: "pharmd-pdf2",
+    PHARMD_SFTP_TIMEOUT_SEC: "10",
+  }, {
+    accessionNo,
+    pharmd: {
+      oruMessage: "MSH|^~\\&|LabCenter|Clinic|PharmD|CPD|20260601080000||ORU^R01|CTRL-1|P|2.5.1",
+      messageFileName: `${accessionNo}_PharmD_ORU.hl7`,
+      sentAt: "2026-06-01T08:30:00.000Z",
+      sendStatus: "sent",
+      remotePath: `oru/${accessionNo}_PharmD_ORU.hl7`,
+      receiptRemoteDir: "pharmd-pdf2",
+      receiptIntervalSec: 1200,
+      receiptMaxChecks: 5,
+      receiptNextCheckAt: "2026-06-01T08:50:00.000Z",
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/pharmd/orders/00001/check`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+
+  assert.equal(payload.ok, true);
+  assert.equal(payload.found, true);
+  assert.equal(payload.summary?.checkedOrders, 1);
+  assert.equal(payload.summary?.matchedOrders, 1);
+
+  const storedOrder = harness.portalStore.getOrderById("00001");
+  assert.equal(storedOrder?.pharmd?.sendStatus, "received");
+  assert.equal(storedOrder?.pharmd?.deliveryStatus, "received");
+  assert.equal(storedOrder?.pharmd?.reportReceivedAccession, accessionNo);
+  assert.equal(storedOrder?.pharmd?.reportReceivedFileName, `${accessionNo}_PharmD_Report.pdf`);
+  assert.equal(storedOrder?.pharmd?.reportReceivedRemotePath, `pharmd-pdf2/${accessionNo}_PharmD_Report.pdf`);
+  assert.ok(storedOrder?.pharmd?.reportReceivedAt);
+  assert.equal(storedOrder?.pharmd?.receiptLastCheckSource, "manual");
+  assert.equal(storedOrder?.pharmd?.receiptLastCheckResult, "matched");
+  assert.equal(storedOrder?.pharmd?.receivedReport?.bucket, "local");
+  assert.ok(storedOrder?.pharmd?.receivedReport?.key);
+  assert.ok(fs.existsSync(path.join(harness.dataDir, storedOrder.pharmd.receivedReport.key)));
+  assert.equal(
+    fs.readFileSync(path.join(harness.dataDir, storedOrder.pharmd.receivedReport.key), "utf8"),
+    "%PDF-pharmd-report"
+  );
+});
+
+test("PharmD auto receipt polling stops after five misses and manual checks can still retry later", async (t) => {
+  const accessionNo = "UT1504202600099";
+  const sftpServer = await startTestSftpServer({
+    username: "labuser",
+    password: "top-secret",
+    remoteDir: "oru",
+    seededFiles: {
+      "pharmd-pdf2/placeholder.txt": "noop",
+    },
+  });
+  t.after(async () => {
+    await sftpServer.close();
+  });
+
+  const harness = await startPharmdHarness({
+    PHARMD_SFTP_HOST: "127.0.0.1",
+    PHARMD_SFTP_PORT: String(sftpServer.port),
+    PHARMD_SFTP_USERNAME: "labuser",
+    PHARMD_SFTP_PASSWORD: "top-secret",
+    PHARMD_SFTP_ORU_DIR: "oru",
+    PHARMD_SFTP_PDF_DIR: "pharmd-pdf2",
+    PHARMD_SFTP_RECEIPT_INTERVAL_SEC: "1200",
+    PHARMD_SFTP_RECEIPT_MAX_CHECKS: "5",
+    PHARMD_SFTP_TIMEOUT_SEC: "10",
+  }, {
+    accessionNo,
+    pharmd: {
+      oruMessage: "MSH|^~\\&|LabCenter|Clinic|PharmD|CPD|20260601080000||ORU^R01|CTRL-99|P|2.5.1",
+      messageFileName: `${accessionNo}_PharmD_ORU.hl7`,
+      sentAt: "2026-06-01T08:30:00.000Z",
+      sendStatus: "sent",
+      remotePath: `oru/${accessionNo}_PharmD_ORU.hl7`,
+      receiptRemoteDir: "pharmd-pdf2",
+      receiptIntervalSec: 1200,
+      receiptMaxChecks: 5,
+      receiptNextCheckAt: "2026-06-01T08:50:00.000Z",
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const summary = await harness.pollPharmdReceiptFolderOnce({
+      store: harness.portalStore,
+      mode: "auto",
+      force: true,
+    });
+    assert.equal(summary.checkedOrders, 1);
+    assert.equal(summary.matchedOrders, 0);
+  }
+
+  const exhaustedOrder = harness.portalStore.getOrderById("00001");
+  assert.equal(exhaustedOrder?.pharmd?.receiptAutoCheckCount, 5);
+  assert.equal(exhaustedOrder?.pharmd?.receiptPollingStatus, "exhausted");
+  assert.equal(exhaustedOrder?.pharmd?.receiptLastCheckResult, "not_found");
+  assert.equal(exhaustedOrder?.pharmd?.receiptNextCheckAt, "");
+
+  const skippedSummary = await harness.pollPharmdReceiptFolderOnce({
+    store: harness.portalStore,
+    mode: "auto",
+    force: true,
+  });
+  assert.equal(skippedSummary.checkedOrders, 0);
+
+  sftpServer.remoteFiles.set(`pharmd-pdf2/${accessionNo}_Processed_Report.pdf`, {
+    buffer: Buffer.from("%PDF-late-pharmd-report", "utf8"),
+    mtime: Math.floor(Date.now() / 1000),
+  });
+
+  const manualSummary = await harness.triggerPharmdReceiptPoll({
+    reason: "test-manual-after-exhausted",
+    orderIds: ["00001"],
+    mode: "manual",
+    force: true,
+  });
+  assert.equal(manualSummary.checkedOrders, 1);
+  assert.equal(manualSummary.matchedOrders, 1);
+
+  const recoveredOrder = harness.portalStore.getOrderById("00001");
+  assert.equal(recoveredOrder?.pharmd?.sendStatus, "received");
+  assert.equal(recoveredOrder?.pharmd?.receiptPollingStatus, "matched");
+  assert.equal(recoveredOrder?.pharmd?.receiptManualCheckCount, 1);
+  assert.equal(recoveredOrder?.pharmd?.reportReceivedFileName, `${accessionNo}_Processed_Report.pdf`);
 });
