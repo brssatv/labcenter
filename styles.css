@@ -5136,6 +5136,8 @@ body.modal-open {
 }
 
 .formula-playground-editor {
+  height: auto;
+  min-height: 180px;
   resize: vertical;
   border: 1px solid #cfd8e4;
   border-radius: 12px;
@@ -5143,12 +5145,22 @@ body.modal-open {
   padding: 12px 14px;
   color: #1f3650;
   font: 0.95rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: auto;
+  white-space: pre;
 }
 
 .formula-playground-editor:focus {
   outline: 0;
   border-color: #8cb0d6;
   box-shadow: 0 0 0 3px rgba(116, 153, 194, 0.14);
+}
+
+.formula-playground-editor-data {
+  min-height: 260px;
+}
+
+.formula-playground-editor-expression {
+  min-height: 190px;
 }
 
 .formula-playground-box-note {
@@ -5200,10 +5212,40 @@ body.modal-open {
   flex-wrap: wrap;
 }
 
+.formula-playground-output-meta {
+  display: grid;
+  gap: 10px;
+}
+
 .formula-playground-output-label {
   font-size: 0.95rem;
   font-weight: 700;
   color: #23415e;
+}
+
+.formula-playground-view-tabs {
+  gap: 10px;
+}
+
+.formula-playground-view-tabs .mr-tab {
+  padding: 7px 14px;
+}
+
+.formula-playground-input-table-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.formula-playground-input-table-card {
+  display: grid;
+  gap: 8px;
+}
+
+.formula-playground-input-table-title {
+  margin: 0;
+  color: #23415e;
+  font-size: 0.92rem;
+  font-weight: 700;
 }
 
 .formula-playground-output-preview {
@@ -5216,6 +5258,56 @@ body.modal-open {
   font: 0.94rem/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
   overflow: auto;
+}
+
+.formula-playground-table-wrap {
+  border: 1px solid #d7e1eb;
+  border-radius: 12px;
+  background: #f8fbfe;
+  overflow: auto;
+}
+
+.formula-playground-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.formula-playground-table th,
+.formula-playground-table td {
+  border-bottom: 1px solid #dbe4ed;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+  color: #23415e;
+}
+
+.formula-playground-table th {
+  background: #eaf1f8;
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.formula-playground-input-table td :where(input, select) {
+  min-width: 140px;
+  height: 38px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 0.92rem;
+}
+
+.formula-playground-table tbody tr {
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.formula-playground-table tbody tr:hover {
+  background: #f1f7fd;
+}
+
+.formula-playground-table-empty {
+  color: #5d748b;
 }
 
 .formula-playground-note {

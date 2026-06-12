@@ -39,6 +39,24 @@
         selectionEnd: node.selectionEnd,
       };
     }
+    if (node.matches("[data-formula-playground-selection-field]")) {
+      const field = node.getAttribute("data-formula-playground-selection-field") || "";
+      return {
+        selector: `[data-formula-playground-selection-field="${field}"]`,
+        selectionStart: typeof node.selectionStart === "number" ? node.selectionStart : null,
+        selectionEnd: typeof node.selectionEnd === "number" ? node.selectionEnd : null,
+      };
+    }
+    if (node.matches("[data-formula-playground-row-collection][data-formula-playground-row-index][data-formula-playground-row-field]")) {
+      const collection = node.getAttribute("data-formula-playground-row-collection") || "";
+      const index = node.getAttribute("data-formula-playground-row-index") || "";
+      const field = node.getAttribute("data-formula-playground-row-field") || "";
+      return {
+        selector: `[data-formula-playground-row-collection="${collection}"][data-formula-playground-row-index="${index}"][data-formula-playground-row-field="${field}"]`,
+        selectionStart: typeof node.selectionStart === "number" ? node.selectionStart : null,
+        selectionEnd: typeof node.selectionEnd === "number" ? node.selectionEnd : null,
+      };
+    }
     return null;
   }
 
@@ -211,35 +229,189 @@
   function buildFormulaPlaygroundMarkup(playgroundPreview, escapeHtml = defaultEscapeHtml) {
     if (!playgroundPreview) return "";
 
+    const inputViewTabsMarkup = `
+      <div class="mr-tabs formula-playground-view-tabs" role="tablist" aria-label="Data Input View">
+        <button
+          type="button"
+          class="mr-tab ${playgroundPreview.inputView === "json" ? "active" : ""}"
+          data-formula-playground-input-view="json"
+          aria-selected="${playgroundPreview.inputView === "json" ? "true" : "false"}"
+        >
+          Show JSON
+        </button>
+        <button
+          type="button"
+          class="mr-tab ${playgroundPreview.inputView === "table" ? "active" : ""}"
+          data-formula-playground-input-view="table"
+          aria-selected="${playgroundPreview.inputView === "table" ? "true" : "false"}"
+        >
+          Show Table
+        </button>
+      </div>
+    `;
+
+    const inputTableMarkup = playgroundPreview.inputModel
+      ? `
+          <div class="formula-playground-input-table-stack">
+            <section class="formula-playground-input-table-card">
+              <p class="formula-playground-input-table-title">Selections</p>
+              <div class="formula-playground-table-wrap">
+                <table class="formula-playground-table formula-playground-input-table">
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      <th>Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${playgroundPreview.inputModel.selections.map((row) => `
+                      <tr>
+                        <td>${escapeHtml(row.label)}</td>
+                        <td>
+                          <select data-formula-playground-selection-field="${escapeHtml(row.field)}">
+                            ${row.options.map((option) => `
+                              <option value="${escapeHtml(option)}" ${option === row.value ? "selected" : ""}>${escapeHtml(option)}</option>
+                            `).join("")}
+                          </select>
+                        </td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            ${playgroundPreview.inputModel.sections.map((section) => `
+              <section class="formula-playground-input-table-card">
+                <p class="formula-playground-input-table-title">${escapeHtml(section.title)}</p>
+                <div class="formula-playground-table-wrap">
+                  <table class="formula-playground-table formula-playground-input-table">
+                    <thead>
+                      <tr>
+                        ${section.columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${section.rows.map((row) => `
+                        <tr>
+                          ${section.columns.map((column) => {
+                            if (column.inputType === "boolean") {
+                              return `
+                                <td>
+                                  <select
+                                    data-formula-playground-row-collection="${escapeHtml(section.key)}"
+                                    data-formula-playground-row-index="${escapeHtml(String(row.index))}"
+                                    data-formula-playground-row-field="${escapeHtml(column.key)}"
+                                  >
+                                    <option value="true" ${row[column.key] ? "selected" : ""}>True</option>
+                                    <option value="false" ${!row[column.key] ? "selected" : ""}>False</option>
+                                  </select>
+                                </td>
+                              `;
+                            }
+
+                            return `
+                              <td>
+                                <input
+                                  type="${column.inputType === "number" ? "number" : "text"}"
+                                  ${column.inputType === "number" ? 'step="0.1"' : ""}
+                                  value="${escapeHtml(String(row[column.key] ?? ""))}"
+                                  data-formula-playground-row-collection="${escapeHtml(section.key)}"
+                                  data-formula-playground-row-index="${escapeHtml(String(row.index))}"
+                                  data-formula-playground-row-field="${escapeHtml(column.key)}"
+                                >
+                              </td>
+                            `;
+                          }).join("")}
+                        </tr>
+                      `).join("")}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            `).join("")}
+          </div>
+        `
+      : "";
+
+    const dataInputEditorMarkup = playgroundPreview.inputView === "table" && !playgroundPreview.draftDataError
+      ? inputTableMarkup
+      : `
+          <textarea
+            rows="14"
+            class="formula-playground-editor formula-playground-editor-data"
+            data-formula-playground-data-input
+          >${escapeHtml(playgroundPreview.draft.dataInput)}</textarea>
+        `;
+
+    const outputPreviewMarkup = playgroundPreview.outputView === "table"
+      ? `
+          <div class="formula-playground-table-wrap">
+            <table class="formula-playground-table">
+              <thead>
+                <tr>
+                  ${playgroundPreview.outputTable.columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}
+                </tr>
+              </thead>
+              <tbody>
+                ${playgroundPreview.outputTable.rows.length
+                  ? playgroundPreview.outputTable.rows.map((row) => `
+                      <tr>
+                        ${playgroundPreview.outputTable.columns.map((column) => `<td>${escapeHtml(row[column.key])}</td>`).join("")}
+                      </tr>
+                    `).join("")
+                  : `
+                      <tr>
+                        <td colspan="${playgroundPreview.outputTable.columns.length}" class="formula-playground-table-empty">No processed output rows are available for this run.</td>
+                      </tr>
+                    `}
+              </tbody>
+            </table>
+          </div>
+        `
+      : `<pre class="formula-playground-output-preview">${escapeHtml(playgroundPreview.outputText)}</pre>`;
+
     return `
       <section class="formula-playground-card">
         <div class="formula-playground-head">
           <div>
             <p class="formula-book-helper-label">Interactive Playground</p>
             <h4>Simple Formula Tester</h4>
-            <p>Enter sample data, edit the formula, and review the processed output live.</p>
+            <p>Enter sample data, edit the formula, and run the formula to refresh the processed output.</p>
           </div>
           <div class="formula-playground-actions">
+            <button type="button" class="btn-primary" data-formula-playground-run>Run Formula</button>
             <button type="button" class="btn-ghost" data-formula-playground-reset>Reset Draft</button>
           </div>
         </div>
 
         <div class="formula-playground-stack">
-          <label class="mr-field formula-playground-box">
-            <span>Data Input</span>
-            <textarea
-              rows="14"
-              class="formula-playground-editor"
-              data-formula-playground-data-input
-            >${escapeHtml(playgroundPreview.draft.dataInput)}</textarea>
-            <p class="formula-playground-box-note">Enter sample genes, organisms, and pathogens in JSON format.</p>
-          </label>
+          <section class="formula-playground-box formula-playground-input-box">
+            <div class="formula-playground-output-meta">
+              <span class="formula-playground-output-label">Data Input</span>
+              ${inputViewTabsMarkup}
+            </div>
+
+            ${playgroundPreview.inputView === "table" && playgroundPreview.draftDataError
+              ? `
+                  <div class="formula-playground-feedback formula-playground-feedback-error">
+                    <strong>Data Input Error</strong>
+                    <p>Table view is unavailable until the JSON draft is valid. ${escapeHtml(playgroundPreview.draftDataError)}</p>
+                  </div>
+                `
+              : ""}
+
+            ${dataInputEditorMarkup}
+            <p class="formula-playground-box-note">${playgroundPreview.inputView === "table" && !playgroundPreview.draftDataError
+              ? "Edit sample genes, organisms, pathogens, and selections in table format."
+              : "Enter sample genes, organisms, and pathogens in JSON format."}</p>
+          </section>
 
           <label class="mr-field formula-playground-box">
             <span>Formula Expression</span>
             <textarea
               rows="9"
-              class="formula-playground-editor"
+              class="formula-playground-editor formula-playground-editor-expression"
               data-formula-playground-expression
             >${escapeHtml(playgroundPreview.draft.formulaExpression)}</textarea>
             <div class="formula-playground-token-bank">
@@ -251,9 +423,38 @@
 
           <section class="formula-playground-box formula-playground-output-box">
             <div class="formula-playground-output-head">
-              <span class="formula-playground-output-label">Processed Output</span>
+              <div class="formula-playground-output-meta">
+                <span class="formula-playground-output-label">Processed Output</span>
+                <div class="mr-tabs formula-playground-view-tabs" role="tablist" aria-label="Processed Output View">
+                  <button
+                    type="button"
+                    class="mr-tab ${playgroundPreview.outputView === "json" ? "active" : ""}"
+                    data-formula-playground-view="json"
+                    aria-selected="${playgroundPreview.outputView === "json" ? "true" : "false"}"
+                  >
+                    Show JSON
+                  </button>
+                  <button
+                    type="button"
+                    class="mr-tab ${playgroundPreview.outputView === "table" ? "active" : ""}"
+                    data-formula-playground-view="table"
+                    aria-selected="${playgroundPreview.outputView === "table" ? "true" : "false"}"
+                  >
+                    Show Table
+                  </button>
+                </div>
+              </div>
               <span class="mr-stat"><strong>${escapeHtml(playgroundPreview.formulaResult.status || "Preview")}</strong><span>Formula Result</span></span>
             </div>
+
+            ${playgroundPreview.hasPendingChanges
+              ? `
+                  <div class="formula-playground-feedback">
+                    <strong>Draft Updated</strong>
+                    <p>New edits are ready. Select Run Formula to process the latest data and formula.</p>
+                  </div>
+                `
+              : ""}
 
             ${playgroundPreview.dataError
               ? `
@@ -278,8 +479,8 @@
                   </div>
                 `}
 
-            <pre class="formula-playground-output-preview">${escapeHtml(playgroundPreview.outputText)}</pre>
-            <p class="formula-book-note formula-playground-note">Preview only: this box shows the processed result generated from the current sample data and formula.</p>
+            ${outputPreviewMarkup}
+            <p class="formula-book-note formula-playground-note">This box shows the processed result from the last formula run.</p>
           </section>
         </div>
       </section>
@@ -498,6 +699,91 @@
     });
 
     const playgroundApi = getFormulaPlaygroundApi();
+    panelBody.querySelector("[data-formula-playground-run]")?.addEventListener("click", () => {
+      if (typeof playgroundApi?.runFormulaPlaygroundDraft !== "function") {
+        return;
+      }
+      playgroundApi.runFormulaPlaygroundDraft();
+      onStateChange({
+        ...viewModel.state,
+      });
+    });
+
+    Array.from(panelBody.querySelectorAll("[data-formula-playground-input-view]")).forEach((button) => {
+      button.addEventListener("click", () => {
+        if (typeof playgroundApi?.writeFormulaPlaygroundInputView !== "function") {
+          return;
+        }
+        playgroundApi.writeFormulaPlaygroundInputView(button.getAttribute("data-formula-playground-input-view") || "json");
+        onStateChange({
+          ...viewModel.state,
+        });
+      });
+    });
+
+    Array.from(panelBody.querySelectorAll("[data-formula-playground-view]")).forEach((button) => {
+      button.addEventListener("click", () => {
+        if (typeof playgroundApi?.writeFormulaPlaygroundOutputView !== "function") {
+          return;
+        }
+        playgroundApi.writeFormulaPlaygroundOutputView(button.getAttribute("data-formula-playground-view") || "json");
+        onStateChange({
+          ...viewModel.state,
+        });
+      });
+    });
+
+    Array.from(panelBody.querySelectorAll("[data-formula-playground-selection-field]")).forEach((node) => {
+      node.addEventListener("change", (event) => {
+        if (
+          typeof playgroundApi?.readFormulaPlaygroundDraft !== "function"
+          || typeof playgroundApi?.writeFormulaPlaygroundDraft !== "function"
+          || typeof playgroundApi?.updateFormulaPlaygroundDraftSelection !== "function"
+        ) {
+          return;
+        }
+        const currentDraft = playgroundApi.readFormulaPlaygroundDraft();
+        pendingFocusDescriptor = captureFocusDescriptor(event.target);
+        const nextDraft = playgroundApi.updateFormulaPlaygroundDraftSelection(
+          event.target?.getAttribute("data-formula-playground-selection-field") || "",
+          event.target?.value || "",
+          currentDraft
+        );
+        playgroundApi.writeFormulaPlaygroundDraft(nextDraft);
+        onStateChange({
+          ...viewModel.state,
+        });
+      });
+    });
+
+    Array.from(panelBody.querySelectorAll("[data-formula-playground-row-collection][data-formula-playground-row-index][data-formula-playground-row-field]")).forEach((node) => {
+      const handler = (event) => {
+        if (
+          typeof playgroundApi?.readFormulaPlaygroundDraft !== "function"
+          || typeof playgroundApi?.writeFormulaPlaygroundDraft !== "function"
+          || typeof playgroundApi?.updateFormulaPlaygroundDraftRow !== "function"
+        ) {
+          return;
+        }
+        const currentDraft = playgroundApi.readFormulaPlaygroundDraft();
+        pendingFocusDescriptor = captureFocusDescriptor(event.target);
+        const nextDraft = playgroundApi.updateFormulaPlaygroundDraftRow(
+          event.target?.getAttribute("data-formula-playground-row-collection") || "",
+          event.target?.getAttribute("data-formula-playground-row-index") || "",
+          event.target?.getAttribute("data-formula-playground-row-field") || "",
+          event.target?.value || "",
+          currentDraft
+        );
+        playgroundApi.writeFormulaPlaygroundDraft(nextDraft);
+        onStateChange({
+          ...viewModel.state,
+        });
+      };
+
+      node.addEventListener("input", handler);
+      node.addEventListener("change", handler);
+    });
+
     panelBody.querySelector("[data-formula-playground-reset]")?.addEventListener("click", () => {
       playgroundApi?.resetFormulaPlaygroundDraft?.();
       onStateChange({

@@ -6,6 +6,23 @@
   root.LabCenterFormulaPlayground = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, (root) => {
   const formulaPlaygroundStorageKey = "labcenter.formula-playground.v1";
+  const formulaPlaygroundRunStorageKey = "labcenter.formula-playground-run.v1";
+  const formulaPlaygroundInputViewStorageKey = "labcenter.formula-playground-input-view.v1";
+  const formulaPlaygroundOutputViewStorageKey = "labcenter.formula-playground-output-view.v1";
+
+  function getFormulaEngineApi() {
+    if (root?.LabCenterFormulaEngine) {
+      return root.LabCenterFormulaEngine;
+    }
+    if (typeof module === "object" && module.exports && typeof require === "function") {
+      try {
+        return require("./formula-engine.js");
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
 
   function createDefaultFormulaPlaygroundData() {
     return {
@@ -48,6 +65,9 @@
   });
 
   let memoryDraft = cloneFormulaPlaygroundDraft(defaultFormulaPlaygroundDraft);
+  let memoryRunDraft = null;
+  let memoryInputView = "json";
+  let memoryOutputView = "json";
 
   function cloneFormulaPlaygroundDraft(draft) {
     const source = draft || defaultFormulaPlaygroundDraft;
@@ -55,6 +75,20 @@
       dataInput: String(source.dataInput || ""),
       formulaExpression: String(source.formulaExpression || ""),
     };
+  }
+
+  function areFormulaPlaygroundDraftsEqual(leftDraft, rightDraft) {
+    const left = cloneFormulaPlaygroundDraft(leftDraft);
+    const right = cloneFormulaPlaygroundDraft(rightDraft);
+    return left.dataInput === right.dataInput && left.formulaExpression === right.formulaExpression;
+  }
+
+  function normalizeFormulaPlaygroundOutputView(value) {
+    return String(value || "").trim().toLowerCase() === "table" ? "table" : "json";
+  }
+
+  function normalizeFormulaPlaygroundInputView(value) {
+    return String(value || "").trim().toLowerCase() === "table" ? "table" : "json";
   }
 
   function getPlaygroundStorage() {
@@ -189,6 +223,27 @@
     return cloneFormulaPlaygroundDraft(memoryDraft);
   }
 
+  function readFormulaPlaygroundRunDraft(fallbackDraft) {
+    const storage = getPlaygroundStorage();
+    if (storage) {
+      try {
+        const raw = storage.getItem(formulaPlaygroundRunStorageKey);
+        if (raw) {
+          memoryRunDraft = normalizeFormulaPlaygroundDraft(JSON.parse(raw));
+          return cloneFormulaPlaygroundDraft(memoryRunDraft);
+        }
+      } catch {
+        // Keep the in-memory fallback when storage cannot be read.
+      }
+    }
+
+    if (!memoryRunDraft) {
+      memoryRunDraft = normalizeFormulaPlaygroundDraft(fallbackDraft || readFormulaPlaygroundDraft());
+    }
+
+    return cloneFormulaPlaygroundDraft(memoryRunDraft);
+  }
+
   function writeFormulaPlaygroundDraft(nextDraft) {
     const normalized = normalizeFormulaPlaygroundDraft(nextDraft);
     memoryDraft = cloneFormulaPlaygroundDraft(normalized);
@@ -203,12 +258,95 @@
     return cloneFormulaPlaygroundDraft(memoryDraft);
   }
 
+  function writeFormulaPlaygroundRunDraft(nextDraft) {
+    const normalized = normalizeFormulaPlaygroundDraft(nextDraft);
+    memoryRunDraft = cloneFormulaPlaygroundDraft(normalized);
+    const storage = getPlaygroundStorage();
+    if (storage) {
+      try {
+        storage.setItem(formulaPlaygroundRunStorageKey, JSON.stringify(memoryRunDraft));
+      } catch {
+        // Keep the in-memory run draft even if storage is unavailable.
+      }
+    }
+    return cloneFormulaPlaygroundDraft(memoryRunDraft);
+  }
+
+  function readFormulaPlaygroundOutputView() {
+    const storage = getPlaygroundStorage();
+    if (storage) {
+      try {
+        const raw = storage.getItem(formulaPlaygroundOutputViewStorageKey);
+        if (raw) {
+          memoryOutputView = normalizeFormulaPlaygroundOutputView(raw);
+          return memoryOutputView;
+        }
+      } catch {
+        // Keep the in-memory fallback when storage cannot be read.
+      }
+    }
+    return memoryOutputView;
+  }
+
+  function readFormulaPlaygroundInputView() {
+    const storage = getPlaygroundStorage();
+    if (storage) {
+      try {
+        const raw = storage.getItem(formulaPlaygroundInputViewStorageKey);
+        if (raw) {
+          memoryInputView = normalizeFormulaPlaygroundInputView(raw);
+          return memoryInputView;
+        }
+      } catch {
+        // Keep the in-memory fallback when storage cannot be read.
+      }
+    }
+    return memoryInputView;
+  }
+
+  function writeFormulaPlaygroundOutputView(nextView) {
+    memoryOutputView = normalizeFormulaPlaygroundOutputView(nextView);
+    const storage = getPlaygroundStorage();
+    if (storage) {
+      try {
+        storage.setItem(formulaPlaygroundOutputViewStorageKey, memoryOutputView);
+      } catch {
+        // Keep the in-memory output view even if storage is unavailable.
+      }
+    }
+    return memoryOutputView;
+  }
+
+  function writeFormulaPlaygroundInputView(nextView) {
+    memoryInputView = normalizeFormulaPlaygroundInputView(nextView);
+    const storage = getPlaygroundStorage();
+    if (storage) {
+      try {
+        storage.setItem(formulaPlaygroundInputViewStorageKey, memoryInputView);
+      } catch {
+        // Keep the in-memory input view even if storage is unavailable.
+      }
+    }
+    return memoryInputView;
+  }
+
+  function runFormulaPlaygroundDraft(nextDraft) {
+    const draftToRun = nextDraft ? normalizeFormulaPlaygroundDraft(nextDraft) : readFormulaPlaygroundDraft();
+    return writeFormulaPlaygroundRunDraft(draftToRun);
+  }
+
   function resetFormulaPlaygroundDraft() {
     memoryDraft = cloneFormulaPlaygroundDraft(defaultFormulaPlaygroundDraft);
+    memoryRunDraft = null;
+    memoryInputView = "json";
+    memoryOutputView = "json";
     const storage = getPlaygroundStorage();
     if (storage) {
       try {
         storage.removeItem(formulaPlaygroundStorageKey);
+        storage.removeItem(formulaPlaygroundRunStorageKey);
+        storage.removeItem(formulaPlaygroundInputViewStorageKey);
+        storage.removeItem(formulaPlaygroundOutputViewStorageKey);
       } catch {
         // Ignore storage cleanup failures.
       }
@@ -321,85 +459,40 @@
     };
   }
 
-  function escapeExpressionLiterals(source) {
-    return source
-      .replace(/\bAND\b/gi, "&&")
-      .replace(/\bOR\b/gi, "||")
-      .replace(/\bNOT\b/gi, "!")
-      .replace(/\bTRUE\b/gi, "true")
-      .replace(/\bFALSE\b/gi, "false")
-      .replace(/\bNULL\b/gi, "null")
-      .replace(/<>/g, "!=")
-      .replace(/(^|[^<>=!])=([^=])/g, "$1==$2");
-  }
+  function createFormulaRuntime(parsedData, formulaContext) {
+    const helpers = createFormulaHelpers(parsedData);
+    const formulaState = {
+      selected_gene: String(formulaContext?.selected_gene ?? parsedData?.selected_gene ?? ""),
+      selected_organism: String(formulaContext?.selected_organism ?? parsedData?.selected_organism ?? ""),
+      selected_pathogen: String(formulaContext?.selected_pathogen ?? parsedData?.selected_pathogen ?? ""),
+      status: formulaContext?.status ?? null,
+      value: formulaContext?.value ?? "",
+    };
 
-  function transformPlaygroundExpression(source) {
-    return escapeExpressionLiterals(String(source || ""))
-      .replace(/@Gene\(([^)]+)\)\.([A-Za-z_][A-Za-z0-9_]*)/g, 'gene($1).$2')
-      .replace(/@Gene\(([^)]+)\)/g, 'gene($1)')
-      .replace(/@Organism\(([^)]+)\)\.([A-Za-z_][A-Za-z0-9_]*)/g, 'organism($1).$2')
-      .replace(/@Organism\(([^)]+)\)/g, 'organism($1)')
-      .replace(/@Pathogen\(([^)]+)\)\.([A-Za-z_][A-Za-z0-9_]*)/g, 'pathogen($1).$2')
-      .replace(/@Pathogen\(([^)]+)\)/g, 'pathogen($1)')
-      .replace(/@Formula\(\)\.([A-Za-z_][A-Za-z0-9_]*)/g, "formula.$1");
-  }
-
-  function assertSafeExpression(source) {
-    const text = String(source || "");
-    const blockedPatterns = [
-      /;/,
-      /\bfunction\b/i,
-      /=>/,
-      /\bwhile\b/i,
-      /\bfor\b/i,
-      /\bclass\b/i,
-      /\bimport\b/i,
-      /\bexport\b/i,
-      /\bwindow\b/i,
-      /\bdocument\b/i,
-      /\bglobalThis\b/i,
-      /\bconstructor\b/i,
-      /\bprototype\b/i,
-      /__proto__/i,
-      /\bnew\b/i,
-      /[{}`]/,
-    ];
-
-    if (blockedPatterns.some((pattern) => pattern.test(text))) {
-      throw new Error("Only safe expression syntax is allowed in the playground preview.");
-    }
+    return {
+      variables: {
+        selected_gene: formulaState.selected_gene,
+        selected_organism: formulaState.selected_organism,
+        selected_pathogen: formulaState.selected_pathogen,
+        formula_status: formulaState.status,
+        formula_value: formulaState.value,
+      },
+      functions: {
+        ...helpers,
+        "@Gene": (selectorValue) => helpers.gene(selectorValue),
+        "@Organism": (selectorValue) => helpers.organism(selectorValue),
+        "@Pathogen": (selectorValue) => helpers.pathogen(selectorValue),
+        "@Formula": () => ({ ...formulaState }),
+      },
+    };
   }
 
   function evaluatePlaygroundExpression(source, parsedData, formulaContext) {
-    assertSafeExpression(source);
-    const transformed = transformPlaygroundExpression(source);
-    const evaluator = Function(
-      "helpers",
-      "formula",
-      `
-        const {
-          IF,
-          COUNT,
-          ANY,
-          ALL,
-          COALESCE,
-          ROUND,
-          LOWER,
-          UPPER,
-          gene,
-          organism,
-          pathogen
-        } = helpers;
-        const selected_gene = formula?.selected_gene ?? "";
-        const selected_organism = formula?.selected_organism ?? "";
-        const selected_pathogen = formula?.selected_pathogen ?? "";
-        const formula_status = formula?.status ?? null;
-        const formula_value = formula?.value ?? null;
-        return (${transformed});
-      `
-    );
-
-    return evaluator(createFormulaHelpers(parsedData), formulaContext || {});
+    const formulaEngine = getFormulaEngineApi();
+    if (typeof formulaEngine?.evaluateFormulaExpression !== "function") {
+      throw new Error("Formula engine is unavailable.");
+    }
+    return formulaEngine.evaluateFormulaExpression(source, createFormulaRuntime(parsedData, formulaContext));
   }
 
   function normalizeFormulaPreviewValue(value) {
@@ -474,7 +567,7 @@
 
   function buildFormulaPlaygroundOutput(preview) {
     return {
-      formula: preview.draft.formulaExpression,
+      formula: preview.executedDraft.formulaExpression,
       evaluated_result: preview.formulaResult.displayValue || "",
       selected_gene: preview.selectedGene,
       selected_organism: preview.selectedOrganism,
@@ -483,13 +576,194 @@
     };
   }
 
+  function buildFormulaPlaygroundInputModel(parsedDraftData) {
+    const genes = Array.isArray(parsedDraftData?.genes) ? parsedDraftData.genes : [];
+    const organisms = Array.isArray(parsedDraftData?.organisms) ? parsedDraftData.organisms : [];
+    const pathogens = Array.isArray(parsedDraftData?.pathogens) ? parsedDraftData.pathogens : [];
+
+    return {
+      selections: [
+        {
+          field: "selected_gene",
+          label: "Selected Gene",
+          value: String(parsedDraftData?.selected_gene || ""),
+          options: genes.map((item) => item.label),
+        },
+        {
+          field: "selected_organism",
+          label: "Selected Organism",
+          value: String(parsedDraftData?.selected_organism || ""),
+          options: organisms.map((item) => item.label),
+        },
+        {
+          field: "selected_pathogen",
+          label: "Selected Pathogen",
+          value: String(parsedDraftData?.selected_pathogen || ""),
+          options: pathogens.map((item) => item.label),
+        },
+      ],
+      sections: [
+        {
+          key: "genes",
+          title: "Genes",
+          columns: [
+            { key: "label", label: "Label", inputType: "text" },
+            { key: "ct", label: "Ct", inputType: "number" },
+            { key: "result", label: "Result", inputType: "text" },
+          ],
+          rows: genes.map((item, index) => ({
+            index,
+            label: item.label,
+            ct: item.ct ?? "",
+            result: item.result,
+          })),
+        },
+        {
+          key: "organisms",
+          title: "Organisms",
+          columns: [
+            { key: "label", label: "Label", inputType: "text" },
+            { key: "detected", label: "Detected", inputType: "boolean" },
+            { key: "result", label: "Result", inputType: "text" },
+          ],
+          rows: organisms.map((item, index) => ({
+            index,
+            label: item.label,
+            detected: item.detected,
+            result: item.result,
+          })),
+        },
+        {
+          key: "pathogens",
+          title: "Pathogens",
+          columns: [
+            { key: "label", label: "Label", inputType: "text" },
+            { key: "ct", label: "Ct", inputType: "number" },
+            { key: "result", label: "Result", inputType: "text" },
+          ],
+          rows: pathogens.map((item, index) => ({
+            index,
+            label: item.label,
+            ct: item.ct ?? "",
+            result: item.result,
+          })),
+        },
+      ],
+    };
+  }
+
+  function updateSelectionReferenceOnLabelChange(parsedDraftData, collection, oldLabel, newLabel) {
+    if (oldLabel === newLabel) return;
+    if (collection === "genes" && parsedDraftData.selected_gene === oldLabel) {
+      parsedDraftData.selected_gene = newLabel;
+    }
+    if (collection === "organisms" && parsedDraftData.selected_organism === oldLabel) {
+      parsedDraftData.selected_organism = newLabel;
+    }
+    if (collection === "pathogens" && parsedDraftData.selected_pathogen === oldLabel) {
+      parsedDraftData.selected_pathogen = newLabel;
+    }
+  }
+
+  function updateFormulaPlaygroundDraftSelection(field, value, inputDraft) {
+    const draft = normalizeFormulaPlaygroundDraft(inputDraft || readFormulaPlaygroundDraft());
+    const parsedDraftData = parseFormulaPlaygroundDataInput(draft.dataInput);
+    if (!["selected_gene", "selected_organism", "selected_pathogen"].includes(field)) {
+      return cloneFormulaPlaygroundDraft(draft);
+    }
+
+    parsedDraftData[field] = String(value || "").trim();
+    return {
+      ...draft,
+      dataInput: stringifyFormulaPlaygroundData(parsedDraftData),
+    };
+  }
+
+  function updateFormulaPlaygroundDraftRow(collection, index, field, value, inputDraft) {
+    const draft = normalizeFormulaPlaygroundDraft(inputDraft || readFormulaPlaygroundDraft());
+    const parsedDraftData = parseFormulaPlaygroundDataInput(draft.dataInput);
+    const rows = Array.isArray(parsedDraftData?.[collection]) ? parsedDraftData[collection] : null;
+    const rowIndex = Number(index);
+
+    if (!rows || !Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= rows.length) {
+      return cloneFormulaPlaygroundDraft(draft);
+    }
+
+    const row = rows[rowIndex];
+    const oldLabel = String(row?.label || "");
+
+    if (field === "ct") {
+      row.ct = value === "" ? null : normalizeCtValue(value, null);
+    } else if (field === "detected") {
+      row.detected = normalizeDetectedValue(value, false);
+    } else {
+      row[field] = String(value || "").trim();
+      if (field === "label") {
+        updateSelectionReferenceOnLabelChange(parsedDraftData, collection, oldLabel, row[field]);
+      }
+    }
+
+    return {
+      ...draft,
+      dataInput: stringifyFormulaPlaygroundData(parsedDraftData),
+    };
+  }
+
+  function formatFormulaPlaygroundTableValue(value, type = "text") {
+    if (value === null || value === undefined || value === "") return "-";
+    if (type === "boolean") return value ? "Yes" : "No";
+    if (typeof value === "number") return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
+    return String(value);
+  }
+
+  function buildFormulaPlaygroundTable(outputRows) {
+    const columns = [
+      { key: "kind", label: "Type" },
+      { key: "label", label: "Label" },
+      { key: "result", label: "Result" },
+      { key: "ct", label: "Ct" },
+      { key: "detected", label: "Detected", type: "boolean" },
+      { key: "selected", label: "Selected", type: "boolean" },
+      { key: "formula_status", label: "Formula Status" },
+    ];
+
+    return {
+      columns,
+      rows: Array.isArray(outputRows)
+        ? outputRows.map((row) => ({
+            kind: formatFormulaPlaygroundTableValue(row.kind),
+            label: formatFormulaPlaygroundTableValue(row.label),
+            result: formatFormulaPlaygroundTableValue(row.result),
+            ct: formatFormulaPlaygroundTableValue(row.ct),
+            detected: formatFormulaPlaygroundTableValue(row.detected, "boolean"),
+            selected: formatFormulaPlaygroundTableValue(row.selected, "boolean"),
+            formula_status: formatFormulaPlaygroundTableValue(row.formula_status),
+          }))
+        : [],
+    };
+  }
+
   function buildFormulaPlaygroundPreview(inputDraft) {
     const draft = normalizeFormulaPlaygroundDraft(inputDraft || readFormulaPlaygroundDraft());
+    const executedDraft = inputDraft
+      ? cloneFormulaPlaygroundDraft(draft)
+      : readFormulaPlaygroundRunDraft(draft);
+    const hasPendingChanges = !areFormulaPlaygroundDraftsEqual(draft, executedDraft);
+    const inputView = inputDraft ? "json" : readFormulaPlaygroundInputView();
+    const outputView = inputDraft ? "json" : readFormulaPlaygroundOutputView();
+    let draftData = null;
+    let draftDataError = "";
     let parsedData = null;
     let dataError = "";
 
     try {
-      parsedData = parseFormulaPlaygroundDataInput(draft.dataInput);
+      draftData = parseFormulaPlaygroundDataInput(draft.dataInput);
+    } catch (error) {
+      draftDataError = error?.message || "Unable to parse the data input draft.";
+    }
+
+    try {
+      parsedData = parseFormulaPlaygroundDataInput(executedDraft.dataInput);
     } catch (error) {
       dataError = error?.message || "Unable to parse the data input.";
     }
@@ -510,12 +784,12 @@
       truthy: false,
       displayValue: "",
       error: dataError,
-      transformedExpression: transformPlaygroundExpression(draft.formulaExpression),
+      transformedExpression: String(executedDraft.formulaExpression || ""),
     };
 
     if (parsedData && !dataError) {
       try {
-        const rawValue = evaluatePlaygroundExpression(draft.formulaExpression, parsedData, {
+        const rawValue = evaluatePlaygroundExpression(executedDraft.formulaExpression, parsedData, {
           selected_gene: parsedData.selected_gene,
           selected_organism: parsedData.selected_organism,
           selected_pathogen: parsedData.selected_pathogen,
@@ -525,7 +799,7 @@
         formulaResult = {
           ...normalizeFormulaPreviewValue(rawValue),
           error: "",
-          transformedExpression: transformPlaygroundExpression(draft.formulaExpression),
+          transformedExpression: String(executedDraft.formulaExpression || ""),
         };
       } catch (error) {
         formulaResult.error = error?.message || "Unable to evaluate the formula expression.";
@@ -535,6 +809,7 @@
     const outputRows = parsedData ? buildOutputRows(parsedData, formulaResult) : [];
     const outputObject = buildFormulaPlaygroundOutput({
       draft,
+      executedDraft,
       formulaResult,
       selectedGene,
       selectedOrganism,
@@ -544,6 +819,13 @@
 
     return {
       draft,
+      executedDraft,
+      hasPendingChanges,
+      inputView,
+      outputView,
+      draftData,
+      draftDataError,
+      inputModel: draftData ? buildFormulaPlaygroundInputModel(draftData) : null,
       parsedData,
       dataError,
       selectedGene,
@@ -551,6 +833,7 @@
       selectedPathogen,
       formulaResult,
       outputRows,
+      outputTable: buildFormulaPlaygroundTable(outputRows),
       outputObject,
       outputText: JSON.stringify(outputObject, null, 2),
       helperTokens: [
@@ -568,6 +851,13 @@
     createDefaultFormulaPlaygroundDraft,
     readFormulaPlaygroundDraft,
     writeFormulaPlaygroundDraft,
+    readFormulaPlaygroundInputView,
+    writeFormulaPlaygroundInputView,
+    updateFormulaPlaygroundDraftSelection,
+    updateFormulaPlaygroundDraftRow,
+    readFormulaPlaygroundOutputView,
+    writeFormulaPlaygroundOutputView,
+    runFormulaPlaygroundDraft,
     resetFormulaPlaygroundDraft,
     buildFormulaPlaygroundPreview,
   };

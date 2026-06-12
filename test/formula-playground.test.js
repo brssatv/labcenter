@@ -7,6 +7,11 @@ const {
   createDefaultFormulaPlaygroundDraft,
   writeFormulaPlaygroundDraft,
   readFormulaPlaygroundDraft,
+  writeFormulaPlaygroundInputView,
+  writeFormulaPlaygroundOutputView,
+  updateFormulaPlaygroundDraftSelection,
+  updateFormulaPlaygroundDraftRow,
+  runFormulaPlaygroundDraft,
   resetFormulaPlaygroundDraft,
   buildFormulaPlaygroundPreview,
 } = require("../assets/formula-playground.js");
@@ -19,6 +24,9 @@ test("formula playground default preview evaluates the starter SARS-CoV-2 expres
   const preview = buildFormulaPlaygroundPreview(createDefaultFormulaPlaygroundDraft());
 
   assert.equal(preview.formulaResult.status, "Positive");
+  assert.equal(preview.formulaResult.error, "");
+  assert.equal(preview.inputView, "json");
+  assert.equal(preview.outputView, "json");
   assert.equal(preview.selectedGene.label, "E Gene");
   assert.equal(preview.selectedOrganism.label, "SARS-CoV-2");
   assert.equal(preview.selectedPathogen.label, "SARS-CoV-2");
@@ -41,6 +49,84 @@ test("formula playground lets edited JSON data change the live result", () => {
 
   assert.equal(preview.formulaResult.status, "Negative");
   assert.equal(preview.outputObject.evaluated_result, "Negative");
+});
+
+test("formula playground keeps showing the last run output until Run Formula is requested", () => {
+  buildFormulaPlaygroundPreview();
+
+  const sampleData = createDefaultFormulaPlaygroundData();
+  sampleData.genes = sampleData.genes.map((item) => ({
+    ...item,
+    ct: 36.4,
+    result: "Not Detected",
+  }));
+
+  writeFormulaPlaygroundDraft({
+    ...createDefaultFormulaPlaygroundDraft(),
+    dataInput: stringifyFormulaPlaygroundData(sampleData),
+  });
+
+  const beforeRun = buildFormulaPlaygroundPreview();
+  assert.equal(beforeRun.formulaResult.status, "Positive");
+  assert.equal(beforeRun.hasPendingChanges, true);
+
+  runFormulaPlaygroundDraft();
+
+  const afterRun = buildFormulaPlaygroundPreview();
+  assert.equal(afterRun.formulaResult.status, "Negative");
+  assert.equal(afterRun.hasPendingChanges, false);
+});
+
+test("formula playground can switch data input between JSON and table views", () => {
+  writeFormulaPlaygroundInputView("table");
+
+  const preview = buildFormulaPlaygroundPreview();
+
+  assert.equal(preview.inputView, "table");
+  assert.deepEqual(preview.inputModel.selections.map((row) => row.label), [
+    "Selected Gene",
+    "Selected Organism",
+    "Selected Pathogen",
+  ]);
+  assert.deepEqual(preview.inputModel.sections.map((section) => section.title), [
+    "Genes",
+    "Organisms",
+    "Pathogens",
+  ]);
+});
+
+test("formula playground can switch processed output between JSON and table views", () => {
+  writeFormulaPlaygroundOutputView("table");
+
+  const preview = buildFormulaPlaygroundPreview();
+
+  assert.equal(preview.outputView, "table");
+  assert.deepEqual(preview.outputTable.columns.map((column) => column.label), [
+    "Type",
+    "Label",
+    "Result",
+    "Ct",
+    "Detected",
+    "Selected",
+    "Formula Status",
+  ]);
+  assert.ok(preview.outputTable.rows.length >= 4);
+});
+
+test("formula playground table helpers update selections and row values inside the JSON draft", () => {
+  const geneSelectionDraft = updateFormulaPlaygroundDraftSelection(
+    "selected_gene",
+    "N Gene",
+    createDefaultFormulaPlaygroundDraft()
+  );
+  const ctUpdatedDraft = updateFormulaPlaygroundDraftRow("genes", 0, "ct", "29.4", geneSelectionDraft);
+  const detectedUpdatedDraft = updateFormulaPlaygroundDraftRow("organisms", 1, "detected", "true", ctUpdatedDraft);
+
+  const preview = buildFormulaPlaygroundPreview(detectedUpdatedDraft);
+
+  assert.equal(preview.draftData.selected_gene, "N Gene");
+  assert.equal(preview.draftData.genes[0].ct, 29.4);
+  assert.equal(preview.draftData.organisms[1].detected, true);
 });
 
 test("formula playground supports pathogen tokens and persists the simplified draft", () => {

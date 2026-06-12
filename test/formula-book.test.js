@@ -70,6 +70,9 @@ test("formula book markup includes the live toggle and display logic alongside t
   assert.match(markup, /Data Input/);
   assert.match(markup, /Formula Expression/);
   assert.match(markup, /Processed Output/);
+  assert.match(markup, /Run Formula/);
+  assert.match(markup, /Show JSON/);
+  assert.match(markup, /Show Table/);
 });
 
 test("formula book config accessor stays aligned with the live final formula", () => {
