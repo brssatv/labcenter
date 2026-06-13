@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { PDFDocument } = require("pdf-lib");
 
 const {
   Server,
@@ -50,6 +51,17 @@ function assembleChunks(chunks) {
     chunk.data.copy(output, Number(chunk.offset || 0));
   });
   return output;
+}
+
+async function createSamplePdfBuffer(label, width = 400, height = 250) {
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([width, height]);
+  page.drawText(String(label || "Sample PDF"), {
+    x: 32,
+    y: height - 52,
+    size: 18,
+  });
+  return Buffer.from(await pdf.save());
 }
 
 async function startTestSftpServer({
@@ -638,6 +650,73 @@ test("PharmD manual receipt check falls back to the order number when the access
   assert.equal(storedOrder?.pharmd?.reportReceivedMatchedBy, "order_id");
   assert.equal(storedOrder?.pharmd?.reportReceivedFileName, "Order_00001_Processed_Report.pdf");
   assert.equal(storedOrder?.pharmd?.reportReceivedRemotePath, "pharmd-pdf2/Order_00001_Processed_Report.pdf");
+});
+
+test("PharmD combined report preview joins the PharmD file before the saved final report", async (t) => {
+  const harness = await startPharmdHarness();
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const finalPdf = await createSamplePdfBuffer("Final Report Page", 420, 280);
+  const pharmdPdf = await createSamplePdfBuffer("PharmD Page", 280, 420);
+  const finalKey = "generated-reports/final/00001/final-preview.pdf";
+  const pharmdKey = "pharmd-receipts/00001/pharmd-preview.pdf";
+  const finalPath = path.join(harness.dataDir, finalKey);
+  const pharmdPath = path.join(harness.dataDir, pharmdKey);
+  fs.mkdirSync(path.dirname(finalPath), { recursive: true });
+  fs.mkdirSync(path.dirname(pharmdPath), { recursive: true });
+  fs.writeFileSync(finalPath, finalPdf);
+  fs.writeFileSync(pharmdPath, pharmdPdf);
+
+  const current = harness.portalStore.getOrderById("00001");
+  const nowIso = new Date().toISOString();
+  harness.portalStore.upsertOrders([
+    {
+      ...current,
+      updatedAt: nowIso,
+      generatedReports: {
+        ...(current?.generatedReports || {}),
+        final: {
+          bucket: "local",
+          key: finalKey,
+          storageType: "local",
+          fileName: "Order_00001_Final_Report.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: finalPdf.length,
+          generatedAt: nowIso,
+        },
+      },
+      pharmd: {
+        ...((current?.pharmd && typeof current.pharmd === "object") ? current.pharmd : {}),
+        reportReceivedAt: nowIso,
+        receivedReport: {
+          bucket: "local",
+          key: pharmdKey,
+          storageType: "local",
+          fileName: "Order_00001_PharmD_Report.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: pharmdPdf.length,
+          createdAt: nowIso,
+        },
+      },
+    },
+  ]);
+
+  const response = await fetch(`${harness.baseUrl}/api/pharmd/orders/00001/combined-report-pdf`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/pdf");
+
+  const combinedBuffer = Buffer.from(await response.arrayBuffer());
+  const combinedPdf = await PDFDocument.load(combinedBuffer);
+  assert.equal(combinedPdf.getPageCount(), 2);
+  const [firstPage, secondPage] = combinedPdf.getPages();
+  assert.deepEqual(firstPage.getSize(), { width: 280, height: 420 });
+  assert.deepEqual(secondPage.getSize(), { width: 420, height: 280 });
 });
 
 test("PharmD auto receipt polling stops after five misses and manual checks can still retry later", async (t) => {

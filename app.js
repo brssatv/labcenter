@@ -3114,6 +3114,10 @@ function hasPharmdReceivedFile(order) {
   );
 }
 
+function canPreviewCombinedPharmdReport(order) {
+  return Boolean(hasSavedFinalReport(order) && hasPharmdReceivedFile(order));
+}
+
 function resolvePharmdMessageFileName(order) {
   const explicit = String(
     order?.pharmd?.messageFileName
@@ -8999,6 +9003,7 @@ function renderOutputResults() {
   const sendingPharmdOrders = new Set();
   const checkingPharmdOrders = new Set();
   const openingPharmdReceiptOrders = new Set();
+  const openingCombinedPharmdOrders = new Set();
   const publishingFaxOrders = new Set();
   const workflowSavingOrders = new Set();
   const previewLoadingOrders = new Set();
@@ -9521,6 +9526,55 @@ function renderOutputResults() {
     }
   }
 
+  async function openCombinedPharmdPreview(orderId) {
+    const order = findOrderById(orderId);
+    if (!order) throw new Error("Order not found.");
+    if (!canPreviewCombinedPharmdReport(order)) {
+      throw new Error("Both the saved final report and the PharmD file are required for the combined preview.");
+    }
+
+    const previewWindow = window.open("", "_blank", "popup=yes,width=1080,height=860");
+    if (!previewWindow) {
+      throw new Error("Unable to open preview window. Please allow pop-ups and try again.");
+    }
+    writeLoadingPreviewWindow(
+      previewWindow,
+      `Order #${order?.orderId || "-"} Combined PDF`,
+      `Loading the combined final report and PharmD file for Order #${order?.orderId || "-"}.`
+    );
+
+    try {
+      const response = await fetch(`/api/pharmd/orders/${encodeURIComponent(orderId)}/combined-report-pdf`, {
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        let errorMessage = "Unable to load the combined PharmD PDF.";
+        try {
+          const payload = await response.json();
+          errorMessage = String(payload?.error || errorMessage);
+        } catch {
+          const text = await response.text();
+          if (text.trim()) errorMessage = text.trim();
+        }
+        throw new Error(errorMessage);
+      }
+      const blob = await response.blob();
+      if (!blob.size) {
+        throw new Error("The combined PharmD PDF is empty.");
+      }
+      const blobUrl = URL.createObjectURL(blob);
+      previewWindow.location.replace(blobUrl);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60 * 1000);
+    } catch (error) {
+      writePreviewWindowError(
+        previewWindow,
+        "Combined PDF Unavailable",
+        error?.message || "Unable to load the combined PharmD PDF."
+      );
+      throw error;
+    }
+  }
+
   async function markOrderComplete(orderId) {
     const order = findOrderById(orderId);
     if (!order) throw new Error("Order not found.");
@@ -9611,6 +9665,7 @@ function renderOutputResults() {
             <th>PharmD File</th>
             <th>Skip PharmD</th>
             <th>Validate</th>
+            <th>Combined</th>
             <th>Mark as Complete</th>
           </tr>
         </thead>
@@ -9627,6 +9682,7 @@ function renderOutputResults() {
               const hasSavedFinal = hasSavedFinalReport(row);
               const hasReceivedFile = hasPharmdReceivedFile(row);
               const canValidate = hasSavedFinal && canValidatePharmdFinalReport(row);
+              const canPreviewCombined = canPreviewCombinedPharmdReport(row);
               const pharmdStatusToken = String(
                 row?.pharmd?.sendStatus
                 || row?.pharmd?.deliveryStatus
@@ -9636,6 +9692,7 @@ function renderOutputResults() {
               const isSending = sendingPharmdOrders.has(orderId);
               const isChecking = checkingPharmdOrders.has(orderId);
               const isOpeningReceipt = openingPharmdReceiptOrders.has(orderId);
+              const isOpeningCombined = openingCombinedPharmdOrders.has(orderId);
               const isWorkflowSaving = workflowSavingOrders.has(orderId);
               const isPreviewLoading = previewLoadingOrders.has(orderId);
               const sendDisabled = !hasMessage || isSending || isWorkflowSaving || skipEnabled;
@@ -9758,6 +9815,19 @@ function renderOutputResults() {
                       ${isPreviewLoading ? "Opening..." : "Validate"}
                     </button>
                     <div class="subtle output-results-inline-note">${escapeHtml(validationHint)}</div>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      class="table-action-btn preview-btn"
+                      data-preview-pharmd-combined="${escapeHtml(orderId)}"
+                      ${canPreviewCombined && !isOpeningCombined ? "" : "disabled"}
+                    >
+                      ${isOpeningCombined ? "Opening..." : "Preview"}
+                    </button>
+                    <div class="subtle output-results-inline-note">
+                      ${canPreviewCombined ? "Preview final report with the PharmD file in one PDF." : "Requires saved final report and PharmD file."}
+                    </div>
                   </td>
                   <td>
                     <button
@@ -9923,6 +9993,23 @@ function renderOutputResults() {
         })
         .finally(() => {
           openingPharmdReceiptOrders.delete(orderId);
+          renderOutputResultsTable();
+        });
+      return;
+    }
+
+    const combinedBtn = event.target.closest("[data-preview-pharmd-combined]");
+    if (combinedBtn) {
+      const orderId = String(combinedBtn.getAttribute("data-preview-pharmd-combined") || "").trim();
+      if (!orderId || openingCombinedPharmdOrders.has(orderId)) return;
+      openingCombinedPharmdOrders.add(orderId);
+      renderOutputResultsTable();
+      openCombinedPharmdPreview(orderId)
+        .catch((error) => {
+          alert(error?.message || "Unable to open the combined PharmD PDF.");
+        })
+        .finally(() => {
+          openingCombinedPharmdOrders.delete(orderId);
           renderOutputResultsTable();
         });
       return;

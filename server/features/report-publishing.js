@@ -3,6 +3,7 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
+const { mergePdfBuffers } = require("../../lib/pdf-merge");
 
 function sanitizeReportPdfFileName(value) {
   const raw = String(value || "").trim();
@@ -64,6 +65,10 @@ function createPublishFaxRecord(existingRecord, patch = {}, displayNumber) {
     deliveryVendor: "SRFax",
     channel: "fax",
   };
+}
+
+function buildCombinedPharmdFileName(orderId) {
+  return sanitizeReportPdfFileName(`Order_${String(orderId || "").trim() || "Combined"}_Final_PharmD_Combined.pdf`);
 }
 
 async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType }, dependencies) {
@@ -603,6 +608,68 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       });
       return res.status(Number(error?.statusCode) || 500).json({
         error: error?.message || "Unable to load PharmD return file.",
+      });
+    }
+  });
+
+  app.get("/api/pharmd/orders/:orderId/combined-report-pdf", requireAuthenticatedUser, async (req, res) => {
+    try {
+      const orderId = String(req.params.orderId || "").trim();
+      if (!orderId) {
+        return res.status(400).json({ error: "Order ID is required." });
+      }
+
+      const existingOrder = portalStore.getOrderById(orderId);
+      if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+
+      const generatedFinal = existingOrder?.generatedReports?.final;
+      const receivedReport = existingOrder?.pharmd?.receivedReport;
+      if (!generatedFinal?.bucket || !generatedFinal?.key) {
+        return res.status(404).json({ error: "Saved final report PDF not found for this order." });
+      }
+      if (!receivedReport?.bucket || !receivedReport?.key) {
+        return res.status(404).json({ error: "PharmD return file not found for this order." });
+      }
+
+      const finalReport = await loadStoredPortalFileBuffer(generatedFinal, dependencies, {
+        notFoundMessage: "Saved final report PDF not found for this order.",
+        loadFailedMessage: "Saved final report PDF could not be loaded.",
+        serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
+      });
+      const pharmdReport = await loadStoredPortalFileBuffer(receivedReport, dependencies, {
+        notFoundMessage: "PharmD return file not found for this order.",
+        loadFailedMessage: "PharmD return file could not be loaded.",
+        serviceUnavailableMessage: "S3 file storage is not configured for this environment.",
+      });
+      const combinedBuffer = await mergePdfBuffers([
+        { buffer: pharmdReport.buffer, label: "PharmD return PDF" },
+        { buffer: finalReport.buffer, label: "saved final report PDF" },
+      ]);
+      const fileName = buildCombinedPharmdFileName(orderId);
+
+      auditLog(req, "view_pharmd_combined_report_pdf", "success", {
+        orderId,
+        finalBucket: finalReport.bucket,
+        finalKey: finalReport.key,
+        pharmdBucket: pharmdReport.bucket,
+        pharmdKey: pharmdReport.key,
+        bytes: combinedBuffer.length,
+      });
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+      res.setHeader("Cache-Control", "private, max-age=0, no-store");
+      res.setHeader("Content-Length", String(combinedBuffer.length));
+      return res.send(combinedBuffer);
+    } catch (error) {
+      auditLog(req, "view_pharmd_combined_report_pdf", "failed", {
+        orderId: String(req.params.orderId || ""),
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(Number(error?.statusCode) || 500).json({
+        error: error?.message || "Unable to build the combined PharmD PDF.",
       });
     }
   });
