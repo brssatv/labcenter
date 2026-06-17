@@ -6218,20 +6218,14 @@ function renderOrderPatient(patient) {
 
     const nextOrderRecords = preparedRows.map((serviceRow, index) => {
       const orderId = String(reservedOrderIds[index] || "").trim();
-      const createdAt = new Date().toISOString();
       return {
         orderId,
-        accessionNo: buildAccessionNumber({
-          serviceLine: serviceRow,
-          orderDate: sampleCollectTime || createdAt,
-          orderId,
-        }),
+        accessionPrefix: resolvePanelPrefixFromService(serviceRow),
         ...commonFields,
         services: [serviceRow],
         amount: serviceRow.price,
         concession: serviceRow.concession,
         due: serviceRow.due,
-        createdAt,
       };
     });
     try {

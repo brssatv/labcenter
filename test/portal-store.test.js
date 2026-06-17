@@ -74,3 +74,20 @@ test("portal store can list and replace registrations by patient id", () => {
     ["5559998888"]
   );
 });
+
+test("portal store reserves accession sequences independently per business day", () => {
+  const dataDir = createTempDataDir();
+  const store = createPortalStore({ dataDir });
+
+  const firstBatch = store.reserveAccessionSequences([
+    { createdAt: "2026-06-16T08:00:00.000Z" },
+    { createdAt: "2026-06-16T09:00:00.000Z" },
+  ], { timeZone: "UTC" });
+  assert.deepEqual(firstBatch.map((entry) => entry.sequence), [1, 2]);
+
+  const secondBatch = store.reserveAccessionSequences([
+    { createdAt: "2026-06-17T00:01:00.000Z" },
+    { createdAt: "2026-06-16T10:00:00.000Z" },
+  ], { timeZone: "UTC" });
+  assert.deepEqual(secondBatch.map((entry) => entry.sequence), [1, 3]);
+});

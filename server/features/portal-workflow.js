@@ -1,3 +1,6 @@
+const { DEFAULT_ACCESSION_TIME_ZONE } = require("../../lib/accession-number");
+const { prepareOrdersForBulkSave } = require("./portal-order-accessions");
+
 function registerPortalWorkflowRoutes({ app, dependencies }) {
   const {
     auditLog,
@@ -156,11 +159,13 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
         return res.status(400).json({ error: "One or more orders are required." });
       }
       const nowIso = new Date().toISOString();
-      const savedOrders = portalStore.upsertOrders(orders.map((order) => ({
-        ...order,
-        createdAt: order?.createdAt || nowIso,
-        updatedAt: order?.updatedAt || nowIso,
-      })));
+      const preparedOrders = prepareOrdersForBulkSave({
+        orders,
+        portalStore,
+        requestReceivedAt: nowIso,
+        timeZone: DEFAULT_ACCESSION_TIME_ZONE,
+      });
+      const savedOrders = portalStore.upsertOrders(preparedOrders);
       auditLog(req, "orders_bulk_save", "success", {
         count: savedOrders.length,
       });

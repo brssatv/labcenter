@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { buildAccessionNumber } = require("../lib/accession-number");
 
 function createCookieJar() {
   const jar = new Map();
@@ -44,6 +45,7 @@ async function startPortalHarness() {
     PORT: process.env.PORT,
     NODE_ENV: process.env.NODE_ENV,
     SESSION_SECRET: process.env.SESSION_SECRET,
+    LABCENTER_ACCESSION_TIME_ZONE: process.env.LABCENTER_ACCESSION_TIME_ZONE,
   };
 
   process.env.DATA_DIR = dataDir;
@@ -51,6 +53,7 @@ async function startPortalHarness() {
   process.env.PORT = "0";
   process.env.NODE_ENV = "test";
   process.env.SESSION_SECRET = "test-secret-for-portal-routes";
+  process.env.LABCENTER_ACCESSION_TIME_ZONE = "UTC";
 
   const serverPath = require.resolve("../server.js");
   delete require.cache[serverPath];
@@ -193,6 +196,13 @@ test("portal registration order id bulk order and upload-log routes persist work
         patientName: "Portal Patient",
         provider: "Dr. Rivera",
         facilityName: "North Clinic",
+        accessionNo: "SHOULD-NOT-BE-USED",
+        accessionPrefix: "EY",
+        services: [
+          {
+            serviceName: "Eye Panel",
+          },
+        ],
         status: "Pending",
       },
       {
@@ -201,12 +211,57 @@ test("portal registration order id bulk order and upload-log routes persist work
         patientName: "Portal Patient",
         provider: "Dr. Rivera",
         facilityName: "North Clinic",
+        accessionPrefix: "UT",
+        services: [
+          {
+            serviceName: "Urinary Tract Infection PCR Panel",
+          },
+        ],
         status: "Pending",
       },
     ],
   });
   assert.equal(bulkOrdersResult.response.status, 200);
   assert.equal(bulkOrdersResult.payload.orders.length, 2);
+  assert.equal(bulkOrdersResult.payload.orders[0].accessionNo, buildAccessionNumber({
+    prefix: "EY",
+    createdAt: bulkOrdersResult.payload.orders[0].createdAt,
+    dailySequence: 1,
+    timeZone: "UTC",
+  }));
+  assert.equal(bulkOrdersResult.payload.orders[1].accessionNo, buildAccessionNumber({
+    prefix: "UT",
+    createdAt: bulkOrdersResult.payload.orders[1].createdAt,
+    dailySequence: 2,
+    timeZone: "UTC",
+  }));
+
+  const nextBulkOrderResult = await sendJson(harness, "/api/portal/orders/bulk", {
+    orders: [
+      {
+        orderId: "00003",
+        patientId: "9001",
+        patientName: "Portal Patient",
+        provider: "Dr. Rivera",
+        facilityName: "North Clinic",
+        accessionPrefix: "RP",
+        services: [
+          {
+            serviceName: "Respiratory Pathogens Panel",
+          },
+        ],
+        status: "Pending",
+      },
+    ],
+  });
+  assert.equal(nextBulkOrderResult.response.status, 200);
+  assert.equal(nextBulkOrderResult.payload.orders.length, 1);
+  assert.equal(nextBulkOrderResult.payload.orders[0].accessionNo, buildAccessionNumber({
+    prefix: "RP",
+    createdAt: nextBulkOrderResult.payload.orders[0].createdAt,
+    dailySequence: 3,
+    timeZone: "UTC",
+  }));
 
   const uploadLogResult = await sendJson(harness, "/api/portal/upload-log", {
     entries: [
@@ -218,6 +273,6 @@ test("portal registration order id bulk order and upload-log routes persist work
   });
   assert.equal(uploadLogResult.response.status, 200);
   assert.equal(uploadLogResult.payload.registrations.length, 1);
-  assert.equal(uploadLogResult.payload.orders.length, 2);
+  assert.equal(uploadLogResult.payload.orders.length, 3);
   assert.equal(uploadLogResult.payload.uploadResultsLog.length, 1);
 });
