@@ -817,22 +817,14 @@ function buildAccessionNumber({ serviceLine, orderDate, orderId }) {
   return `${panelPrefix}${datePart}${orderPart}`;
 }
 
-const CODE128_PATTERNS = [
-  "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312", "132212",
-  "221213", "221312", "231212", "112232", "122132", "122231", "113222", "123122", "123221",
-  "223211", "221132", "221231", "213212", "223112", "312131", "311222", "321122", "321221",
-  "312212", "322112", "322211", "212123", "212321", "232121", "111323", "131123", "131321",
-  "112313", "132113", "132311", "211313", "231113", "231311", "112133", "112331", "132131",
-  "113123", "113321", "133121", "313121", "211331", "231131", "213113", "213311", "213131",
-  "311123", "311321", "331121", "312113", "312311", "332111", "314111", "221411", "431111",
-  "111224", "111422", "121124", "121421", "141122", "141221", "112214", "112412", "122114",
-  "122411", "142112", "142211", "241211", "221114", "413111", "241112", "134111", "111242",
-  "121142", "121241", "114212", "124112", "124211", "411212", "421112", "421211", "212141",
-  "214121", "412121", "111143", "111341", "131141", "114113", "114311", "411113", "411311",
-  "113141", "114131", "311141", "411131", "211412", "211214", "211232", "2331112",
-];
+function getBarcodeLabelApi() {
+  if (typeof window === "undefined") return null;
+  return window.LabCenterBarcodeLabel || null;
+}
 
 function normalizeCode128Value(value) {
+  const labelApi = getBarcodeLabelApi();
+  if (labelApi?.normalizeCode128Value) return labelApi.normalizeCode128Value(value);
   const raw = String(value || "").trim();
   if (!raw) return "UNKNOWN";
   return Array.from(raw)
@@ -843,122 +835,12 @@ function normalizeCode128Value(value) {
     .join("");
 }
 
-function escapeLabelHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function escapePdfString(value) {
-  return String(value || "")
-    .replace(/\\/g, "\\\\")
-    .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)")
-    .replace(/[^\x20-\x7E]/g, "?");
-}
-
-function formatPdfNumber(value) {
-  const asNumber = Number(value);
-  if (!Number.isFinite(asNumber)) return "0";
-  return String(Math.round(asNumber * 1000) / 1000);
-}
-
-function buildCode128CodeSequence(value) {
-  const payload = normalizeCode128Value(value);
-  const startCodeB = 104;
-  const stopCode = 106;
-  const codes = [startCodeB];
-
-  for (const char of payload) {
-    codes.push(char.charCodeAt(0) - 32);
-  }
-
-  let checksum = startCodeB;
-  for (let index = 1; index < codes.length; index += 1) {
-    checksum += codes[index] * index;
-  }
-  checksum %= 103;
-  codes.push(checksum, stopCode);
-  return { payload, codes };
-}
-
-function buildSimplePdfDocument({ pageWidthPt, pageHeightPt, contentStream }) {
-  const objects = [];
-  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
-  objects[2] = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>";
-  objects[3] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${formatPdfNumber(pageWidthPt)} ${formatPdfNumber(pageHeightPt)}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`;
-  objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
-  objects[5] = `<< /Length ${contentStream.length} >>\nstream\n${contentStream}\nendstream`;
-
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  for (let index = 1; index < objects.length; index += 1) {
-    offsets[index] = pdf.length;
-    pdf += `${index} 0 obj\n${objects[index]}\nendobj\n`;
-  }
-  const xrefOffset = pdf.length;
-  pdf += `xref\n0 ${objects.length}\n`;
-  pdf += "0000000000 65535 f \n";
-  for (let index = 1; index < offsets.length; index += 1) {
-    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-  return pdf;
-}
-
 function buildLabelPdfBlob({ barcodeValue, patientLine }) {
-  const pageWidthPt = 3.5 * 72;
-  const pageHeightPt = 1.125 * 72;
-
-  // Tuned to match the provided reference label proportions.
-  const leftMargin = 2.5;
-  const rightMargin = 2.5;
-  const topMargin = 2;
-  const quietModules = 4;
-  const barHeight = 39.5;
-  const codeFontSize = 15.8;
-  const patientFontSize = 11.8;
-  const codeBaselineY = 15.6;
-  const patientBaselineY = 2.8;
-
-  const { payload, codes } = buildCode128CodeSequence(barcodeValue);
-  const totalModules = (quietModules * 2) + codes.reduce((sum, code) => {
-    const pattern = CODE128_PATTERNS[code] || "";
-    return sum + pattern.split("").reduce((inner, segment) => inner + Number(segment || 0), 0);
-  }, 0);
-
-  const drawWidth = pageWidthPt - leftMargin - rightMargin;
-  const moduleWidth = drawWidth / Math.max(1, totalModules);
-  const barBottom = pageHeightPt - topMargin - barHeight;
-  const commands = ["0 0 0 rg"];
-
-  let cursorX = leftMargin + (quietModules * moduleWidth);
-  codes.forEach((code) => {
-    const pattern = CODE128_PATTERNS[code];
-    if (!pattern) return;
-    for (let idx = 0; idx < pattern.length; idx += 1) {
-      const segmentWidth = Number(pattern[idx]) * moduleWidth;
-      if (idx % 2 === 0) {
-        commands.push(`${formatPdfNumber(cursorX)} ${formatPdfNumber(barBottom)} ${formatPdfNumber(segmentWidth)} ${formatPdfNumber(barHeight)} re f`);
-      }
-      cursorX += segmentWidth;
-    }
-  });
-
-  const codeLine = escapePdfString(payload).slice(0, 28);
-  const patientText = escapePdfString(patientLine).slice(0, 72);
-  commands.push(`BT /F1 ${formatPdfNumber(codeFontSize)} Tf ${formatPdfNumber(leftMargin)} ${formatPdfNumber(codeBaselineY)} Td (${codeLine}) Tj ET`);
-  commands.push(`BT /F1 ${formatPdfNumber(patientFontSize)} Tf ${formatPdfNumber(leftMargin)} ${formatPdfNumber(patientBaselineY)} Td (${patientText}) Tj ET`);
-
-  const pdf = buildSimplePdfDocument({
-    pageWidthPt,
-    pageHeightPt,
-    contentStream: commands.join("\n"),
-  });
-  return new Blob([pdf], { type: "application/pdf" });
+  const labelApi = getBarcodeLabelApi();
+  if (!labelApi?.buildLabelPdfBlob) {
+    throw new Error("Barcode label tools are unavailable.");
+  }
+  return labelApi.buildLabelPdfBlob({ barcodeValue, patientLine });
 }
 
 function openBarcodeLabelPrint(row) {
