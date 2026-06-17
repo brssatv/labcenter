@@ -10192,6 +10192,11 @@ function getOrderHistoryReportMenuApi() {
   return window.LabCenterOrderHistoryReportMenu || null;
 }
 
+function getOrderHistoryReviewMenuApi() {
+  if (typeof window === "undefined") return null;
+  return window.LabCenterOrderHistoryReviewMenu || null;
+}
+
 function getManualTranscriptionApi() {
   if (typeof window === "undefined") return null;
   return window.LabCenterManualTranscription || null;
@@ -10252,6 +10257,56 @@ function createOrderHistoryReportMenuModel(options = {}) {
     triggerLabel: "Generate Report",
     triggerState: hasBusyAction ? "busy" : isOpen ? "open" : "idle",
     ariaLabel: orderId ? `Generate report options for order #${orderId}` : "Generate report options",
+    actions,
+  };
+}
+
+function getOrderHistoryReviewMenuLabel() {
+  const label = getOrderHistoryReviewMenuApi()?.getOrderHistoryReviewMenuLabel?.();
+  return String(label || "Review Result");
+}
+
+function createOrderHistoryReviewMenuModel(options = {}) {
+  const model = getOrderHistoryReviewMenuApi()?.createOrderHistoryReviewMenuModel?.(options);
+  if (
+    model
+    && typeof model === "object"
+    && model.primaryAction
+    && typeof model.primaryAction.key === "string"
+  ) {
+    return model;
+  }
+
+  const hasProcessedReport = Boolean(options.hasProcessedReport);
+  const isOpen = Boolean(options.isOpen);
+  const orderId = String(options.orderId || "").trim();
+  const actions = [
+    {
+      key: hasProcessedReport ? "validate" : "transcribe",
+      label: hasProcessedReport ? "Validate" : "Transcribe",
+      disabled: false,
+      isPrimary: true,
+      tone: hasProcessedReport ? "validate" : "transcribe",
+    },
+    {
+      key: hasProcessedReport ? "transcribe" : "validate",
+      label: hasProcessedReport ? "Transcribe" : "Validate (Requires Report)",
+      disabled: !hasProcessedReport,
+      isPrimary: false,
+      tone: hasProcessedReport ? "transcribe" : "validate",
+    },
+  ];
+  const primaryAction = actions[0];
+
+  return {
+    available: true,
+    isOpen,
+    orderId,
+    triggerLabel: "Review Result",
+    triggerState: isOpen ? "open" : "idle",
+    ariaLabel: orderId ? `Review result options for order #${orderId}` : "Review result options",
+    primaryAction,
+    triggerTone: primaryAction.tone,
     actions,
   };
 }
@@ -10326,6 +10381,7 @@ function renderOrderHistory(initialTab = "all-orders") {
   let activeTab = startingTab;
   let uploadStatusMessage = "";
   let openReportMenuOrderId = "";
+  let openReviewMenuOrderId = "";
   const processingOrders = new Set();
   const generatingReports = new Set();
   const generatingSummaryReports = new Set();
@@ -10345,13 +10401,13 @@ function renderOrderHistory(initialTab = "all-orders") {
     due: "Due",
     uploadRaw: "Upload Tests Raw",
     status: "Status",
-    transcribe: "Transcribe",
-    validate: "Validate",
+    reviewAction: getOrderHistoryReviewMenuLabel(),
     preview: "Preview",
     reportActions: getOrderHistoryReportMenuLabel(),
     publishReport: "PrePublish",
   };
   const headerClassMap = {
+    reviewAction: "review-action-col",
     reportActions: "reports-action-col",
     publishReport: "report-action-col",
   };
@@ -10369,6 +10425,65 @@ function renderOrderHistory(initialTab = "all-orders") {
 
   function shouldShowRawUploadColumn() {
     return activeTab !== "all-orders";
+  }
+
+  function buildReviewActionMarkup(row) {
+    const orderId = String(row?.orderId || "").trim();
+    const model = createOrderHistoryReviewMenuModel({
+      orderId,
+      hasProcessedReport: Boolean(row?.processedResult?.report),
+      isOpen: orderId && openReviewMenuOrderId === orderId,
+    });
+
+    if (!model.available || !model.primaryAction) {
+      return `<span class="subtle">-</span>`;
+    }
+
+    return `
+      <div class="review-menu-shell" data-review-menu-shell>
+        <div class="review-menu-split">
+          <button
+            type="button"
+            class="table-action-btn review-menu-primary ${model.primaryAction.tone === "validate" ? "validate-btn" : "transcribe-btn"}"
+            data-review-menu-primary="${escapeHtml(orderId)}"
+            data-review-menu-default-action="${escapeHtml(model.primaryAction.key)}"
+            aria-label="${escapeHtml(model.primaryAction.label)} for order #${escapeHtml(orderId)}"
+          >
+            ${escapeHtml(model.primaryAction.label)}
+          </button>
+          <button
+            type="button"
+            class="table-action-btn review-menu-toggle review-menu-toggle--${escapeHtml(model.triggerTone)} ${model.isOpen ? "is-open" : ""}"
+            data-review-menu-trigger="${escapeHtml(orderId)}"
+            aria-haspopup="menu"
+            aria-expanded="${model.isOpen ? "true" : "false"}"
+            aria-label="${escapeHtml(model.ariaLabel)}"
+            aria-controls="review-menu-${escapeHtml(orderId)}"
+          >
+            <span class="report-menu-chevron" aria-hidden="true">▾</span>
+          </button>
+        </div>
+        ${model.isOpen ? `
+          <div id="review-menu-${escapeHtml(orderId)}" class="report-menu-dropdown" role="menu">
+            ${model.actions.map((action) => `
+              <button
+                type="button"
+                class="report-menu-option report-menu-option--${escapeHtml(action.tone)}"
+                data-review-menu-action="${escapeHtml(action.key)}"
+                data-order-id="${escapeHtml(orderId)}"
+                role="menuitem"
+                ${action.disabled ? "disabled" : ""}
+              >
+                <span class="report-menu-option-main">
+                  <span class="report-menu-option-indicator" aria-hidden="true"></span>
+                  <span>${escapeHtml(action.label)}</span>
+                </span>
+              </button>
+            `).join("")}
+          </div>
+        ` : ""}
+      </div>
+    `;
   }
 
   function buildReportsActionMarkup(row, options = {}) {
@@ -10427,6 +10542,26 @@ function renderOrderHistory(initialTab = "all-orders") {
     if (!openReportMenuOrderId) return false;
     openReportMenuOrderId = "";
     return true;
+  }
+
+  function closeReviewMenu() {
+    if (!openReviewMenuOrderId) return false;
+    openReviewMenuOrderId = "";
+    return true;
+  }
+
+  async function runOrderHistoryReviewAction(orderId, actionKey) {
+    const normalizedOrderId = String(orderId || "").trim();
+    const normalizedActionKey = String(actionKey || "").trim();
+    if (!normalizedOrderId || !normalizedActionKey) return;
+
+    if (normalizedActionKey === "validate") {
+      openValidate(normalizedOrderId);
+      return;
+    }
+    if (normalizedActionKey === "transcribe") {
+      openTranscribe(normalizedOrderId);
+    }
   }
 
   async function runOrderHistoryReportAction(orderId, actionKey) {
@@ -13957,6 +14092,9 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (openReportMenuOrderId && !rows.some((row) => String(row?.orderId || "").trim() === openReportMenuOrderId)) {
       openReportMenuOrderId = "";
     }
+    if (openReviewMenuOrderId && !rows.some((row) => String(row?.orderId || "").trim() === openReviewMenuOrderId)) {
+      openReviewMenuOrderId = "";
+    }
     if (!rows.length) {
       tableNode.innerHTML = `<p class="subtle table-empty">No orders found.</p>`;
       return;
@@ -13987,8 +14125,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
             <th><input data-filter-field="due" class="history-filter-input" placeholder="Filter"></th>
             ${showRawUploadColumn ? "<th></th>" : ""}
             <th><input data-filter-field="status" class="history-filter-input" placeholder="Filter"></th>
-            <th></th>
-            <th></th>
+            <th class="review-action-col"></th>
             <th></th>
             <th class="reports-action-col"></th>
             <th class="report-action-col"></th>
@@ -14039,18 +14176,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                   }
                   <td><span class="history-status ${statusClass}">${row.status || "-"}</span></td>
                   <td>
-                    ${
-                      row.processedResult?.report
-                        ? `<span class="subtle">-</span>`
-                        : `<button type="button" class="table-action-btn transcribe-btn" data-transcribe-order="${row.orderId}">Transcribe</button>`
-                    }
-                  </td>
-                  <td>
-                    ${
-                      row.processedResult?.report
-                        ? `<button type="button" class="table-action-btn validate-btn" data-validate-order="${row.orderId}">Validate</button>`
-                        : `<span class="subtle">-</span>`
-                    }
+                    ${buildReviewActionMarkup(row)}
                   </td>
                   <td>
                     ${
@@ -14114,10 +14240,34 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       return;
     }
 
-    const transcribeBtn = event.target.closest("[data-transcribe-order]");
-    if (transcribeBtn) {
-      const orderId = transcribeBtn.getAttribute("data-transcribe-order");
-      if (orderId) openTranscribe(orderId);
+    const reviewPrimaryBtn = event.target.closest("[data-review-menu-primary]");
+    if (reviewPrimaryBtn) {
+      const orderId = String(reviewPrimaryBtn.getAttribute("data-review-menu-primary") || "").trim();
+      const actionKey = String(reviewPrimaryBtn.getAttribute("data-review-menu-default-action") || "").trim();
+      closeReviewMenu();
+      renderTable();
+      await runOrderHistoryReviewAction(orderId, actionKey);
+      return;
+    }
+
+    const reviewMenuTrigger = event.target.closest("[data-review-menu-trigger]");
+    if (reviewMenuTrigger) {
+      const orderId = String(reviewMenuTrigger.getAttribute("data-review-menu-trigger") || "").trim();
+      if (!orderId) return;
+      closeReportMenu();
+      openReviewMenuOrderId = openReviewMenuOrderId === orderId ? "" : orderId;
+      renderTable();
+      return;
+    }
+
+    const reviewMenuActionBtn = event.target.closest("[data-review-menu-action]");
+    if (reviewMenuActionBtn) {
+      const orderId = String(reviewMenuActionBtn.getAttribute("data-order-id") || "").trim();
+      const actionKey = String(reviewMenuActionBtn.getAttribute("data-review-menu-action") || "").trim();
+      if (!orderId) return;
+      closeReviewMenu();
+      renderTable();
+      await runOrderHistoryReviewAction(orderId, actionKey);
       return;
     }
 
@@ -14132,6 +14282,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (reportMenuTrigger) {
       const orderId = String(reportMenuTrigger.getAttribute("data-report-menu-trigger") || "").trim();
       if (!orderId) return;
+      closeReviewMenu();
       openReportMenuOrderId = openReportMenuOrderId === orderId ? "" : orderId;
       renderTable();
       return;
@@ -14167,23 +14318,21 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       return;
     }
 
-    const validateBtn = event.target.closest("[data-validate-order]");
-    if (validateBtn) {
-      const orderId = validateBtn.getAttribute("data-validate-order");
-      if (orderId) openValidate(orderId);
-      return;
-    }
   });
 
   orderHistoryPageNode?.addEventListener("click", (event) => {
-    if (!openReportMenuOrderId) return;
-    if (event.target.closest("[data-report-menu-shell]")) return;
-    if (closeReportMenu()) renderTable();
+    const insideReportMenu = Boolean(event.target.closest("[data-report-menu-shell]"));
+    const insideReviewMenu = Boolean(event.target.closest("[data-review-menu-shell]"));
+    let didClose = false;
+    if (!insideReportMenu) didClose = closeReportMenu() || didClose;
+    if (!insideReviewMenu) didClose = closeReviewMenu() || didClose;
+    if (didClose) renderTable();
   });
 
   orderHistoryPageNode?.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (closeReportMenu()) renderTable();
+    const didClose = closeReportMenu() || closeReviewMenu();
+    if (didClose) renderTable();
   });
 
   tableNode.addEventListener("input", (event) => {
@@ -14207,6 +14356,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (!nextTab) return;
     activeTab = nextTab;
     openReportMenuOrderId = "";
+    openReviewMenuOrderId = "";
     tabsNode.querySelectorAll(".history-tab").forEach((node) => {
       node.classList.toggle("active", node.getAttribute("data-tab") === activeTab);
     });
