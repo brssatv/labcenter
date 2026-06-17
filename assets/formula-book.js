@@ -155,24 +155,7 @@
     if (!reportType) return null;
     const reference = getReportFormulasApi()?.getReportFormulaReference?.(reportType);
     if (reference?.selectedReportType?.key) {
-      return {
-        ...reference,
-        configured: reference.configured !== false,
-        enabled: reference.enabled !== false,
-        displayLogic: reference.displayLogic && typeof reference.displayLogic === "object"
-          ? {
-              ...reference.displayLogic,
-              evaluationSteps: Array.isArray(reference.displayLogic.evaluationSteps)
-                ? reference.displayLogic.evaluationSteps.map((item) => String(item || "").trim()).filter(Boolean)
-                : [],
-              displaySteps: Array.isArray(reference.displayLogic.displaySteps)
-                ? reference.displayLogic.displaySteps.map((item) => String(item || "").trim()).filter(Boolean)
-                : [],
-            }
-          : null,
-        placeholder: String(reference.placeholder || reference.formula?.placeholder || ""),
-        note: String(reference.note || "").trim(),
-      };
+      return normalizeFormulaBookReportReference(reference);
     }
 
     const selectedReportType = getFormulaBookReportTypeOptions().find((item) => item.key === reportType);
@@ -203,6 +186,43 @@
       placeholder: formula.placeholder,
       note: "This is the active SARS-CoV-2 formula used during Final Report generation.",
     };
+  }
+
+  function normalizeFormulaBookReportReference(reference) {
+    if (!reference?.selectedReportType?.key) return null;
+    return {
+      ...reference,
+      configured: reference.configured !== false,
+      enabled: reference.enabled !== false,
+      toggleable: reference.toggleable === true,
+      displayLogic: reference.displayLogic && typeof reference.displayLogic === "object"
+        ? {
+            ...reference.displayLogic,
+            evaluationSteps: Array.isArray(reference.displayLogic.evaluationSteps)
+              ? reference.displayLogic.evaluationSteps.map((item) => String(item || "").trim()).filter(Boolean)
+              : [],
+            displaySteps: Array.isArray(reference.displayLogic.displaySteps)
+              ? reference.displayLogic.displaySteps.map((item) => String(item || "").trim()).filter(Boolean)
+              : [],
+          }
+        : null,
+      placeholder: String(reference.placeholder || reference.formula?.placeholder || ""),
+      note: String(reference.note || "").trim(),
+    };
+  }
+
+  function getFormulaBookReportReferences(reportType) {
+    if (!reportType) return [];
+    const references = getReportFormulasApi()?.getReportFormulaReferences?.(reportType);
+    if (Array.isArray(references) && references.length) {
+      return references
+        .map((reference) => normalizeFormulaBookReportReference(reference))
+        .filter(Boolean);
+    }
+
+    const singleReference = getFormulaBookReportReference(reportType);
+    if (singleReference?.configured) return [singleReference];
+    return [];
   }
 
   function normalizeFormulaBookState(state) {
@@ -492,27 +512,174 @@
     const reportReference = normalized.state.section === "report-formulas"
       ? getFormulaBookReportReference(normalized.state.reportType)
       : null;
-    const formulaConfig = reportReference?.configured
-      ? (reportReference.formula || getSarsCov2FinalReportFormulaConfig())
+    const formulaEntries = normalized.state.section === "report-formulas"
+      ? getFormulaBookReportReferences(normalized.state.reportType)
+      : [];
+    const primaryFormulaEntry = formulaEntries.find((entry) => entry?.configured && entry?.formula)
+      || (reportReference?.configured ? reportReference : null);
+    const formulaConfig = primaryFormulaEntry?.configured
+      ? (primaryFormulaEntry.formula || getSarsCov2FinalReportFormulaConfig())
       : null;
-    const displayLogic = reportReference?.displayLogic && typeof reportReference.displayLogic === "object"
-      ? reportReference.displayLogic
+    const displayLogic = primaryFormulaEntry?.displayLogic && typeof primaryFormulaEntry.displayLogic === "object"
+      ? primaryFormulaEntry.displayLogic
       : null;
-    const formulaPlayground = normalized.state.reportType === "finalReport" && reportReference?.configured
+    const formulaPlayground = normalized.state.reportType === "finalReport"
+      && formulaEntries.some((entry) => String(entry?.formula?.key || "").trim() === "sars-cov-2-final-report")
       ? getFormulaPlaygroundApi()?.buildFormulaPlaygroundPreview?.()
       : null;
 
     return {
       ...normalized,
-      reportReference,
+      reportReference: primaryFormulaEntry || reportReference,
+      formulaEntries,
+      primaryFormulaEntry,
       formulaConfig,
       displayLogic,
       formulaPlayground,
     };
   }
 
+  function buildFormulaBookDisplayLogicMarkup(displayLogic, escapeHtml = defaultEscapeHtml) {
+    if (!displayLogic) return "";
+    return `
+      <section class="formula-book-logic-card">
+        <div class="formula-book-logic-head">
+          <p class="formula-book-helper-label">Report Display Logic</p>
+          <h4>${escapeHtml(displayLogic.title || "Display Logic on Final Report")}</h4>
+          <p>${escapeHtml(displayLogic.summary || "")}</p>
+        </div>
+        <div class="formula-book-logic-grid">
+          <section class="formula-book-logic-section">
+            <p class="formula-book-logic-label">Evaluation</p>
+            <ul class="formula-book-logic-list">
+              ${displayLogic.evaluationSteps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </section>
+          <section class="formula-book-logic-section">
+            <p class="formula-book-logic-label">Report Output</p>
+            <ul class="formula-book-logic-list">
+              ${displayLogic.displaySteps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </section>
+        </div>
+      </section>
+    `;
+  }
+
+  function buildFormulaBookFormulaStatsMarkup(reference, escapeHtml = defaultEscapeHtml) {
+    const formula = reference?.formula && typeof reference.formula === "object" ? reference.formula : {};
+    const stats = [];
+    if (formula.pathogenLabel) {
+      stats.push({ value: formula.pathogenLabel, label: "Reference Pathogen" });
+    }
+    if (Number.isFinite(Number(formula.thresholdCt))) {
+      stats.push({ value: `<= ${Number(formula.thresholdCt)}`, label: "Ct Threshold" });
+    }
+    if (Number.isFinite(Number(formula.minimumPositiveTargets))) {
+      stats.push({ value: String(Number(formula.minimumPositiveTargets)), label: "Targets Required" });
+    }
+    if (Array.isArray(formula.hiddenTargets) && formula.hiddenTargets.length) {
+      stats.push({ value: String(formula.hiddenTargets.length), label: "Hidden Targets" });
+      stats.push({ value: "Name Match", label: "Rule Mode" });
+    }
+    stats.push({
+      value: formula.statusLabel || (reference?.enabled !== false ? "Enabled" : "Disabled"),
+      label: "Formula State",
+    });
+
+    return stats
+      .map((stat) => `
+        <span class="mr-stat">
+          <strong>${escapeHtml(stat.value)}</strong>
+          <span>${escapeHtml(stat.label)}</span>
+        </span>
+      `)
+      .join("");
+  }
+
+  function buildFormulaBookFormulaToggleMarkup(reference, escapeHtml = defaultEscapeHtml) {
+    if (!reference?.toggleable) {
+      return `
+        <div class="formula-book-toolbar-copy formula-book-entry-toggle-copy">
+          <p class="formula-book-helper-label">Activation</p>
+          <p class="formula-book-helper-text">This formula stays enabled because it only suppresses control rows from the patient-facing Final Report.</p>
+          <span class="formula-book-fixed-state">Always Enabled</span>
+        </div>
+      `;
+    }
+
+    const formula = reference?.formula && typeof reference.formula === "object" ? reference.formula : {};
+    const isEnabled = reference.enabled !== false;
+    const formulaTitle = String(formula.title || "report formula").trim() || "report formula";
+    return `
+      <div class="formula-book-toolbar-copy formula-book-entry-toggle-copy">
+        <p class="formula-book-helper-label">Live Formula Toggle</p>
+        <p class="formula-book-helper-text">Control whether this formula actively drives the selected report output.</p>
+        <button
+          type="button"
+          class="output-results-toggle formula-book-activation-toggle ${isEnabled ? "is-active" : ""}"
+          data-formula-book-toggle-formula="${escapeHtml(formula.key || "")}"
+          aria-pressed="${isEnabled ? "true" : "false"}"
+          aria-label="${isEnabled ? `Disable ${formulaTitle}` : `Enable ${formulaTitle}`}"
+        >
+          <span class="output-results-toggle-knob" aria-hidden="true"></span>
+          <span>${isEnabled ? "Enabled" : "Disabled"}</span>
+        </button>
+      </div>
+    `;
+  }
+
+  function buildFormulaBookFormulaPanelMarkup(reference, index, escapeHtml = defaultEscapeHtml) {
+    const formula = reference?.formula && typeof reference.formula === "object" ? reference.formula : {};
+    const isEnabled = reference?.enabled !== false;
+    const summaryCopy = reference?.displayLogic?.summary || reference?.note || "Expand to review the configured formula details.";
+    return `
+      <details class="formula-book-formula-panel" ${index === 0 ? "open" : ""}>
+        <summary class="formula-book-formula-summary">
+          <div class="formula-book-formula-summary-copy">
+            <p class="formula-book-helper-label">Configured Formula</p>
+            <h4>${escapeHtml(formula.title || "Configured Formula")}</h4>
+            <p>${escapeHtml(summaryCopy)}</p>
+          </div>
+          <div class="formula-book-formula-summary-meta">
+            <span class="formula-book-formula-state ${isEnabled ? "is-enabled" : "is-disabled"}">${escapeHtml(isEnabled ? "Enabled" : "Disabled")}</span>
+            <span class="formula-book-formula-chevron" aria-hidden="true"></span>
+          </div>
+        </summary>
+        <div class="formula-book-formula-panel-body">
+          <div class="formula-book-status-row">
+            <div class="master-registry-summary formula-book-meta">
+              ${buildFormulaBookFormulaStatsMarkup(reference, escapeHtml)}
+            </div>
+            ${buildFormulaBookFormulaToggleMarkup(reference, escapeHtml)}
+          </div>
+          <div class="formula-book-detail-grid">
+            <label class="mr-field formula-book-placeholder-field">
+              <span>Formula Placeholder</span>
+              <pre class="formula-book-placeholder">${escapeHtml(reference?.placeholder || "")}</pre>
+            </label>
+            ${buildFormulaBookDisplayLogicMarkup(reference?.displayLogic, escapeHtml)}
+          </div>
+          <p class="formula-book-note">${escapeHtml(reference?.note || "")}</p>
+        </div>
+      </details>
+    `;
+  }
+
   function buildFormulaBookMarkup(viewModel, escapeHtml = defaultEscapeHtml) {
-    const formulaBookSummaryMarkup = viewModel.formulaConfig
+    const configuredFormulaCount = Array.isArray(viewModel.formulaEntries) ? viewModel.formulaEntries.length : 0;
+    const enabledFormulaCount = Array.isArray(viewModel.formulaEntries)
+      ? viewModel.formulaEntries.filter((entry) => entry.enabled !== false).length
+      : 0;
+    const formulaBookSummaryMarkup = configuredFormulaCount
+      ? `
+          <div class="master-registry-summary">
+            <span class="mr-stat"><strong>${escapeHtml(viewModel.reportReference?.selectedReportType?.label || "Selected Report")}</strong><span>Selected Report</span></span>
+            <span class="mr-stat"><strong>${escapeHtml(String(configuredFormulaCount))}</strong><span>Configured Formulas</span></span>
+            <span class="mr-stat"><strong>${escapeHtml(String(enabledFormulaCount))}</strong><span>Enabled Rules</span></span>
+          </div>
+        `
+      : viewModel.formulaConfig
       ? `
           <div class="master-registry-summary">
             <span class="mr-stat"><strong>${escapeHtml(viewModel.formulaConfig.pathogenLabel)}</strong><span>Reference Pathogen</span></span>
@@ -534,7 +701,14 @@
           </div>
         `;
 
-    const formulaBookToolbarCopy = viewModel.formulaConfig
+    const formulaBookToolbarCopy = configuredFormulaCount
+      ? `
+          <div class="formula-book-toolbar-copy">
+            <p class="formula-book-helper-label">Configured Formulas</p>
+            <p class="formula-book-helper-text">Expand each formula bar below to review its placeholder, display logic, and activation state for the selected report type.</p>
+          </div>
+        `
+      : viewModel.formulaConfig
       ? `
           <div class="formula-book-toolbar-copy">
             <p class="formula-book-helper-label">Live Formula Toggle</p>
@@ -558,50 +732,22 @@
           </div>
         `;
 
-    const formulaBookDisplayLogicMarkup = viewModel.displayLogic
-      ? `
-          <section class="formula-book-logic-card">
-            <div class="formula-book-logic-head">
-              <p class="formula-book-helper-label">Report Display Logic</p>
-              <h4>${escapeHtml(viewModel.displayLogic.title || "Display Logic on Final Report")}</h4>
-              <p>${escapeHtml(viewModel.displayLogic.summary || "")}</p>
-            </div>
-            <div class="formula-book-logic-grid">
-              <section class="formula-book-logic-section">
-                <p class="formula-book-logic-label">Evaluation</p>
-                <ul class="formula-book-logic-list">
-                  ${viewModel.displayLogic.evaluationSteps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
-                </ul>
-              </section>
-              <section class="formula-book-logic-section">
-                <p class="formula-book-logic-label">Report Output</p>
-                <ul class="formula-book-logic-list">
-                  ${viewModel.displayLogic.displaySteps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
-                </ul>
-              </section>
-            </div>
-          </section>
-        `
-      : "";
-
     const formulaBookContentMarkup = viewModel.reportReference
-      ? viewModel.reportReference.configured && viewModel.formulaConfig
+      ? configuredFormulaCount
         ? `
             <div class="formula-book-status-row">
               <div class="master-registry-summary formula-book-meta">
                 <span class="mr-stat"><strong>${escapeHtml(viewModel.reportReference.selectedReportType.label)}</strong><span>Selected Report</span></span>
-                <span class="mr-stat"><strong>${escapeHtml(viewModel.formulaConfig.title)}</strong><span>Source Formula</span></span>
+                <span class="mr-stat"><strong>${escapeHtml(String(configuredFormulaCount))}</strong><span>Formula Bars</span></span>
               </div>
             </div>
-            <div class="formula-book-detail-grid">
-              <label class="mr-field formula-book-placeholder-field">
-                <span>Formula Placeholder</span>
-                <pre class="formula-book-placeholder">${escapeHtml(viewModel.reportReference.placeholder)}</pre>
-              </label>
-              ${formulaBookDisplayLogicMarkup}
+            <div class="formula-book-formula-stack">
+              ${viewModel.formulaEntries.map((reference, index) => buildFormulaBookFormulaPanelMarkup(reference, index, escapeHtml)).join("")}
             </div>
+            ${viewModel.formulaPlayground
+              ? `<p class="formula-book-note">Interactive Playground currently simulates the SARS-CoV-2 Final Report Formula.</p>`
+              : ""}
             ${buildFormulaPlaygroundMarkup(viewModel.formulaPlayground, escapeHtml)}
-            <p class="formula-book-note">${escapeHtml(viewModel.reportReference.note)}</p>
           `
         : `
             <section class="formula-book-empty">
@@ -688,13 +834,23 @@
       });
     });
 
-    panelBody.querySelector("[data-formula-book-enabled-toggle]")?.addEventListener("click", () => {
-      const nextEnabled = viewModel.formulaConfig?.enabled === false;
-      const setEnabled = getReportFormulasApi()?.setSarsCov2FinalReportFormulaEnabled;
-      if (typeof setEnabled !== "function") return;
-      setEnabled(nextEnabled);
-      onStateChange({
-        ...viewModel.state,
+    Array.from(panelBody.querySelectorAll("[data-formula-book-toggle-formula]")).forEach((button) => {
+      button.addEventListener("click", () => {
+        const formulaKey = button.getAttribute("data-formula-book-toggle-formula") || "";
+        const nextEnabled = button.getAttribute("aria-pressed") !== "true";
+        const setEnabled = getReportFormulasApi()?.setReportFormulaEnabled;
+        if (typeof setEnabled === "function") {
+          setEnabled(formulaKey, nextEnabled);
+        } else if (formulaKey === "sars-cov-2-final-report") {
+          const legacySetEnabled = getReportFormulasApi()?.setSarsCov2FinalReportFormulaEnabled;
+          if (typeof legacySetEnabled !== "function") return;
+          legacySetEnabled(nextEnabled);
+        } else {
+          return;
+        }
+        onStateChange({
+          ...viewModel.state,
+        });
       });
     });
 
@@ -830,6 +986,7 @@
     createDefaultFormulaBookState,
     getSarsCov2FinalReportFormulaConfig,
     getFormulaBookReportReference,
+    getFormulaBookReportReferences,
     buildFormulaBookViewModel,
     buildFormulaBookMarkup,
     renderFormulaBookView,

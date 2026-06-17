@@ -39,10 +39,18 @@ test("formula book final report view model exposes the configured SARS-CoV-2 rul
 
   assert.equal(viewModel.state.reportType, "finalReport");
   assert.equal(viewModel.reportReference.configured, true);
+  assert.equal(viewModel.formulaEntries.length, 2);
   assert.equal(viewModel.formulaConfig.enabled, true);
   assert.equal(viewModel.formulaConfig.reportType, "finalReport");
   assert.equal(viewModel.formulaConfig.thresholdCt, 33);
   assert.match(viewModel.displayLogic.summary, /patient-facing SARS-CoV-2 result/i);
+  assert.deepEqual(
+    viewModel.formulaEntries.map((entry) => entry.formula.title),
+    [
+      "SARS-CoV-2 Final Report Formula",
+      "RNaseP Final Report Suppression Formula",
+    ]
+  );
 });
 
 test("formula book summary report view model stays unconfigured", () => {
@@ -62,10 +70,14 @@ test("formula book markup includes the live toggle and display logic alongside t
     reportType: "finalReport",
   }));
 
+  assert.match(markup, /Configured Formulas/);
+  assert.match(markup, /SARS-CoV-2 Final Report Formula/);
+  assert.match(markup, /RNaseP Final Report Suppression Formula/);
+  assert.match(markup, /formula-book-formula-panel/);
   assert.match(markup, /Live Formula Toggle/);
+  assert.match(markup, /Always Enabled/);
   assert.match(markup, /Report Display Logic/);
   assert.match(markup, /Report Output/);
-  assert.match(markup, /Enabled/);
   assert.match(markup, /Simple Formula Tester/);
   assert.match(markup, /Data Input/);
   assert.match(markup, /Formula Expression/);
@@ -95,4 +107,6 @@ test("formula book reflects the disabled formula fallback mode", () => {
   assert.equal(viewModel.formulaConfig.statusLabel, "Disabled");
   assert.match(viewModel.reportReference.note, /saved but disabled/i);
   assert.match(viewModel.displayLogic.summary, /keeps the raw gene-level rows/i);
+  assert.equal(viewModel.formulaEntries[1].enabled, true);
+  assert.match(viewModel.formulaEntries[1].note, /RNaseP suppression formula hides RNaseP control rows/i);
 });

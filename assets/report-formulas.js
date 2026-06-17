@@ -28,6 +28,18 @@
       Object.freeze({ key: "orf1ab", label: "Orf1ab" }),
     ]),
   });
+  const rnasepFinalReportFormula = Object.freeze({
+    key: "rnasep-final-report-display",
+    title: "RNaseP Final Report Suppression Formula",
+    reportType: "finalReport",
+    hiddenTargets: Object.freeze([
+      Object.freeze({ key: "rnasep", label: "RNaseP" }),
+      Object.freeze({ key: "human-rnasep", label: "Human RNaseP" }),
+    ]),
+  });
+  const rnasepFinalReportHiddenTargetKeys = new Set(
+    rnasepFinalReportFormula.hiddenTargets.map((item) => normalizePathogenRuleKey(item.label))
+  );
   const formulaSettingsStorageKey = "labcenter.report-formulas.v1";
   const defaultFormulaSettings = Object.freeze({
     [sarsCov2FinalReportFormula.key]: Object.freeze({ enabled: true }),
@@ -47,6 +59,12 @@
     );
   }
 
+  function normalizePathogenRuleKey(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  }
+
   function buildCtThresholdPlaceholder(formula) {
     const normalized = formula || sarsCov2FinalReportFormula;
     const comparisons = normalized.targets.map((target) => `${target.label} Ct <= ${normalized.thresholdCt}`);
@@ -54,6 +72,16 @@
       `IF COUNT(${comparisons.join(", ")}) >= ${normalized.minimumPositiveTargets}`,
       `THEN ${normalized.pathogenLabel} = Positive`,
       `ELSE ${normalized.pathogenLabel} = Negative`,
+    ].join("\n");
+  }
+
+  function buildRnasepPlaceholder(formula) {
+    const normalized = formula || rnasepFinalReportFormula;
+    const labels = normalized.hiddenTargets.map((target) => target.label).join(" or ");
+    return [
+      `IF Pathogen Name matches ${labels}`,
+      "THEN omit the row from Final Report results data",
+      "ELSE keep the row in Final Report output",
     ].join("\n");
   }
 
@@ -155,6 +183,27 @@
     };
   }
 
+  function getRnasepFinalReportFormula() {
+    return {
+      ...rnasepFinalReportFormula,
+      enabled: true,
+      statusLabel: "Enabled",
+      hiddenTargets: cloneList(rnasepFinalReportFormula.hiddenTargets),
+      placeholder: buildRnasepPlaceholder(rnasepFinalReportFormula),
+    };
+  }
+
+  function isRnasepHiddenOnFinalReport(pathogenName) {
+    const needle = normalizePathogenRuleKey(pathogenName);
+    if (!needle) return false;
+    return rnasepFinalReportHiddenTargetKeys.has(needle);
+  }
+
+  function filterFinalReportRows(rows) {
+    const normalizedRows = Array.isArray(rows) ? rows : [];
+    return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen));
+  }
+
   function getSarsCov2FinalReportDisplayLogic() {
     const formula = getSarsCov2FinalReportFormula();
     const targetLabels = formula.targets.map((item) => item.label).join(", ");
@@ -186,6 +235,29 @@
     };
   }
 
+  function getRnasepFinalReportDisplayLogic() {
+    const formula = getRnasepFinalReportFormula();
+    const targetLabels = formula.hiddenTargets.map((item) => item.label).join(", ");
+    return {
+      key: `${formula.key}-display-logic`,
+      title: "Display Logic on Final Report",
+      reportType: formula.reportType,
+      enabled: true,
+      statusLabel: formula.statusLabel,
+      summary: "Final Report omits RNaseP control rows from the patient-facing results while preserving the source processed result data.",
+      evaluationSteps: [
+        `Normalize each pathogen name before comparing it with ${targetLabels}.`,
+        "Match rows labeled RNaseP or Human RNaseP.",
+        "Leave every non-control row available for the remaining Final Report formulas.",
+      ],
+      displaySteps: [
+        "Pathogens Detected omits RNaseP control rows.",
+        "List of Pathogens Tested omits RNaseP control rows.",
+        "The stored processed result data remains unchanged for audit and troubleshooting purposes.",
+      ],
+    };
+  }
+
   function buildUnconfiguredReportFormulaReference(selectedReportType) {
     return {
       sectionKey: "report-formulas",
@@ -199,38 +271,100 @@
     };
   }
 
-  function getReportFormulaReference(reportType) {
-    const selectedReportType = reportTypeOptions.find((item) => item.key === reportType);
-    if (!selectedReportType) return null;
-
-    const formula = getSarsCov2FinalReportFormula();
-    const displayLogic = getSarsCov2FinalReportDisplayLogic();
-    const isNativeReportType = selectedReportType.key === formula.reportType;
-    if (!isNativeReportType) {
-      return buildUnconfiguredReportFormulaReference(selectedReportType);
-    }
-
+  function buildConfiguredReportFormulaReference(selectedReportType, formula, displayLogic, options = {}) {
     return {
       sectionKey: "report-formulas",
       selectedReportType: { ...selectedReportType },
       configured: true,
-      enabled: formula.enabled !== false,
+      enabled: formula?.enabled !== false,
       formula,
       displayLogic,
-      placeholder: formula.placeholder,
-      note: formula.enabled !== false
-        ? "This SARS-CoV-2 formula is enabled and currently drives the Final Report rollup logic."
-        : "This SARS-CoV-2 formula is saved but disabled, so Final Report falls back to the raw gene-level display.",
+      placeholder: String(formula?.placeholder || "").trim(),
+      note: String(options?.note || "").trim(),
+      toggleable: options?.toggleable === true,
     };
   }
 
+  function getReportFormulaReferences(reportType) {
+    const selectedReportType = reportTypeOptions.find((item) => item.key === reportType);
+    if (!selectedReportType) return [];
+
+    const sarsFormula = getSarsCov2FinalReportFormula();
+    const isNativeReportType = selectedReportType.key === sarsFormula.reportType;
+    if (!isNativeReportType) return [];
+
+    const rnasepFormula = getRnasepFinalReportFormula();
+    return [
+      buildConfiguredReportFormulaReference(
+        selectedReportType,
+        sarsFormula,
+        getSarsCov2FinalReportDisplayLogic(),
+        {
+          note: sarsFormula.enabled !== false
+            ? "This SARS-CoV-2 formula is enabled and currently drives the Final Report rollup logic."
+            : "This SARS-CoV-2 formula is saved but disabled, so Final Report falls back to the raw gene-level display.",
+          toggleable: true,
+        }
+      ),
+      buildConfiguredReportFormulaReference(
+        selectedReportType,
+        rnasepFormula,
+        getRnasepFinalReportDisplayLogic(),
+        {
+          note: "This RNaseP suppression formula hides RNaseP control rows from the patient-facing Final Report without changing the underlying processed result data.",
+          toggleable: false,
+        }
+      ),
+    ];
+  }
+
+  function getReportFormulaReference(reportType) {
+    const selectedReportType = reportTypeOptions.find((item) => item.key === reportType);
+    if (!selectedReportType) return null;
+
+    const references = getReportFormulaReferences(reportType);
+    if (references.length) return references[0];
+    return buildUnconfiguredReportFormulaReference(selectedReportType);
+  }
+
+  function isReportFormulaEnabled(formulaKey) {
+    const key = String(formulaKey || "").trim();
+    if (!key) return false;
+    if (key === sarsCov2FinalReportFormula.key) {
+      return isSarsCov2FinalReportFormulaEnabled();
+    }
+    if (key === rnasepFinalReportFormula.key) {
+      return true;
+    }
+    return false;
+  }
+
+  function setReportFormulaEnabled(formulaKey, enabled) {
+    const key = String(formulaKey || "").trim();
+    if (!key) return null;
+    if (key === sarsCov2FinalReportFormula.key) {
+      return setSarsCov2FinalReportFormulaEnabled(enabled);
+    }
+    if (key === rnasepFinalReportFormula.key) {
+      return getRnasepFinalReportFormula();
+    }
+    return null;
+  }
+
   return {
+    filterFinalReportRows,
     getFormulaBookSections,
+    getReportFormulaReferences,
     getReportTypeOptions,
+    getRnasepFinalReportFormula,
+    getRnasepFinalReportDisplayLogic,
     getSarsCov2FinalReportFormula,
     getSarsCov2FinalReportDisplayLogic,
     getReportFormulaReference,
+    isReportFormulaEnabled,
+    isRnasepHiddenOnFinalReport,
     isSarsCov2FinalReportFormulaEnabled,
+    setReportFormulaEnabled,
     setSarsCov2FinalReportFormulaEnabled,
     resetFormulaSettings,
   };

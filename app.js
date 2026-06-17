@@ -8954,6 +8954,20 @@ function getSarsCov2FinalReportFormulaConfig() {
   };
 }
 
+function isRnasepHiddenOnFinalReport(pathogenName) {
+  const hidden = getReportFormulasApi()?.isRnasepHiddenOnFinalReport?.(pathogenName);
+  if (typeof hidden === "boolean") return hidden;
+  const normalized = normalizeReportKey(pathogenName);
+  return normalized === "rnasep" || normalized === "humanrnasep";
+}
+
+function filterFinalReportRows(rows) {
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+  const filteredRows = getReportFormulasApi()?.filterFinalReportRows?.(normalizedRows);
+  if (Array.isArray(filteredRows)) return filteredRows;
+  return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen));
+}
+
 function renderFormulaBook() {
   const api = getFormulaBookApi();
   if (!api?.renderFormulaBookView) {
@@ -10958,7 +10972,7 @@ function renderOrderHistory(initialTab = "all-orders") {
     );
   }
 
-  function buildReportContext(order) {
+  function buildReportContext(order, options = {}) {
     const report = order?.processedResult?.report;
     const metadata = report?.metadata && typeof report.metadata === "object" ? report.metadata : {};
     const patientRecord = resolvePatientRecord(order) || {};
@@ -11010,7 +11024,9 @@ function renderOrderHistory(initialTab = "all-orders") {
       facilityRecord?.zipcode,
     ]);
 
-    const detailedRowsRaw = Array.isArray(report?.detailed) ? report.detailed : [];
+    const excludeRnaseP = options?.excludeRnaseP === true;
+    const detailedRowsSource = Array.isArray(report?.detailed) ? report.detailed : [];
+    const detailedRowsRaw = excludeRnaseP ? filterFinalReportRows(detailedRowsSource) : detailedRowsSource;
     const detailedRows = dedupeReportRows(detailedRowsRaw);
     const detailedRowsWithGenes = detailedRows.map((row) => ({
       row,
@@ -11292,7 +11308,7 @@ function renderOrderHistory(initialTab = "all-orders") {
   }
 
   function buildFinalReportHtml(order, assetSources) {
-    const context = buildReportContext(order);
+    const context = buildReportContext(order, { excludeRnaseP: true });
     return `
       <!doctype html>
       <html lang="en">
@@ -11712,8 +11728,8 @@ function renderOrderHistory(initialTab = "all-orders") {
   }
 
   function buildDetectedSummaryReportHtml(order, assetSources, options = {}) {
-    const context = buildReportContext(order);
     const variant = String(options?.variant || "summary").trim().toLowerCase() === "final" ? "final" : "summary";
+    const context = buildReportContext(order, { excludeRnaseP: variant === "final" });
     const reportTitle = variant === "final" ? "Final Report" : "Summary Report";
     const reportSectionTitle = variant === "final" ? "Final Lab Report" : "Summary Lab Report";
     const headerVariant = variant === "final" ? "final-summary" : "default";
