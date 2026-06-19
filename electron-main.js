@@ -8,7 +8,7 @@ const APP_URL = `http://127.0.0.1:${PORT}`;
 const iconPath = path.join(__dirname, "build-resources", "icon.png");
 
 let mainWindow = null;
-let serverLoaded = false;
+let serverStartPromise = null;
 
 function waitForServer(url, attempts = 120, delayMs = 500) {
   return new Promise((resolve, reject) => {
@@ -33,6 +33,22 @@ function waitForServer(url, attempts = 120, delayMs = 500) {
 
     tryConnect(attempts);
   });
+}
+
+async function ensureDesktopServer() {
+  if (!serverStartPromise) {
+    const { startServer } = require(path.join(__dirname, "server.js"));
+    serverStartPromise = startServer(PORT)
+      .then(() => ({ mode: "started" }))
+      .catch((error) => {
+        if (error?.code === "EADDRINUSE") {
+          return { mode: "existing" };
+        }
+        throw error;
+      });
+  }
+
+  return serverStartPromise;
 }
 
 function createMainWindow() {
@@ -74,12 +90,17 @@ function createMainWindow() {
 }
 
 async function bootstrapDesktopApp() {
-  if (!serverLoaded) {
-    require(path.join(__dirname, "server.js"));
-    serverLoaded = true;
+  const serverState = await ensureDesktopServer();
+  if (serverState?.mode === "existing") {
+    try {
+      await waitForServer(APP_URL);
+    } catch (_error) {
+      throw new Error(
+        `Port ${PORT} is already in use, but no LabCenter server responded on ${APP_URL}. ` +
+        "Stop the other process on that port or launch LabCenter after freeing it."
+      );
+    }
   }
-
-  await waitForServer(APP_URL);
   createMainWindow();
 }
 

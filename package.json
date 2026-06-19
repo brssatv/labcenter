@@ -11,6 +11,7 @@
     "hash-password": "node scripts/hash-password.js",
     "test": "node --test --test-concurrency=1",
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage --test-coverage-include=lib/patient-profile.js --test-coverage-include=lib/portal-store.js",
+    "desktop:fix": "node scripts/rebuild-electron-native.js",
     "desktop": "electron .",
     "dist:win": "electron-builder --win nsis",
     "dist:win-portable": "electron-builder --win portable"
@@ -39,6 +40,7 @@
     "zipcodes": "^8.0.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "electron": "^35.0.0",
     "electron-builder": "^24.13.3"
   },
