@@ -45,6 +45,7 @@ async function startPortalHarness() {
     PORT: process.env.PORT,
     NODE_ENV: process.env.NODE_ENV,
     SESSION_SECRET: process.env.SESSION_SECRET,
+    LABCENTER_TIME_ZONE: process.env.LABCENTER_TIME_ZONE,
     LABCENTER_ACCESSION_TIME_ZONE: process.env.LABCENTER_ACCESSION_TIME_ZONE,
   };
 
@@ -53,6 +54,7 @@ async function startPortalHarness() {
   process.env.PORT = "0";
   process.env.NODE_ENV = "test";
   process.env.SESSION_SECRET = "test-secret-for-portal-routes";
+  process.env.LABCENTER_TIME_ZONE = "UTC";
   process.env.LABCENTER_ACCESSION_TIME_ZONE = "UTC";
 
   const serverPath = require.resolve("../server.js");
@@ -149,6 +151,7 @@ test("portal import-local route hydrates registrations orders and upload log dat
   assert.equal(payload.imported.registrations, 1);
   assert.equal(payload.imported.orders, 1);
   assert.equal(payload.imported.uploadResultsLog, 1);
+  assert.equal(payload.timeZone, "UTC");
   assert.equal(payload.registrations.length, 1);
   assert.equal(payload.orders.length, 1);
   assert.equal(payload.uploadResultsLog.length, 1);
@@ -160,6 +163,7 @@ test("portal import-local route hydrates registrations orders and upload log dat
   });
   assert.equal(portalDataResponse.status, 200);
   const portalDataPayload = await portalDataResponse.json();
+  assert.equal(portalDataPayload.timeZone, "UTC");
   assert.equal(portalDataPayload.registrations.length, 1);
   assert.equal(portalDataPayload.orders.length, 1);
   assert.equal(portalDataPayload.uploadResultsLog.length, 1);

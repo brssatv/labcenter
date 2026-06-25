@@ -44,6 +44,11 @@ const views = [
     title: "Formula Book",
     subtitle: "Review modular formula references used across report workflows.",
   },
+  {
+    key: "admin-settings",
+    title: "Admin Settings",
+    subtitle: "Update protected application-wide settings.",
+  },
 ];
 
 const clientAccessViews = {
@@ -137,11 +142,16 @@ let csrfToken = "";
 let pendingAuth = false;
 let authStage = "gateway";
 let authMode = "doctor";
+const defaultAppTimeZone = "UTC";
+const shortMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 let authConfig = {
   adminAuthMode: "local",
   oidcLoginUrl: "/auth/oidc/login",
+  timeZone: defaultAppTimeZone,
 };
 let authConfigPromise = null;
+let appTimeZone = defaultAppTimeZone;
+const appDateFormatterCache = new Map();
 let sessionMenuOpen = false;
 let activeSession = createDefaultActiveSession();
 let currentView = "dashboard";
@@ -182,6 +192,22 @@ let facilityData = {
   accounts: [],
   providers: [],
 };
+const adminTimeZoneSuggestions = [
+  "America/Vancouver",
+  "America/Los_Angeles",
+  "America/Denver",
+  "America/Chicago",
+  "America/New_York",
+  "America/Phoenix",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+  "UTC",
+];
+let adminSettingsState = {
+  timeZone: defaultAppTimeZone,
+};
+let adminSettingsReady = false;
+let adminSettingsPromise = null;
 const registrationsStorageKey = "labcenter.registrations";
 const ordersStorageKey = "labcenter.orders";
 const uploadResultsLogStorageKey = "labcenter.upload-results-log.v1";
@@ -205,6 +231,361 @@ let sessionEditingActive = false;
 let sessionWarningModalVisible = false;
 let sessionRefreshInFlight = false;
 let sessionLogoutInFlight = false;
+
+function resolveAppTimeZone(value = defaultAppTimeZone) {
+  const timeZone = String(value || "").trim() || defaultAppTimeZone;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return defaultAppTimeZone;
+  }
+}
+
+function buildDateFormatterCacheKey(timeZone, options = {}) {
+  return JSON.stringify(
+    Object.entries({
+      timeZone: resolveAppTimeZone(timeZone),
+      ...options,
+    }).sort(([left], [right]) => left.localeCompare(right))
+  );
+}
+
+function getDateFormatterForTimeZone(timeZone, options = {}) {
+  const cacheKey = buildDateFormatterCacheKey(timeZone, options);
+  if (!appDateFormatterCache.has(cacheKey)) {
+    appDateFormatterCache.set(
+      cacheKey,
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: resolveAppTimeZone(timeZone),
+        ...options,
+      })
+    );
+  }
+  return appDateFormatterCache.get(cacheKey);
+}
+
+function setAppTimeZone(value) {
+  appTimeZone = resolveAppTimeZone(value);
+  return appTimeZone;
+}
+
+function getAppTimeZone() {
+  return appTimeZone;
+}
+
+function getAppDateFormatter(options = {}) {
+  return getDateFormatterForTimeZone(getAppTimeZone(), options);
+}
+
+function extractDateOnlyParts(value) {
+  const match = String(value || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return {
+    year: match[1],
+    month: match[2],
+    day: match[3],
+  };
+}
+
+function parseDateValue(value) {
+  const parsed = new Date(value || "");
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function resolveDatePartsInAppTimeZone(value) {
+  const dateOnlyParts = extractDateOnlyParts(value);
+  if (dateOnlyParts) return dateOnlyParts;
+  const parsed = parseDateValue(value);
+  if (!parsed) return null;
+  const parts = getAppDateFormatter({
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(parsed);
+  return {
+    year: parts.find((part) => part.type === "year")?.value || "1970",
+    month: parts.find((part) => part.type === "month")?.value || "01",
+    day: parts.find((part) => part.type === "day")?.value || "01",
+  };
+}
+
+function resolveDateTimePartsInAppTimeZone(value) {
+  const dateOnlyParts = extractDateOnlyParts(value);
+  if (dateOnlyParts) {
+    return {
+      ...dateOnlyParts,
+      hour: "00",
+      minute: "00",
+      second: "00",
+    };
+  }
+  const parsed = parseDateValue(value);
+  if (!parsed) return null;
+  const parts = getAppDateFormatter({
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  }).formatToParts(parsed);
+  return {
+    year: parts.find((part) => part.type === "year")?.value || "1970",
+    month: parts.find((part) => part.type === "month")?.value || "01",
+    day: parts.find((part) => part.type === "day")?.value || "01",
+    hour: parts.find((part) => part.type === "hour")?.value || "00",
+    minute: parts.find((part) => part.type === "minute")?.value || "00",
+    second: parts.find((part) => part.type === "second")?.value || "00",
+  };
+}
+
+function formatDateParts(parts, options = {}) {
+  if (!parts) return "";
+  const monthStyle = options.month || "";
+  const dayStyle = options.day || "";
+  const yearStyle = options.year || "";
+  const monthNumber = Math.max(1, Math.min(12, Number(parts.month) || 1));
+  const dayNumber = Math.max(1, Math.min(31, Number(parts.day) || 1));
+  const monthValue = monthStyle === "short"
+    ? shortMonthNames[monthNumber - 1]
+    : monthStyle === "2-digit"
+    ? String(monthNumber).padStart(2, "0")
+    : monthStyle
+    ? String(monthNumber)
+    : "";
+  const dayValue = dayStyle === "2-digit"
+    ? String(dayNumber).padStart(2, "0")
+    : dayStyle
+    ? String(dayNumber)
+    : "";
+  const yearValue = yearStyle === "2-digit"
+    ? String(parts.year || "").slice(-2)
+    : yearStyle
+    ? String(parts.year || "")
+    : "";
+
+  if (monthStyle && dayStyle && yearStyle) {
+    return monthStyle === "short"
+      ? `${monthValue} ${dayValue}, ${yearValue}`
+      : `${monthValue}/${dayValue}/${yearValue}`;
+  }
+
+  if (monthStyle && yearStyle && !dayStyle) {
+    return monthStyle === "short"
+      ? `${monthValue} ${yearValue}`
+      : `${monthValue}/${yearValue}`;
+  }
+
+  if (monthStyle && dayStyle && !yearStyle) {
+    return monthStyle === "short"
+      ? `${monthValue} ${dayValue}`
+      : `${monthValue}/${dayValue}`;
+  }
+
+  if (monthStyle && !dayStyle && !yearStyle) return monthValue;
+  if (yearStyle && !monthStyle && !dayStyle) return yearValue;
+
+  return [monthValue, dayValue, yearValue].filter(Boolean).join(" ").trim();
+}
+
+function formatAppDate(value, options = {}, fallback = "-") {
+  const formatterOptions = {
+    month: "numeric",
+    day: "numeric",
+    year: "numeric",
+    ...options,
+  };
+  const dateOnlyParts = extractDateOnlyParts(value);
+  if (dateOnlyParts) {
+    return formatDateParts(dateOnlyParts, formatterOptions) || fallback;
+  }
+  const parsed = parseDateValue(value);
+  if (!parsed) return fallback;
+  return getAppDateFormatter(formatterOptions).format(parsed);
+}
+
+function formatAppTime(value, options = {}, fallback = "") {
+  if (!value) return fallback;
+  if (/^\d{2}:\d{2}$/.test(String(value))) {
+    const [hourRaw, minute] = String(value).split(":");
+    const hour = Number(hourRaw);
+    const period = hour >= 12 ? "PM" : "AM";
+    const hour12 = ((hour + 11) % 12) + 1;
+    return `${hour12}:${minute} ${period}`;
+  }
+  if (extractDateOnlyParts(value)) return fallback || String(value);
+  const parsed = parseDateValue(value);
+  if (!parsed) return String(value);
+  return getAppDateFormatter({
+    hour: "numeric",
+    minute: "2-digit",
+    ...options,
+  }).format(parsed);
+}
+
+function formatAppDateTime(value, options = {}, fallback = "-") {
+  if (!value) return fallback;
+  const formatterOptions = {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    ...options,
+  };
+  const dateOnlyParts = extractDateOnlyParts(value);
+  if (dateOnlyParts) {
+    const { hour, minute, second, hour12, ...dateOnlyOptions } = formatterOptions;
+    return formatDateParts(dateOnlyParts, dateOnlyOptions) || fallback;
+  }
+  const parsed = parseDateValue(value);
+  if (!parsed) return fallback;
+  return getAppDateFormatter(formatterOptions).format(parsed);
+}
+
+function formatDateTimeForTimeZone(value, timeZone, options = {}, fallback = "-") {
+  if (!value) return fallback;
+  const formatterOptions = {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    ...options,
+  };
+  const dateOnlyParts = extractDateOnlyParts(value);
+  if (dateOnlyParts) {
+    const { hour, minute, second, hour12, ...dateOnlyOptions } = formatterOptions;
+    return formatDateParts(dateOnlyParts, dateOnlyOptions) || fallback;
+  }
+  const parsed = parseDateValue(value);
+  if (!parsed) return fallback;
+  return getDateFormatterForTimeZone(timeZone, formatterOptions).format(parsed);
+}
+
+function normalizeUtcOffsetLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "UTC+00:00";
+  if (/^(?:GMT|UTC)$/i.test(raw)) return "UTC+00:00";
+  const match = raw.match(/^(?:GMT|UTC)([+-])(\d{1,2})(?::?(\d{2}))?$/i);
+  if (!match) {
+    return raw.replace(/^GMT/i, "UTC");
+  }
+  const [, sign, hourValue, minuteValue = "00"] = match;
+  return `UTC${sign}${String(hourValue).padStart(2, "0")}:${String(minuteValue).padStart(2, "0")}`;
+}
+
+function getTimeZoneOffsetLabel(timeZone, referenceValue = new Date().toISOString()) {
+  const parsed = parseDateValue(referenceValue);
+  if (!parsed) return "UTC+00:00";
+  const parts = getDateFormatterForTimeZone(timeZone, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZoneName: "longOffset",
+  }).formatToParts(parsed);
+  return normalizeUtcOffsetLabel(parts.find((part) => part.type === "timeZoneName")?.value || "UTC");
+}
+
+function getAppDateKey(value) {
+  const parts = resolveDatePartsInAppTimeZone(value);
+  return parts ? `${parts.year}-${parts.month}-${parts.day}` : "";
+}
+
+function buildAdminTimeZoneCatalog() {
+  const recommended = [];
+  const seen = new Set();
+
+  adminTimeZoneSuggestions.forEach((value) => {
+    const resolved = resolveAppTimeZone(value);
+    if (!seen.has(resolved)) {
+      recommended.push(resolved);
+      seen.add(resolved);
+    }
+  });
+
+  const supportedValues = typeof Intl.supportedValuesOf === "function"
+    ? Intl.supportedValuesOf("timeZone")
+    : [];
+  const allValues = Array.from(new Set([
+    "UTC",
+    ...recommended,
+    ...supportedValues.map((value) => resolveAppTimeZone(value)),
+  ]));
+  const remaining = allValues
+    .filter((value) => !recommended.includes(value))
+    .sort((left, right) => left.localeCompare(right));
+
+  return {
+    recommended,
+    remaining,
+  };
+}
+
+const adminTimeZoneCatalog = buildAdminTimeZoneCatalog();
+
+function formatAdminTimeZoneLabel(value, referenceValue = new Date().toISOString()) {
+  const resolved = resolveAppTimeZone(value);
+  return `${resolved} (${getTimeZoneOffsetLabel(resolved, referenceValue)})`;
+}
+
+function buildAdminTimeZoneOptionsMarkup(selectedValue = defaultAppTimeZone, referenceValue = new Date().toISOString()) {
+  const resolvedSelection = resolveAppTimeZone(selectedValue);
+  const recommended = adminTimeZoneCatalog.recommended.includes(resolvedSelection)
+    ? adminTimeZoneCatalog.recommended
+    : [resolvedSelection, ...adminTimeZoneCatalog.recommended];
+  const remaining = adminTimeZoneCatalog.remaining.filter((value) => value !== resolvedSelection);
+
+  return [
+    `<optgroup label="Recommended">${recommended
+      .map((value) => `<option value="${escapeHtml(value)}"${value === resolvedSelection ? " selected" : ""}>${escapeHtml(formatAdminTimeZoneLabel(value, referenceValue))}</option>`)
+      .join("")}</optgroup>`,
+    remaining.length
+      ? `<optgroup label="All Time Zones">${remaining
+        .map((value) => `<option value="${escapeHtml(value)}"${value === resolvedSelection ? " selected" : ""}>${escapeHtml(formatAdminTimeZoneLabel(value, referenceValue))}</option>`)
+        .join("")}</optgroup>`
+      : "",
+  ].join("");
+}
+
+function formatAppAccessionDate(value) {
+  const parts = resolveDatePartsInAppTimeZone(value);
+  if (!parts) return "";
+  return `${parts.month}${parts.day}${String(parts.year || "").slice(-2)}`;
+}
+
+function formatAppMonthLabel(year, month, options = {}) {
+  return formatDateParts(
+    {
+      year: String(year || "").padStart(4, "0"),
+      month: String(month || "").padStart(2, "0"),
+      day: "01",
+    },
+    {
+      month: "short",
+      ...(options.includeYear ? { year: "numeric" } : {}),
+    }
+  );
+}
+
+function shiftYearMonth(year, month, offset) {
+  const zeroBasedMonth = Math.max(0, (Number(month) || 1) - 1);
+  const totalMonths = (Number(year) || 0) * 12 + zeroBasedMonth + Number(offset || 0);
+  const nextYear = Math.floor(totalMonths / 12);
+  const nextMonth = (totalMonths % 12 + 12) % 12;
+  return {
+    year: nextYear,
+    month: nextMonth + 1,
+  };
+}
+
+setAppTimeZone(authConfig.timeZone);
 
 function createDefaultActiveSession() {
   return {
@@ -801,12 +1182,7 @@ function resolvePanelPrefixFromService(serviceLine) {
 }
 
 function formatAccessionDate(orderDateValue) {
-  const value = new Date(orderDateValue || "");
-  const date = Number.isNaN(value.getTime()) ? new Date() : value;
-  const day = String(date.getDate()).padStart(2, "0");
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const year = String(date.getFullYear());
-  return `${day}${month}${year}`;
+  return formatAppAccessionDate(orderDateValue || new Date().toISOString());
 }
 
 function buildAccessionNumber({ serviceLine, orderDate, orderId }) {
@@ -1242,7 +1618,9 @@ async function ensureAuthConfigLoaded(force = false) {
       authConfig = {
         adminAuthMode: payload?.adminAuthMode === "oidc" ? "oidc" : "local",
         oidcLoginUrl: payload?.oidcLoginUrl || "/auth/oidc/login",
+        timeZone: resolveAppTimeZone(payload?.timeZone || defaultAppTimeZone),
       };
+      setAppTimeZone(authConfig.timeZone);
       return authConfig;
     })
     .catch((error) => {
@@ -1276,9 +1654,49 @@ function readLegacyLocalArray(storageKey) {
 }
 
 function applyPortalDataPayload(payload) {
+  if (payload?.timeZone) {
+    setAppTimeZone(payload.timeZone);
+  }
   registrationsState = Array.isArray(payload?.registrations) ? payload.registrations : [];
   ordersState = Array.isArray(payload?.orders) ? payload.orders : [];
   uploadResultsLogState = Array.isArray(payload?.uploadResultsLog) ? payload.uploadResultsLog : [];
+}
+
+function applyAdminSettingsPayload(payload) {
+  const settings = payload?.settings && typeof payload.settings === "object"
+    ? payload.settings
+    : payload && typeof payload === "object"
+    ? payload
+    : {};
+  const nextTimeZone = resolveAppTimeZone(settings?.timeZone || getAppTimeZone());
+  adminSettingsState = {
+    timeZone: nextTimeZone,
+  };
+  authConfig = {
+    ...authConfig,
+    timeZone: nextTimeZone,
+  };
+  setAppTimeZone(nextTimeZone);
+  return adminSettingsState;
+}
+
+async function ensureAdminSettingsLoaded(force = false) {
+  if (adminSettingsReady && !force) return adminSettingsState;
+
+  if (!adminSettingsPromise || force) {
+    adminSettingsPromise = requestJson("/api/admin/settings")
+      .then((payload) => {
+        applyAdminSettingsPayload(payload);
+        adminSettingsReady = true;
+        return adminSettingsState;
+      })
+      .catch((error) => {
+        adminSettingsPromise = null;
+        throw error;
+      });
+  }
+
+  await adminSettingsPromise;
 }
 
 function getLegacyPortalData() {
@@ -1592,29 +2010,18 @@ function renderRequisitionList() {
       const [year, month, day] = String(value).split("-");
       return `${Number(month)}/${Number(day)}/${year}`;
     }
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleDateString("en-US");
+    return formatAppDate(value, {
+      month: "numeric",
+      day: "numeric",
+      year: "numeric",
+    }, String(value));
   }
 
   function formatTime(value) {
-    if (!value) return "";
-    if (/^\d{2}:\d{2}$/.test(String(value))) {
-      const [hourRaw, minute] = String(value).split(":");
-      const hour = Number(hourRaw);
-      const period = hour >= 12 ? "PM" : "AM";
-      const hour12 = ((hour + 11) % 12) + 1;
-      return `${hour12}:${minute} ${period}`;
-    }
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  }
-
-  function getCollectionDateObject(source) {
-    const raw = source?.sampleCollectTime || source?.collectionDate || source?.createdAt;
-    const value = new Date(raw || "");
-    return Number.isNaN(value.getTime()) ? null : value;
+    return formatAppTime(value, {
+      hour: "numeric",
+      minute: "2-digit",
+    }, "");
   }
 
   function getStatusClass(status) {
@@ -1644,14 +2051,19 @@ function renderRequisitionList() {
       labCode: "LABCENTER",
     };
     const sourceRecord = linkedRegistration ? { ...fallbackRecord, ...linkedRegistration } : fallbackRecord;
+    const collectionDateSource = order?.sampleCollectTime
+      || sourceRecord?.collectionDate
+      || order?.createdAt
+      || sourceRecord?.createdAt
+      || "";
 
     const orderId = order?.orderId ? String(order.orderId) : `COI-${String(index + 1).padStart(6, "0")}`;
     const accession = String(order?.accessionNo || "").trim() || buildAccessionNumber({
       serviceLine: Array.isArray(order?.services) ? order.services[0] : null,
-      orderDate: order?.sampleCollectTime || order?.createdAt || sourceRecord?.collectionDate,
+      orderDate: collectionDateSource,
       orderId,
     });
-    const dateObj = getCollectionDateObject(order || sourceRecord);
+    const collectionDateKey = getAppDateKey(collectionDateSource);
     const status = order?.status || "Pending";
     const testType = Array.isArray(order?.services) && order.services.length
       ? order.services.map((line) => line?.serviceName).filter(Boolean).join(", ")
@@ -1667,17 +2079,17 @@ function renderRequisitionList() {
       status,
       testType,
       labCode: sourceRecord.labCode || "LABCENTER",
-      collectionDate: formatDate(sourceRecord.collectionDate || dateObj?.toISOString().slice(0, 10)),
+      collectionDate: formatDate(sourceRecord.collectionDate || collectionDateKey),
       collectionTime: formatTime(sourceRecord.collectionTime || order?.sampleCollectTime || ""),
-      collectionDateObj: dateObj,
+      collectionDateKey,
       statusClass: getStatusClass(status),
     };
   }
 
   function rowMatchesFilters(row) {
     const globalNeedle = String(globalSearchInput.value || "").trim().toLowerCase();
-    const fromDate = fromDateInput.value ? new Date(`${fromDateInput.value}T00:00:00`) : null;
-    const toDate = toDateInput.value ? new Date(`${toDateInput.value}T23:59:59`) : null;
+    const fromDate = String(fromDateInput.value || "").trim();
+    const toDate = String(toDateInput.value || "").trim();
 
     if (globalNeedle) {
       const haystack = [row.orderId, row.accession, row.firstName, row.lastName, row.raw.patientId]
@@ -1686,9 +2098,9 @@ function renderRequisitionList() {
       if (!haystack.includes(globalNeedle)) return false;
     }
 
-    if (fromDate && row.collectionDateObj && row.collectionDateObj < fromDate) return false;
-    if (toDate && row.collectionDateObj && row.collectionDateObj > toDate) return false;
-    if (fromDate && !row.collectionDateObj) return false;
+    if (fromDate && row.collectionDateKey && row.collectionDateKey < fromDate) return false;
+    if (toDate && row.collectionDateKey && row.collectionDateKey > toDate) return false;
+    if (fromDate && !row.collectionDateKey) return false;
 
     return Object.entries(columnFilters).every(([key, value]) => {
       if (!value) return true;
@@ -1813,16 +2225,13 @@ function formatDashboardNumber(value) {
 }
 
 function formatDashboardDateTime(isoValue) {
-  if (!isoValue) return "-";
-  const date = new Date(isoValue);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("en-US", {
+  return formatAppDateTime(isoValue, {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  });
+  }, "-");
 }
 
 function getOrderPanelLabels(order) {
@@ -1860,17 +2269,19 @@ function getSampleCountFromOrder(order) {
 }
 
 function buildMonthlyOrderTrend(orders, monthCount = 6) {
-  const now = new Date();
+  const nowParts = resolveDatePartsInAppTimeZone(new Date().toISOString()) || {
+    year: String(new Date().getUTCFullYear()),
+    month: String(new Date().getUTCMonth() + 1).padStart(2, "0"),
+    day: "01",
+  };
   const buckets = [];
   for (let index = monthCount - 1; index >= 0; index -= 1) {
-    const pivot = new Date(now.getFullYear(), now.getMonth() - index, 1);
-    const month = pivot.getMonth();
-    const year = pivot.getFullYear();
-    const key = `${year}-${String(month + 1).padStart(2, "0")}`;
+    const pivot = shiftYearMonth(Number(nowParts.year), Number(nowParts.month), -index);
+    const key = `${pivot.year}-${String(pivot.month).padStart(2, "0")}`;
     buckets.push({
       key,
-      label: pivot.toLocaleDateString("en-US", { month: "short" }),
-      fullLabel: pivot.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+      label: formatAppMonthLabel(pivot.year, pivot.month),
+      fullLabel: formatAppMonthLabel(pivot.year, pivot.month, { includeYear: true }),
       count: 0,
       pending: 0,
       processed: 0,
@@ -1881,9 +2292,9 @@ function buildMonthlyOrderTrend(orders, monthCount = 6) {
 
   const keyToBucket = new Map(buckets.map((item) => [item.key, item]));
   orders.forEach((order) => {
-    const created = new Date(order.createdAt);
-    if (Number.isNaN(created.getTime())) return;
-    const key = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}`;
+    const parts = resolveDatePartsInAppTimeZone(order.createdAt);
+    if (!parts) return;
+    const key = `${parts.year}-${parts.month}`;
     const bucket = keyToBucket.get(key);
     if (!bucket) return;
     bucket.count += 1;
@@ -2701,16 +3112,11 @@ function escapeHl7Text(value) {
 }
 
 function formatHl7Timestamp(value, { dateOnly = false } = {}) {
-  const date = new Date(value || "");
-  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
-  const year = safeDate.getFullYear();
-  const month = String(safeDate.getMonth() + 1).padStart(2, "0");
-  const day = String(safeDate.getDate()).padStart(2, "0");
-  if (dateOnly) return `${year}${month}${day}`;
-  const hours = String(safeDate.getHours()).padStart(2, "0");
-  const minutes = String(safeDate.getMinutes()).padStart(2, "0");
-  const seconds = String(safeDate.getSeconds()).padStart(2, "0");
-  return `${year}${month}${day}${hours}${minutes}${seconds}`;
+  const parts = resolveDateTimePartsInAppTimeZone(value || new Date().toISOString())
+    || resolveDateTimePartsInAppTimeZone(new Date().toISOString());
+  if (!parts) return "";
+  if (dateOnly) return `${parts.year}${parts.month}${parts.day}`;
+  return `${parts.year}${parts.month}${parts.day}${parts.hour}${parts.minute}${parts.second}`;
 }
 
 function resolvePharmdAccession(order) {
@@ -3150,9 +3556,11 @@ function getSearchablePatients() {
 
 function formatDateForCard(isoDate) {
   if (!isoDate) return "Unknown";
-  const value = new Date(isoDate);
-  if (Number.isNaN(value.getTime())) return isoDate;
-  return value.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return formatAppDate(isoDate, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }, isoDate);
 }
 
 function calcAge(dob) {
@@ -8899,16 +9307,13 @@ function renderOutputResults() {
   const previewLoadingOrders = new Set();
 
   function formatOutputDate(iso) {
-    if (!iso) return "-";
-    const value = new Date(iso);
-    if (Number.isNaN(value.getTime())) return "-";
-    return value.toLocaleString("en-US", {
+    return formatAppDateTime(iso, {
       month: "short",
       day: "numeric",
       year: "numeric",
       hour: "numeric",
       minute: "2-digit",
-    });
+    }, "-");
   }
 
   function findOrderById(orderId) {
@@ -10625,28 +11030,22 @@ function renderOrderHistory(initialTab = "all-orders") {
   }
 
   function formatReportDateTime(value) {
-    if (!value) return "-";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "-";
-    return date.toLocaleString("en-US", {
+    return formatAppDateTime(value, {
       month: "short",
       day: "2-digit",
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
       hour12: true,
-    });
+    }, "-");
   }
 
   function formatReportDate(value) {
-    if (!value) return "-";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "-";
-    return date.toLocaleDateString("en-US", {
+    return formatAppDate(value, {
       month: "short",
       day: "2-digit",
       year: "numeric",
-    });
+    }, "-");
   }
 
   function formatReportCtValue(row, options = {}) {
@@ -13245,16 +13644,13 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
   }
 
   function formatOrderDate(iso) {
-    if (!iso) return "-";
-    const value = new Date(iso);
-    if (Number.isNaN(value.getTime())) return "-";
-    return value.toLocaleString("en-US", {
+    return formatAppDateTime(iso, {
       month: "short",
       day: "numeric",
       year: "numeric",
       hour: "numeric",
       minute: "2-digit",
-    });
+    }, "-");
   }
 
   function money(value) {
@@ -13263,20 +13659,20 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
 
   function applyFilters(items) {
     const orderIdNeedle = (orderIdInput.value || "").trim().toLowerCase();
-    const fromDate = fromDateInput.value ? new Date(`${fromDateInput.value}T00:00:00`) : null;
-    const toDate = toDateInput.value ? new Date(`${toDateInput.value}T23:59:59`) : null;
+    const fromDate = String(fromDateInput.value || "").trim();
+    const toDate = String(toDateInput.value || "").trim();
 
     return items.filter((row) => {
       if (activeTab === "order-settlements" && row.status === "Pending") return false;
       if (activeTab === "add-service" && row.status !== "Pending") return false;
       if (orderIdNeedle && !String(row.orderId || "").toLowerCase().includes(orderIdNeedle)) return false;
       if (fromDate) {
-        const value = new Date(row.createdAt);
-        if (value < fromDate) return false;
+        const value = getAppDateKey(row.createdAt);
+        if (!value || value < fromDate) return false;
       }
       if (toDate) {
-        const value = new Date(row.createdAt);
-        if (value > toDate) return false;
+        const value = getAppDateKey(row.createdAt);
+        if (!value || value > toDate) return false;
       }
 
       const patientDetails = `${row.patientName || "-"} (${row.patientId || "-"})`;
@@ -14460,7 +14856,7 @@ function exportFacilityRows(entity, rows, columns) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${entity}-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `${entity}-${getAppDateKey(new Date().toISOString()) || new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -16142,6 +16538,256 @@ function renderFacility() {
   });
 }
 
+function renderAdminSettings(options = {}) {
+  currentSearchInput = null;
+  const nowIso = new Date().toISOString();
+  const forceReload = Boolean(options.forceReload);
+  if (!adminSettingsReady || forceReload) {
+    panelBody.innerHTML = `
+      <section class="card starter-card admin-settings-card">
+        <p class="badge">Admin Settings</p>
+        <h3>Loading protected settings...</h3>
+        <p class="subtle">Fetching the current application time zone.</p>
+      </section>
+    `;
+    ensureAdminSettingsLoaded(forceReload)
+      .then(() => {
+        if (currentView === "admin-settings") renderAdminSettings();
+      })
+      .catch((error) => {
+        if (currentView !== "admin-settings") return;
+        panelBody.innerHTML = `
+          <section class="card starter-card admin-settings-card">
+            <p class="badge">Admin Settings</p>
+            <h3>Unable to load admin settings.</h3>
+            <p class="subtle">${escapeHtml(error?.message || "Unexpected settings error.")}</p>
+            <button type="button" class="btn-primary" data-admin-settings-retry>Retry</button>
+          </section>
+        `;
+        panelBody.querySelector("[data-admin-settings-retry]")?.addEventListener("click", () => {
+          adminSettingsReady = false;
+          adminSettingsPromise = null;
+          renderAdminSettings({ forceReload: true });
+        });
+      });
+    return;
+  }
+
+  panelBody.innerHTML = `
+    <section class="card admin-settings-card">
+      <div class="admin-settings-hero">
+        <div>
+          <p class="badge">Protected Setting</p>
+          <h3>Application Time Zone</h3>
+          <p class="subtle">Set the single IANA time zone used for new accession numbers and date formatting across the app.</p>
+        </div>
+        <button type="button" class="btn-ghost" data-admin-settings-refresh>Reload</button>
+      </div>
+
+      <div class="admin-settings-summary">
+        <div class="admin-settings-summary-card">
+          <span class="admin-settings-summary-label">Current Time Zone</span>
+          <strong data-admin-current-timezone>${escapeHtml(adminSettingsState.timeZone || defaultAppTimeZone)}</strong>
+          <span class="admin-settings-summary-meta" data-admin-current-offset>${escapeHtml(getTimeZoneOffsetLabel(adminSettingsState.timeZone || defaultAppTimeZone, nowIso))}</span>
+        </div>
+        <div class="admin-settings-summary-card">
+          <span class="admin-settings-summary-label">Current Time In App Zone</span>
+          <strong data-admin-current-time>${escapeHtml(formatAppDateTime(nowIso, {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          }, "-"))}</strong>
+        </div>
+      </div>
+
+      <form id="admin-settings-form" class="admin-settings-form">
+        <label class="admin-settings-field">
+          <span>Application Time Zone</span>
+          <select
+            id="admin-timezone-input"
+            name="timeZone"
+          >
+            ${buildAdminTimeZoneOptionsMarkup(adminSettingsState.timeZone || defaultAppTimeZone, nowIso)}
+          </select>
+          <small>Uses standardized IANA time zone identifiers with the current UTC offset. This single setting is used by the server for accession generation and by the client for date and time rendering everywhere in the app.</small>
+        </label>
+
+        <div class="admin-settings-preview-card">
+          <span class="admin-settings-summary-label">Selected Time Zone Preview</span>
+          <strong data-admin-selected-timezone>${escapeHtml(adminSettingsState.timeZone || defaultAppTimeZone)}</strong>
+          <span class="admin-settings-summary-meta" data-admin-selected-offset>${escapeHtml(getTimeZoneOffsetLabel(adminSettingsState.timeZone || defaultAppTimeZone, nowIso))}</span>
+          <span data-admin-selected-time>${escapeHtml(formatDateTimeForTimeZone(
+            nowIso,
+            adminSettingsState.timeZone || defaultAppTimeZone,
+            {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            },
+            "-"
+          ))}</span>
+        </div>
+
+        <label class="admin-settings-field">
+          <span>4-Digit Admin PIN</span>
+          <input
+            id="admin-timezone-pin"
+            name="pin"
+            type="password"
+            inputmode="numeric"
+            maxlength="4"
+            pattern="[0-9]{4}"
+            placeholder="Enter PIN"
+            autocomplete="off"
+          >
+          <small>Required to save this setting.</small>
+        </label>
+
+        <div class="admin-settings-actions">
+          <button type="submit" class="btn-primary" data-admin-settings-save>Save Time Zone</button>
+        </div>
+        <p class="subtle admin-settings-status" data-admin-settings-status>
+          Saving updates both new server-generated accessions and all client-rendered dates/times that use the shared app timezone helpers.
+        </p>
+      </form>
+    </section>
+  `;
+
+  const form = document.getElementById("admin-settings-form");
+  const timeZoneInput = document.getElementById("admin-timezone-input");
+  const pinInput = document.getElementById("admin-timezone-pin");
+  const saveButton = panelBody.querySelector("[data-admin-settings-save]");
+  const reloadButton = panelBody.querySelector("[data-admin-settings-refresh]");
+  const statusNode = panelBody.querySelector("[data-admin-settings-status]");
+  const currentTimeZoneNode = panelBody.querySelector("[data-admin-current-timezone]");
+  const currentOffsetNode = panelBody.querySelector("[data-admin-current-offset]");
+  const currentTimeNode = panelBody.querySelector("[data-admin-current-time]");
+  const selectedTimeZoneNode = panelBody.querySelector("[data-admin-selected-timezone]");
+  const selectedOffsetNode = panelBody.querySelector("[data-admin-selected-offset]");
+  const selectedTimeNode = panelBody.querySelector("[data-admin-selected-time]");
+
+  function setStatus(message, tone = "info") {
+    if (!statusNode) return;
+    statusNode.textContent = message;
+    statusNode.classList.toggle("is-error", tone === "error");
+    statusNode.classList.toggle("is-success", tone === "success");
+  }
+
+  function syncSelectedTimePreview(selectedValue = timeZoneInput?.value || adminSettingsState.timeZone || defaultAppTimeZone) {
+    const previewTimeZone = resolveAppTimeZone(selectedValue);
+    const previewNowIso = new Date().toISOString();
+    if (selectedTimeZoneNode) {
+      selectedTimeZoneNode.textContent = previewTimeZone;
+    }
+    if (selectedOffsetNode) {
+      selectedOffsetNode.textContent = getTimeZoneOffsetLabel(previewTimeZone, previewNowIso);
+    }
+    if (selectedTimeNode) {
+      selectedTimeNode.textContent = formatDateTimeForTimeZone(previewNowIso, previewTimeZone, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }, "-");
+    }
+  }
+
+  function syncCurrentTimeSummary() {
+    const currentNowIso = new Date().toISOString();
+    if (currentTimeZoneNode) {
+      currentTimeZoneNode.textContent = adminSettingsState.timeZone || defaultAppTimeZone;
+    }
+    if (currentOffsetNode) {
+      currentOffsetNode.textContent = getTimeZoneOffsetLabel(adminSettingsState.timeZone || defaultAppTimeZone, currentNowIso);
+    }
+    if (currentTimeNode) {
+      currentTimeNode.textContent = formatAppDateTime(currentNowIso, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }, "-");
+    }
+  }
+
+  timeZoneInput?.addEventListener("change", () => {
+    syncSelectedTimePreview(timeZoneInput.value);
+  });
+
+  syncSelectedTimePreview();
+
+  reloadButton?.addEventListener("click", () => {
+    adminSettingsReady = false;
+    adminSettingsPromise = null;
+    renderAdminSettings({ forceReload: true });
+  });
+
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const requestedTimeZone = String(timeZoneInput?.value || "").trim();
+    const pin = String(pinInput?.value || "").trim();
+
+    if (!requestedTimeZone) {
+      setStatus("Time zone is required.", "error");
+      timeZoneInput?.focus();
+      return;
+    }
+    if (!/^\d{4}$/.test(pin)) {
+      setStatus("Enter the 4-digit admin PIN to save this setting.", "error");
+      pinInput?.focus();
+      return;
+    }
+
+    if (!csrfToken) {
+      await fetchCsrfToken().catch(() => {});
+    }
+
+    const originalLabel = saveButton?.textContent || "Save Time Zone";
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = "Saving...";
+    }
+    setStatus("Saving application time zone...", "info");
+
+    try {
+      const payload = await requestJson("/api/admin/settings", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "x-csrf-token": csrfToken,
+        },
+        body: JSON.stringify({
+          timeZone: requestedTimeZone,
+          pin,
+        }),
+      });
+      applyAdminSettingsPayload(payload);
+      adminSettingsReady = true;
+      if (timeZoneInput) {
+        timeZoneInput.innerHTML = buildAdminTimeZoneOptionsMarkup(adminSettingsState.timeZone, new Date().toISOString());
+        timeZoneInput.value = adminSettingsState.timeZone;
+      }
+      if (pinInput) pinInput.value = "";
+      syncCurrentTimeSummary();
+      syncSelectedTimePreview(adminSettingsState.timeZone);
+      setStatus(`Time zone updated to ${adminSettingsState.timeZone} (${getTimeZoneOffsetLabel(adminSettingsState.timeZone)}) across server and client formatting.`, "success");
+    } catch (error) {
+      setStatus(error?.message || "Unable to update the application time zone.", "error");
+    } finally {
+      if (saveButton) {
+        saveButton.disabled = false;
+        saveButton.textContent = originalLabel;
+      }
+    }
+  });
+}
+
 function renderView() {
   function animatePanelTransition() {
     panelBody.classList.remove("view-transition");
@@ -16219,6 +16865,9 @@ function renderView() {
         panelBody.classList.add("full-bleed");
         renderFacility();
         break;
+      case "admin-settings":
+        renderAdminSettings();
+        break;
       default:
         panelBody.innerHTML = `
           <section class="card starter-card">
@@ -16264,6 +16913,8 @@ function mountAuth() {
   stopSessionMonitor();
   portalDataReady = false;
   portalDataPromise = null;
+  adminSettingsReady = false;
+  adminSettingsPromise = null;
   applyPortalDataPayload({
     registrations: [],
     orders: [],

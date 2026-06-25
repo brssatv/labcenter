@@ -1,4 +1,3 @@
-const { DEFAULT_ACCESSION_TIME_ZONE } = require("../../lib/accession-number");
 const { prepareOrdersForBulkSave } = require("./portal-order-accessions");
 
 function registerPortalWorkflowRoutes({ app, dependencies }) {
@@ -7,6 +6,7 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
     buildPatientProfileArtifacts,
     canAccessOrderRecord,
     getPortalDataForSession,
+    getAppTimeZone,
     hasRequisitionAccess,
     orderIdPadLength,
     orderIdStartNumber,
@@ -163,7 +163,7 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
         orders,
         portalStore,
         requestReceivedAt: nowIso,
-        timeZone: DEFAULT_ACCESSION_TIME_ZONE,
+        timeZone: getAppTimeZone(),
       });
       const savedOrders = portalStore.upsertOrders(preparedOrders);
       auditLog(req, "orders_bulk_save", "success", {

@@ -63,6 +63,8 @@ async function startAuthHarness(seedFacilityData = {}) {
     PORT: process.env.PORT,
     NODE_ENV: process.env.NODE_ENV,
     SESSION_SECRET: process.env.SESSION_SECRET,
+    LABCENTER_TIME_ZONE: process.env.LABCENTER_TIME_ZONE,
+    LABCENTER_TIME_ZONE_PIN: process.env.LABCENTER_TIME_ZONE_PIN,
   };
 
   process.env.DATA_DIR = dataDir;
@@ -70,6 +72,8 @@ async function startAuthHarness(seedFacilityData = {}) {
   process.env.PORT = "0";
   process.env.NODE_ENV = "test";
   process.env.SESSION_SECRET = "test-secret-for-auth-routes";
+  process.env.LABCENTER_TIME_ZONE = "UTC";
+  process.env.LABCENTER_TIME_ZONE_PIN = "9876";
 
   const serverPath = require.resolve("../server.js");
   delete require.cache[serverPath];
@@ -127,6 +131,20 @@ async function postJson(baseUrl, routePath, cookieJar, csrfToken, body) {
   return response;
 }
 
+async function putJson(baseUrl, routePath, cookieJar, csrfToken, body) {
+  const response = await fetch(`${baseUrl}${routePath}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookieJar.header(),
+      "x-csrf-token": csrfToken,
+    },
+    body: JSON.stringify(body),
+  });
+  cookieJar.merge(response.headers);
+  return response;
+}
+
 test("admin auth routes expose local auth config and support login refresh and logout", async (t) => {
   const harness = await startAuthHarness();
   t.after(async () => {
@@ -138,6 +156,7 @@ test("admin auth routes expose local auth config and support login refresh and l
   const configPayload = await configResponse.json();
   assert.equal(configPayload.adminAuthMode, "local");
   assert.equal(configPayload.oidcLoginUrl, null);
+  assert.equal(configPayload.timeZone, "UTC");
 
   const meBeforeResponse = await fetch(`${harness.baseUrl}/api/auth/me`);
   assert.equal(meBeforeResponse.status, 401);
@@ -189,6 +208,57 @@ test("admin auth routes expose local auth config and support login refresh and l
   assert.equal(meLoggedOutResponse.status, 401);
   const meLoggedOutPayload = await meLoggedOutResponse.json();
   assert.equal(meLoggedOutPayload.authenticated, false);
+});
+
+test("admin settings route updates the app time zone only with the correct 4-digit pin", async (t) => {
+  const harness = await startAuthHarness();
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const { cookieJar, csrfToken } = await harness.loginAdmin();
+
+  const beforeResponse = await fetch(`${harness.baseUrl}/api/admin/settings`, {
+    headers: {
+      Cookie: cookieJar.header(),
+    },
+  });
+  assert.equal(beforeResponse.status, 200);
+  const beforePayload = await beforeResponse.json();
+  assert.equal(beforePayload.settings.timeZone, "UTC");
+
+  const deniedResponse = await putJson(
+    harness.baseUrl,
+    "/api/admin/settings",
+    cookieJar,
+    csrfToken,
+    {
+      timeZone: "America/Vancouver",
+      pin: "1234",
+    }
+  );
+  assert.equal(deniedResponse.status, 403);
+  const deniedPayload = await deniedResponse.json();
+  assert.equal(deniedPayload.error, "Invalid admin PIN.");
+
+  const updatedResponse = await putJson(
+    harness.baseUrl,
+    "/api/admin/settings",
+    cookieJar,
+    csrfToken,
+    {
+      timeZone: "America/Vancouver",
+      pin: "9876",
+    }
+  );
+  assert.equal(updatedResponse.status, 200);
+  const updatedPayload = await updatedResponse.json();
+  assert.equal(updatedPayload.settings.timeZone, "America/Vancouver");
+
+  const configResponse = await fetch(`${harness.baseUrl}/api/auth/config`);
+  assert.equal(configResponse.status, 200);
+  const configPayload = await configResponse.json();
+  assert.equal(configPayload.timeZone, "America/Vancouver");
 });
 
 test("client auth routes create an account-scoped portal session and support refresh/logout", async (t) => {

@@ -11,6 +11,7 @@ const session = require("express-session");
 const FileStore = require("session-file-store")(session);
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const { registerAdminSettingsRoutes } = require("./server/features/admin-settings");
 const { registerAuthRoutes } = require("./server/features/authentication");
 const { registerFacilityRoutes } = require("./server/features/facility-management");
 const {
@@ -26,6 +27,8 @@ const {
 } = require("./server/features/pharmd-receipts");
 const { registerPortalWorkflowRoutes } = require("./server/features/portal-workflow");
 const { registerReportPublishingRoutes } = require("./server/features/report-publishing");
+const { DEFAULT_APP_TIME_ZONE } = require("./lib/app-time-zone");
+const { createAppSettingsStore } = require("./lib/app-settings-store");
 const { createPortalStore } = require("./lib/portal-store");
 const { buildPatientProfileArtifacts } = require("./lib/patient-profile");
 const { createS3Storage, sanitizeS3PathSegment } = require("./lib/s3-storage");
@@ -248,6 +251,10 @@ function ensureRuntimeData() {
 
 ensureRuntimeData();
 
+const appSettingsStore = createAppSettingsStore({
+  dataDir,
+  defaultTimeZone: DEFAULT_APP_TIME_ZONE,
+});
 const portalStore = createPortalStore({ dataDir });
 const s3Storage = createS3Storage({
   bucket: process.env.LABCENTER_S3_BUCKET,
@@ -1045,6 +1052,7 @@ function getPortalDataForSession(req) {
     : portalStore.listUploadLogs().filter((entry) => scope.matchesUploadLog(entry, visibleOrderIds));
 
   return {
+    timeZone: appSettingsStore.getTimeZone(),
     registrations,
     orders,
     uploadResultsLog: uploadResultsLog.slice(0, 200),
@@ -2973,10 +2981,20 @@ registerAuthRoutes({
     randomToken,
     regenerateSessionAsync,
     registerFailure,
+    getAppTimeZone: () => appSettingsStore.getTimeZone(),
     saveSessionAsync,
     toCodeChallenge,
     validateOidcIdToken,
     verifyPassword,
+  },
+});
+
+registerAdminSettingsRoutes({
+  app,
+  dependencies: {
+    appSettingsStore,
+    auditLog,
+    requireDoctorAuth,
   },
 });
 
@@ -2987,6 +3005,7 @@ registerPortalWorkflowRoutes({
     buildPatientProfileArtifacts,
     canAccessOrderRecord,
     getPortalDataForSession,
+    getAppTimeZone: () => appSettingsStore.getTimeZone(),
     hasRequisitionAccess,
     orderIdPadLength,
     orderIdStartNumber,

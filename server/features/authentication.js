@@ -16,6 +16,7 @@ function registerAuthRoutes({ app, dependencies }) {
     destroySessionAsync,
     extractOidcRoles,
     fetchJsonWithTimeout,
+    getAppTimeZone,
     getClientIp,
     getLockoutRemaining,
     getOidcDiscovery,
@@ -65,6 +66,7 @@ function registerAuthRoutes({ app, dependencies }) {
     return res.json({
       adminAuthMode: OIDC_ENABLED ? "oidc" : "local",
       oidcLoginUrl: OIDC_ENABLED ? "/auth/oidc/login" : null,
+      timeZone: getAppTimeZone(),
     });
   });
 

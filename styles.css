@@ -5451,6 +5451,128 @@ body.modal-open {
   margin-top: 6px;
 }
 
+.admin-settings-card {
+  display: grid;
+  gap: 20px;
+}
+
+.admin-settings-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.admin-settings-hero h3 {
+  margin: 8px 0 4px;
+  color: #16324f;
+}
+
+.admin-settings-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.admin-settings-summary-card {
+  border: 1px solid #d8e4f0;
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: linear-gradient(180deg, #f9fcff 0%, #eef5fb 100%);
+  display: grid;
+  gap: 6px;
+}
+
+.admin-settings-summary-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5d748b;
+}
+
+.admin-settings-summary-card strong {
+  color: #173654;
+  font-size: 1.02rem;
+}
+
+.admin-settings-summary-meta {
+  color: #587189;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.admin-settings-form {
+  display: grid;
+  gap: 18px;
+  max-width: 720px;
+}
+
+.admin-settings-field {
+  display: grid;
+  gap: 8px;
+  color: #24435f;
+  font-weight: 600;
+}
+
+.admin-settings-field input,
+.admin-settings-field select {
+  width: 100%;
+  min-height: 46px;
+  border-radius: 12px;
+  border: 1px solid #c7d8e8;
+  background: #ffffff;
+  padding: 11px 13px;
+  font: inherit;
+  color: #173654;
+}
+
+.admin-settings-field select {
+  cursor: pointer;
+}
+
+.admin-settings-field small {
+  color: #6d8297;
+  font-weight: 500;
+}
+
+.admin-settings-preview-card {
+  border: 1px solid #d8e4f0;
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: #f8fbfe;
+  display: grid;
+  gap: 6px;
+}
+
+.admin-settings-preview-card strong {
+  color: #173654;
+}
+
+.admin-settings-preview-card span:last-child {
+  color: #54708a;
+  font-weight: 600;
+}
+
+.admin-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.admin-settings-status {
+  min-height: 1.4em;
+  margin: 0;
+}
+
+.admin-settings-status.is-error {
+  color: #b3423c;
+}
+
+.admin-settings-status.is-success {
+  color: #257a4a;
+}
+
 @media (max-width: 980px) {
   .formula-book-formula-summary {
     flex-direction: column;
@@ -5462,6 +5584,14 @@ body.modal-open {
 
   .formula-book-detail-grid,
   .formula-book-logic-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-settings-hero {
+    flex-direction: column;
+  }
+
+  .admin-settings-summary {
     grid-template-columns: 1fr;
   }
 }

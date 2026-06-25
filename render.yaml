@@ -21,6 +21,8 @@ services:
         value: /opt/render/project/src/runtime-data/sessions
       - key: SESSION_SECRET
         generateValue: true
+      - key: LABCENTER_TIME_ZONE
+        value: America/Vancouver
       - key: LABCENTER_ENABLE_REPORT_PDF
         value: "true"
       - key: LABCENTER_PDF_BROWSER
