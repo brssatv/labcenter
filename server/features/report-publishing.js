@@ -646,7 +646,9 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       const combinedBuffer = await mergePdfBuffers([
         { buffer: pharmdReport.buffer, label: "PharmD return PDF" },
         { buffer: finalReport.buffer, label: "saved final report PDF" },
-      ]);
+      ], {
+        normalizePageSize: "last-source",
+      });
       const fileName = buildCombinedPharmdFileName(orderId);
 
       auditLog(req, "view_pharmd_combined_report_pdf", "success", {

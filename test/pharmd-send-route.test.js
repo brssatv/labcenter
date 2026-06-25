@@ -715,7 +715,7 @@ test("PharmD combined report preview joins the PharmD file before the saved fina
   const combinedPdf = await PDFDocument.load(combinedBuffer);
   assert.equal(combinedPdf.getPageCount(), 2);
   const [firstPage, secondPage] = combinedPdf.getPages();
-  assert.deepEqual(firstPage.getSize(), { width: 280, height: 420 });
+  assert.deepEqual(firstPage.getSize(), { width: 420, height: 280 });
   assert.deepEqual(secondPage.getSize(), { width: 420, height: 280 });
 });
 
