@@ -3637,8 +3637,8 @@ textarea:focus {
 
 .output-results-publish-col,
 .output-results-publish-cell {
-  min-width: 140px;
-  white-space: nowrap;
+  min-width: 260px;
+  white-space: normal;
 }
 
 .output-results-publish-modal {

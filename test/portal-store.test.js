@@ -91,3 +91,37 @@ test("portal store reserves accession sequences independently per business day",
   ], { timeZone: "UTC" });
   assert.deepEqual(secondBatch.map((entry) => entry.sequence), [1, 3]);
 });
+
+test("portal store normalizes ICD codes on order services before persistence", () => {
+  const dataDir = createTempDataDir();
+  const store = createPortalStore({ dataDir });
+
+  store.upsertOrders([
+    {
+      orderId: "00001",
+      patientId: "9003",
+      patientName: "Casey Patient",
+      provider: "Dr. Three",
+      facilityName: "Lab C",
+      services: [
+        {
+          lineNo: 1,
+          serviceName: "Urinary Tract Infection PCR Panel",
+          panelIds: [" uti-pcr-panel ", "uti-pcr-panel"],
+          icdCodes: ["n39.0", "N390", " z87.440 ", "N39.0"],
+          price: 100,
+          concession: 10,
+          due: 90,
+        },
+      ],
+      createdAt: "2026-06-20T10:00:00.000Z",
+      updatedAt: "2026-06-20T10:00:00.000Z",
+    },
+  ]);
+
+  const stored = store.getOrderById("00001");
+  assert.ok(stored);
+  assert.equal(stored.services.length, 1);
+  assert.deepEqual(stored.services[0].panelIds, ["uti-pcr-panel", "uti-pcr-panel"]);
+  assert.deepEqual(stored.services[0].icdCodes, ["N390", "Z87440"]);
+});

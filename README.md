@@ -40,6 +40,18 @@ This project now includes a server-backed login portal with security controls th
 4. Open:
    - `http://localhost:3000`
 
+## Run the desktop app locally
+
+1. Start the web server:
+   - `npm run dev`
+2. In a second terminal, launch Electron:
+   - `npm run desktop`
+
+If Electron fails with a `NODE_MODULE_VERSION` mismatch for `better-sqlite3` or `canvas`, rebuild the native modules for Electron and relaunch:
+
+- `npm run desktop:fix`
+- `npm run desktop`
+
 ## Run local with exported production data
 
 If you want local to show the same Facility records as `portal.mindbodyheal.co`, run the app against an exported runtime-data folder instead of the repo's built-in `data/` snapshot.

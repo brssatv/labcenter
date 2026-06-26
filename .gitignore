@@ -1,5 +1,6 @@
 .DS_Store
 node_modules/
+.cache/
 .env
 data/audit.log
 data/ocr-cache/

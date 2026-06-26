@@ -217,3 +217,61 @@ test("order update route persists Completed workflow fields for Pending PharmD",
   assert.equal(storedOrder?.completedAt, "2026-06-01T09:30:00.000Z");
   assert.equal(storedOrder?.pharmd?.completedAt, "2026-06-01T09:30:00.000Z");
 });
+
+test("order update route clears Completed workflow fields when returning to Pending PharmD", async (t) => {
+  const harness = await startOrderUpdateHarness({
+    status: "Complete",
+    completedAt: "2026-06-01T09:30:00.000Z",
+    pharmd: {
+      prePublishedAt: "2026-06-01T08:46:00.000Z",
+      prePublishedBy: "admin@clinic.local",
+      readyForPharmdAt: "2026-06-01T08:46:00.000Z",
+      skipPharmd: true,
+      skipPharmdAt: "2026-06-01T09:00:00.000Z",
+      validationReadyAt: "2026-06-01T09:00:00.000Z",
+      completedAt: "2026-06-01T09:30:00.000Z",
+      completionSource: "skip_pharmd",
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/portal/orders/00001`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({
+      order: {
+        status: "Processed",
+        completedAt: "",
+        pharmd: {
+          prePublishedAt: "2026-06-01T08:46:00.000Z",
+          prePublishedBy: "admin@clinic.local",
+          readyForPharmdAt: "2026-06-01T08:46:00.000Z",
+          skipPharmd: true,
+          skipPharmdAt: "2026-06-01T09:00:00.000Z",
+          validationReadyAt: "2026-06-01T09:00:00.000Z",
+        },
+      },
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.order?.status, "Processed");
+  assert.equal(payload.order?.completedAt, "");
+  assert.equal(payload.order?.pharmd?.completedAt, undefined);
+  assert.equal(payload.order?.pharmd?.completionSource, undefined);
+  assert.equal(payload.order?.generatedReports?.final?.bucket, "preview-bucket");
+
+  const storedOrder = harness.portalStore.getOrderById("00001");
+  assert.equal(storedOrder?.status, "Processed");
+  assert.equal(storedOrder?.completedAt, "");
+  assert.equal(storedOrder?.pharmd?.completedAt, undefined);
+  assert.equal(storedOrder?.pharmd?.completionSource, undefined);
+  assert.equal(storedOrder?.generatedReports?.final?.key, "labcenter/reports/final/00001/preview.pdf");
+});
