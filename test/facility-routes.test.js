@@ -124,6 +124,33 @@ async function postJson(harness, routePath, body, method = "POST") {
   return { response, payload };
 }
 
+function mockNpiRegistryFetch(t, payload) {
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : String(input?.url || "");
+
+    if (url.startsWith("https://npiregistry.cms.hhs.gov/api/?")) {
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+    }
+
+    return originalFetch(input, init);
+  };
+
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+}
+
 test("facility data route sanitizes portal and encrypted report secrets for doctor sessions", async (t) => {
   const harness = await startFacilityHarness({
     accounts: [
@@ -177,6 +204,119 @@ test("facility data route sanitizes portal and encrypted report secrets for doct
   assert.equal(payload.providers[0].provider_configuration.encryptedReportsPassword, undefined);
   assert.equal(payload.providers[0].provider_configuration.encryptedReportsPasswordConfigured, true);
   assert.equal(payload.providers[0].encrypted_reports_password_configured, true);
+});
+
+test("facility provider lookup route maps CMS NPI registry details into provider fields", async (t) => {
+  mockNpiRegistryFetch(t, {
+    result_count: 1,
+    results: [
+      {
+        number: "1720466444",
+        enumeration_type: "NPI-1",
+        basic: {
+          first_name: "CHRISTOPHER",
+          middle_name: "ANTHONY",
+          last_name: "MONSOUR",
+          name_prefix: "Dr.",
+          credential: "MD",
+        },
+        addresses: [
+          {
+            address_1: "1600 SW ARCHER RD",
+            address_2: "ROOM 4120",
+            address_purpose: "LOCATION",
+            city: "GAINESVILLE",
+            state: "FL",
+            postal_code: "32610",
+            telephone_number: "352-265-0651",
+          },
+          {
+            address_1: "PO BOX 100277",
+            address_purpose: "MAILING",
+            city: "GAINESVILLE",
+            state: "FL",
+            postal_code: "326100277",
+          },
+        ],
+        taxonomies: [
+          {
+            code: "207R00000X",
+            desc: "Internal Medicine",
+            primary: true,
+          },
+        ],
+      },
+    ],
+  });
+
+  const harness = await startFacilityHarness();
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/facility/providers/lookup?npi=1720466444`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.provider, {
+    npi: "1720466444",
+    designation: "Dr.",
+    providerName: "CHRISTOPHER ANTHONY MONSOUR",
+    displayName: "Dr. CHRISTOPHER ANTHONY MONSOUR",
+    contactNo: "352-265-0651",
+    faxNumber: "",
+    speciality: "Internal Medicine",
+    mailingAddress: "PO BOX 100277",
+    city: "GAINESVILLE",
+    state: "FL",
+    zipcode: "32610-0277",
+    credential: "MD",
+    enumerationType: "NPI-1",
+    source: "CMS NPI Registry",
+  });
+});
+
+test("facility provider lookup route validates NPI length", async (t) => {
+  const harness = await startFacilityHarness();
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/facility/providers/lookup?npi=1234`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+
+  assert.equal(response.status, 400);
+  const payload = await response.json();
+  assert.equal(payload.error, "Provider NPI must be 10 digits.");
+});
+
+test("facility provider lookup route returns not found when CMS has no matching result", async (t) => {
+  mockNpiRegistryFetch(t, {
+    result_count: 0,
+    results: [],
+  });
+
+  const harness = await startFacilityHarness();
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/facility/providers/lookup?npi=1234567890`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+
+  assert.equal(response.status, 404);
+  const payload = await response.json();
+  assert.equal(payload.error, "No provider was found for NPI 1234567890.");
 });
 
 test("facility account create route normalizes portal credentials and persists the new account", async (t) => {

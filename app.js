@@ -4682,7 +4682,7 @@ function renderRegistration(prefillData = null, options = {}) {
       </div>
     </form>
     <div id="custom-provider-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="custom-provider-title">
-      <div class="custom-icd-dialog">
+      <div class="custom-icd-dialog custom-provider-dialog">
         <div class="custom-icd-head">
           <div>
             <p class="badge">Provider Directory</p>
@@ -4690,7 +4690,7 @@ function renderRegistration(prefillData = null, options = {}) {
           </div>
           <button type="button" class="custom-icd-close" data-custom-provider-cancel aria-label="Close">×</button>
         </div>
-        <form id="custom-provider-form" class="custom-icd-body" novalidate>
+        <form id="custom-provider-form" class="custom-icd-body custom-provider-body" novalidate>
           <p class="subtle custom-icd-copy">Add a provider that is missing from the current list. The provider will be saved to the directory and selected for this requisition immediately.</p>
           <div class="custom-icd-code-card">
             <span class="custom-icd-code-label">Linked Facility</span>
@@ -4699,11 +4699,99 @@ function renderRegistration(prefillData = null, options = {}) {
           <div class="field-grid two-col custom-provider-grid">
             <label class="custom-icd-field">
               <span>Provider Name *</span>
-              <input id="custom-provider-name" type="text" placeholder="Enter provider name" maxlength="120">
+              <div class="facility-inline-input custom-provider-name-inline">
+                <select id="custom-provider-designation" name="designation">
+                  <option value="">No Prefix</option>
+                  <option value="Dr.">Dr.</option>
+                  <option value="Mr.">Mr.</option>
+                  <option value="Ms.">Ms.</option>
+                  <option value="Mrs.">Mrs.</option>
+                </select>
+                <input id="custom-provider-name" name="providerName" type="text" placeholder="Enter provider name" maxlength="120">
+              </div>
             </label>
             <label class="custom-icd-field">
               <span>Provider NPI</span>
-              <input id="custom-provider-npi" type="text" inputmode="numeric" placeholder="10 digit NPI" maxlength="20">
+              <div class="facility-inline-input">
+                <input id="custom-provider-npi" name="npi" type="text" inputmode="numeric" placeholder="10 digit NPI" maxlength="20">
+                <button type="button" class="btn-primary mini" data-custom-provider-npi-fetch>Fetch</button>
+              </div>
+            </label>
+            <label class="custom-icd-field">
+              <span>Display Name</span>
+              <input id="custom-provider-display-name" name="displayName" type="text" placeholder="Display Name" maxlength="160">
+            </label>
+            <label class="custom-icd-field">
+              <span>Contact Number</span>
+              <input id="custom-provider-contact-no" name="contactNo" type="text" placeholder="Enter Contact Number" maxlength="40">
+            </label>
+            <label class="custom-icd-field">
+              <span>Extension</span>
+              <input id="custom-provider-extension" name="extension" type="text" placeholder="Extension" maxlength="20">
+            </label>
+            <label class="custom-icd-field">
+              <span>Email</span>
+              <input id="custom-provider-email" name="email" type="email" placeholder="Email" maxlength="160">
+            </label>
+            <label class="custom-icd-field">
+              <span>Alternate Emails</span>
+              <input id="custom-provider-alternate-emails" name="alternateEmails" type="text" placeholder="Alternate Emails" maxlength="240">
+            </label>
+            <label class="custom-icd-field">
+              <span>Credential</span>
+              <input id="custom-provider-credential" name="credential" type="text" placeholder="Credential" maxlength="40">
+            </label>
+            <label class="custom-icd-field full">
+              <span>DOB</span>
+              <div class="facility-inline-input facility-triple-inline">
+                <select id="custom-provider-dob-month" name="dobMonth">
+                  <option value="">Month</option>
+                  ${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("")}
+                </select>
+                <select id="custom-provider-dob-day" name="dobDay">
+                  <option value="">Day</option>
+                  ${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("")}
+                </select>
+                <select id="custom-provider-dob-year" name="dobYear">
+                  <option value="">Year</option>
+                  ${Array.from({ length: 80 }, (_, i) => {
+                    const year = new Date().getFullYear() - i;
+                    return `<option value="${year}">${year}</option>`;
+                  }).join("")}
+                </select>
+              </div>
+            </label>
+            <label class="custom-icd-field">
+              <span>Speciality</span>
+              <input id="custom-provider-speciality" name="speciality" type="text" placeholder="Speciality" maxlength="160">
+            </label>
+            <label class="custom-icd-field">
+              <span>Fax Number</span>
+              <input id="custom-provider-fax-number" name="faxNumber" type="text" placeholder="Fax Number" maxlength="40">
+            </label>
+            <label class="custom-icd-field full">
+              <span>Mailing Address</span>
+              <input id="custom-provider-mailing-address" name="mailingAddress" type="text" placeholder="Mailing Address" maxlength="240">
+            </label>
+          </div>
+          <div class="field-grid three-col custom-provider-grid">
+            <label class="custom-icd-field">
+              <span>City</span>
+              <input id="custom-provider-city" name="city" type="text" placeholder="City" maxlength="120">
+            </label>
+            <label class="custom-icd-field">
+              <span>State</span>
+              <input id="custom-provider-state" name="state" type="text" placeholder="State" maxlength="40">
+            </label>
+            <label class="custom-icd-field">
+              <span>Zipcode</span>
+              <input id="custom-provider-zipcode" name="zipcode" type="text" placeholder="Zipcode" maxlength="20">
+            </label>
+          </div>
+          <div class="field-grid one-col custom-provider-grid">
+            <label class="custom-icd-field">
+              <span>Comment</span>
+              <input id="custom-provider-comment" name="comment" type="text" placeholder="Comment" maxlength="240">
             </label>
           </div>
           <p id="custom-provider-error" class="error hidden" aria-live="polite"></p>
@@ -4789,7 +4877,9 @@ function renderRegistration(prefillData = null, options = {}) {
   const customProviderModalNode = document.getElementById("custom-provider-modal");
   const customProviderForm = document.getElementById("custom-provider-form");
   const customProviderFacilityNode = document.getElementById("custom-provider-facility");
+  const customProviderDesignationInput = document.getElementById("custom-provider-designation");
   const customProviderNameInput = document.getElementById("custom-provider-name");
+  const customProviderDisplayNameInput = document.getElementById("custom-provider-display-name");
   const customProviderNpiInput = document.getElementById("custom-provider-npi");
   const customProviderErrorNode = document.getElementById("custom-provider-error");
   const scanReviewModalNode = document.getElementById("scan-review-modal");
@@ -5469,6 +5559,22 @@ function renderRegistration(prefillData = null, options = {}) {
     customProviderErrorNode.classList.toggle("hidden", !text);
   }
 
+  function buildCustomProviderDisplayName() {
+    const designation = String(customProviderDesignationInput?.value || "").trim();
+    const providerName = String(customProviderNameInput?.value || "").trim();
+    return [designation, providerName].filter(Boolean).join(" ").trim();
+  }
+
+  function syncCustomProviderDisplayName({ force = false } = {}) {
+    if (!customProviderDisplayNameInput) return;
+    const nextValue = buildCustomProviderDisplayName();
+    const currentValue = String(customProviderDisplayNameInput.value || "").trim();
+    const autoValue = String(customProviderDisplayNameInput.dataset.autoValue || "").trim();
+    if (!force && currentValue && currentValue !== autoValue) return;
+    customProviderDisplayNameInput.value = nextValue;
+    customProviderDisplayNameInput.dataset.autoValue = nextValue;
+  }
+
   function closeCustomProviderModal(result = null) {
     if (!activeCustomProviderResolver) return;
     const resolve = activeCustomProviderResolver;
@@ -5476,8 +5582,13 @@ function renderRegistration(prefillData = null, options = {}) {
     customProviderModalNode?.classList.add("hidden");
     document.body.classList.remove("modal-open");
     setCustomProviderModalError("");
-    if (customProviderNameInput) customProviderNameInput.value = "";
-    if (customProviderNpiInput) customProviderNpiInput.value = "";
+    customProviderForm?.reset();
+    if (customProviderDisplayNameInput) {
+      delete customProviderDisplayNameInput.dataset.autoValue;
+    }
+    if (customProviderForm instanceof HTMLElement) {
+      delete customProviderForm.dataset.lookupSource;
+    }
     resolve(result);
   }
 
@@ -5491,11 +5602,20 @@ function renderRegistration(prefillData = null, options = {}) {
     }
 
     const selectedFacility = String(facilityNameInput?.value || "").trim();
-    customProviderFacilityNode.textContent = selectedFacility || "Not linked to a specific facility";
-    customProviderNameInput.value = String(defaultValues.providerName || "").trim();
-    if (customProviderNpiInput) {
-      customProviderNpiInput.value = String(defaultValues.providerNpi || "").replace(/\D/g, "").slice(0, 10);
+    const parsedProvider = parseProviderDisplayName(defaultValues.providerName || "");
+    customProviderForm?.reset();
+    if (customProviderForm instanceof HTMLElement) {
+      delete customProviderForm.dataset.lookupSource;
     }
+    customProviderFacilityNode.textContent = selectedFacility || "Not linked to a specific facility";
+    if (customProviderDesignationInput) {
+      customProviderDesignationInput.value = parsedProvider.designation || "";
+    }
+    customProviderNameInput.value = String(parsedProvider.providerName || defaultValues.providerName || "").trim();
+    if (customProviderNpiInput) {
+      customProviderNpiInput.value = normalizeNpiLookupValue(defaultValues.providerNpi || "");
+    }
+    syncCustomProviderDisplayName({ force: true });
     setCustomProviderModalError("");
     customProviderModalNode.classList.remove("hidden");
     document.body.classList.add("modal-open");
@@ -5503,8 +5623,14 @@ function renderRegistration(prefillData = null, options = {}) {
     return new Promise((resolve) => {
       activeCustomProviderResolver = resolve;
       requestAnimationFrame(() => {
-        customProviderNameInput.focus();
-        customProviderNameInput.select();
+        const focusTarget =
+          customProviderNameInput.value.trim()
+            ? customProviderNameInput
+            : customProviderNpiInput || customProviderNameInput;
+        focusTarget?.focus();
+        if (focusTarget === customProviderNameInput) {
+          customProviderNameInput.select();
+        }
       });
     });
   }
@@ -5564,11 +5690,18 @@ function renderRegistration(prefillData = null, options = {}) {
     if (!submitted) return false;
 
     const selectedFacility = String(facilityNameInput?.value || "").trim();
+    const designation = String(submitted.designation || "").trim();
     const providerName = String(submitted.providerName || "").trim();
+    const fullProviderName = [designation, providerName].filter(Boolean).join(" ").trim();
+    const displayName = String(submitted.displayName || "").trim() || fullProviderName || providerName;
     const providerNpi = String(submitted.providerNpi || "").trim();
 
     const duplicate = getFacilityProviderOptions(selectedFacility).find((item) => {
-      const sameName = String(item.value || "").trim().toLowerCase() === providerName.toLowerCase();
+      const itemName = String(item.value || "").trim().toLowerCase();
+      const sameName =
+        itemName === providerName.toLowerCase() ||
+        itemName === fullProviderName.toLowerCase() ||
+        itemName === displayName.toLowerCase();
       const sameNpi = providerNpi && String(item.npi || "").trim() === providerNpi;
       return sameName || sameNpi;
     });
@@ -5580,13 +5713,29 @@ function renderRegistration(prefillData = null, options = {}) {
     try {
       const result = await createCustomProvider({
         providerInfo: {
+          designation,
           providerName,
-          displayName: providerName,
+          displayName,
+          contactNo: submitted.contactNo,
+          extension: submitted.extension,
+          dobMonth: submitted.dobMonth,
+          dobDay: submitted.dobDay,
+          dobYear: submitted.dobYear,
+          email: submitted.email,
+          alternateEmails: submitted.alternateEmails,
+          credential: submitted.credential,
           npi: providerNpi,
+          speciality: submitted.speciality,
+          mailingAddress: submitted.mailingAddress,
+          city: submitted.city,
+          state: submitted.state,
+          zipcode: submitted.zipcode,
+          faxNumber: submitted.faxNumber,
+          comment: submitted.comment,
         },
         configuration: {
           accounts: selectedFacility,
-          source: "None (Default)",
+          source: submitted.source || "None (Default)",
         },
         signature: {
           fileName: "",
@@ -5599,7 +5748,10 @@ function renderRegistration(prefillData = null, options = {}) {
       if (result?.provider) {
         facilityData.providers = [result.provider, ...(facilityData.providers || [])];
         facilityDataLoaded = true;
-        refreshProviderAutocomplete(selectedFacility, result.provider.provider_name || providerName);
+        refreshProviderAutocomplete(
+          selectedFacility,
+          result.provider.validator_name || result.provider.display_name || result.provider.provider_name || displayName
+        );
         if (providerNpiInput) {
           providerNpiInput.value = String(result.provider.npi || providerNpi || "").trim();
         }
@@ -6247,10 +6399,55 @@ function renderRegistration(prefillData = null, options = {}) {
       closeCustomProviderModal(null);
     }
   });
+  customProviderDesignationInput?.addEventListener("change", () => {
+    syncCustomProviderDisplayName();
+  });
+  customProviderNameInput?.addEventListener("input", () => {
+    syncCustomProviderDisplayName();
+  });
+  customProviderDisplayNameInput?.addEventListener("input", () => {
+    delete customProviderDisplayNameInput.dataset.autoValue;
+  });
+  customProviderForm?.addEventListener("click", async (event) => {
+    const fetchButton = event.target.closest("[data-custom-provider-npi-fetch]");
+    if (!fetchButton) return;
+
+    event.preventDefault();
+    const normalizedNpi = normalizeNpiLookupValue(customProviderNpiInput?.value || "");
+    if (normalizedNpi.length !== 10) {
+      setCustomProviderModalError("Provider NPI must be 10 digits.");
+      customProviderNpiInput?.focus();
+      return;
+    }
+
+    setCustomProviderModalError("");
+    customProviderNpiInput.value = normalizedNpi;
+
+    const originalLabel = fetchButton.textContent;
+    fetchButton.disabled = true;
+    fetchButton.textContent = "Fetching...";
+
+    try {
+      const provider = await fetchProviderDetailsByNpi(normalizedNpi);
+      applyProviderLookupToProviderForm(customProviderForm, provider);
+      syncCustomProviderDisplayName();
+      customProviderNameInput?.focus();
+      customProviderNameInput?.select();
+    } catch (error) {
+      setCustomProviderModalError(error.message || "Unable to fetch provider information.");
+    } finally {
+      fetchButton.disabled = false;
+      fetchButton.textContent = originalLabel;
+    }
+  });
   customProviderForm?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const providerName = String(customProviderNameInput?.value || "").trim();
-    const providerNpi = String(customProviderNpiInput?.value || "").replace(/\D/g, "").slice(0, 10);
+    const data = Object.fromEntries(new FormData(customProviderForm).entries());
+    const providerName = String(data.providerName || "").trim();
+    const providerNpi = normalizeNpiLookupValue(data.npi || "");
+    const designation = String(data.designation || "").trim();
+    const fullProviderName = [designation, providerName].filter(Boolean).join(" ").trim();
+    const displayName = String(data.displayName || "").trim() || fullProviderName || providerName;
     if (!providerName) {
       setCustomProviderModalError("Provider name is required.");
       customProviderNameInput?.focus();
@@ -6262,8 +6459,26 @@ function renderRegistration(prefillData = null, options = {}) {
       return;
     }
     closeCustomProviderModal({
+      designation,
       providerName,
+      displayName,
       providerNpi,
+      contactNo: String(data.contactNo || "").trim(),
+      extension: String(data.extension || "").trim(),
+      dobMonth: String(data.dobMonth || "").trim(),
+      dobDay: String(data.dobDay || "").trim(),
+      dobYear: String(data.dobYear || "").trim(),
+      email: String(data.email || "").trim(),
+      alternateEmails: String(data.alternateEmails || "").trim(),
+      credential: String(data.credential || "").trim(),
+      speciality: String(data.speciality || "").trim(),
+      mailingAddress: String(data.mailingAddress || "").trim(),
+      city: String(data.city || "").trim(),
+      state: String(data.state || "").trim(),
+      zipcode: String(data.zipcode || "").trim(),
+      faxNumber: String(data.faxNumber || "").trim(),
+      comment: String(data.comment || "").trim(),
+      source: String(customProviderForm?.dataset.lookupSource || "").trim(),
     });
   });
   scanReviewModalNode?.addEventListener("click", (event) => {
@@ -15626,6 +15841,64 @@ function assignChecked(form, name, value) {
   field.checked = isTruthyLike(value);
 }
 
+function normalizeNpiLookupValue(value) {
+  return String(value || "").replace(/\D/g, "").slice(0, 10);
+}
+
+async function fetchProviderDetailsByNpi(npi) {
+  const normalizedNpi = normalizeNpiLookupValue(npi);
+  if (normalizedNpi.length !== 10) {
+    throw new Error("Provider NPI must be 10 digits.");
+  }
+  const payload = await requestJson(
+    `/api/facility/providers/lookup?npi=${encodeURIComponent(normalizedNpi)}`
+  );
+  return payload?.provider && typeof payload.provider === "object" ? payload.provider : {};
+}
+
+function applyProviderLookupToProviderForm(form, provider) {
+  if (!form || !provider || typeof provider !== "object") return;
+
+  const providerName = String(provider.providerName || "").trim();
+  const designation = String(provider.designation || "").trim();
+  const displayName = String(provider.displayName || "").trim();
+  const normalizedNpi = normalizeNpiLookupValue(provider.npi);
+  const displayNameField = form.querySelector('[name="displayName"]');
+
+  if (normalizedNpi) {
+    assignFieldValue(form, "providerNpiSearch", normalizedNpi);
+    assignFieldValue(form, "npi", normalizedNpi);
+  }
+  if (designation) assignFieldValue(form, "designation", designation);
+  if (providerName) {
+    assignFieldValue(form, "providerName", providerName);
+    form
+      .querySelector('input[name="providerName"]')
+        ?.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (displayName) {
+    assignFieldValue(form, "displayName", displayName);
+    if (displayNameField instanceof HTMLElement) {
+      displayNameField.dataset.autoValue = displayName;
+    }
+  }
+  if (provider.contactNo) assignFieldValue(form, "contactNo", provider.contactNo);
+  if (provider.credential) assignFieldValue(form, "credential", provider.credential);
+  if (provider.speciality) assignFieldValue(form, "speciality", provider.speciality);
+  if (provider.mailingAddress) assignFieldValue(form, "mailingAddress", provider.mailingAddress);
+  if (provider.city) assignFieldValue(form, "city", provider.city);
+  if (provider.state) assignFieldValue(form, "state", provider.state);
+  if (provider.zipcode) assignFieldValue(form, "zipcode", provider.zipcode);
+  if (provider.faxNumber) assignFieldValue(form, "faxNumber", provider.faxNumber);
+  if (form instanceof HTMLElement) {
+    if (provider.source) {
+      form.dataset.lookupSource = String(provider.source);
+    } else {
+      delete form.dataset.lookupSource;
+    }
+  }
+}
+
 function resolveAccountIdentifier(account, index) {
   const rawId = String(account?.id || "").trim();
   if (rawId) return rawId;
@@ -16697,6 +16970,37 @@ function openCreateProviderModal(existingRecord = null, identifier = "", options
   syncAccessCards();
   renderLoginStatus();
 
+  async function fetchAndApplyProviderLookup(fetchButton) {
+    const npiSearch = form.querySelector('input[name="providerNpiSearch"]');
+    const currentNpi = form.querySelector('input[name="npi"]');
+    const normalizedNpi = normalizeNpiLookupValue(
+      npiSearch?.value || currentNpi?.value || ""
+    );
+
+    if (normalizedNpi.length !== 10) {
+      showModalError("Provider NPI must be 10 digits.", "provider-info");
+      npiSearch?.focus();
+      return;
+    }
+
+    errorNode.textContent = "";
+    if (npiSearch) npiSearch.value = normalizedNpi;
+
+    const originalLabel = fetchButton.textContent;
+    fetchButton.disabled = true;
+    fetchButton.textContent = "Fetching...";
+
+    try {
+      const provider = await fetchProviderDetailsByNpi(normalizedNpi);
+      applyProviderLookupToProviderForm(form, provider);
+    } catch (error) {
+      showModalError(error.message || "Unable to fetch provider information.", "provider-info");
+    } finally {
+      fetchButton.disabled = false;
+      fetchButton.textContent = originalLabel;
+    }
+  }
+
   modal.addEventListener("click", (event) => {
     if (event.target === modal || event.target.closest("[data-provider-modal-close]")) {
       closeFacilityModals();
@@ -16710,10 +17014,9 @@ function openCreateProviderModal(existingRecord = null, identifier = "", options
       return;
     }
 
-    if (event.target.closest("[data-provider-npi-fetch]")) {
-      const npiSearch = form.querySelector('input[name="providerNpiSearch"]');
-      const npiField = form.querySelector('input[name="npi"]');
-      if (npiSearch && npiField && !npiField.value.trim()) npiField.value = npiSearch.value.trim();
+    const providerFetchButton = event.target.closest("[data-provider-npi-fetch]");
+    if (providerFetchButton) {
+      fetchAndApplyProviderLookup(providerFetchButton);
       return;
     }
 

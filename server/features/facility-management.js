@@ -15,9 +15,116 @@ function hasPortalUsernameConflict(
   return usernameTakenInAccounts || usernameTakenInProviders;
 }
 
+const supportedProviderDesignations = ["Dr.", "Mr.", "Ms.", "Mrs."];
+
+function normalizeNpi(value) {
+  return String(value || "").replace(/\D/g, "").slice(0, 10);
+}
+
+function normalizeLookupText(value) {
+  return String(value || "").trim();
+}
+
+function normalizeProviderDesignation(value) {
+  const raw = normalizeLookupText(value);
+  if (!raw) return "";
+  const normalizedRaw = raw.replace(/\./g, "").toLowerCase();
+  return (
+    supportedProviderDesignations.find(
+      (candidate) => candidate.replace(/\./g, "").toLowerCase() === normalizedRaw
+    ) || ""
+  );
+}
+
+function joinLookupParts(parts) {
+  return parts
+    .map((value) => normalizeLookupText(value))
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function selectRegistryAddress(addresses, preferredPurpose) {
+  const list = Array.isArray(addresses) ? addresses : [];
+  const purpose = normalizeLookupText(preferredPurpose).toUpperCase();
+  return (
+    list.find(
+      (item) => normalizeLookupText(item?.address_purpose).toUpperCase() === purpose
+    ) ||
+    list[0] ||
+    null
+  );
+}
+
+function formatPostalCode(value) {
+  const raw = normalizeLookupText(value);
+  if (/^\d{9}$/.test(raw)) {
+    return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+  }
+  return raw;
+}
+
+function selectPrimaryTaxonomy(taxonomies) {
+  const list = Array.isArray(taxonomies) ? taxonomies : [];
+  return (
+    list.find(
+      (item) =>
+        item?.primary === true ||
+        normalizeLookupText(item?.primary).toLowerCase() === "true"
+    ) ||
+    list[0] ||
+    null
+  );
+}
+
+function mapNpiRegistryProvider(result) {
+  const basic = result?.basic && typeof result.basic === "object" ? result.basic : {};
+  const enumerationType = normalizeLookupText(result?.enumeration_type);
+  const personName = joinLookupParts([
+    basic.first_name,
+    basic.middle_name,
+    basic.last_name,
+  ]);
+  const organizationName = joinLookupParts([
+    basic.organization_name,
+    basic.organization_name_legal_business_name,
+  ]);
+  const providerName =
+    enumerationType === "NPI-2" ? organizationName || personName : personName || organizationName;
+  const designation =
+    enumerationType === "NPI-2" ? "" : normalizeProviderDesignation(basic.name_prefix);
+  const locationAddress = selectRegistryAddress(result?.addresses, "LOCATION");
+  const mailingAddress =
+    selectRegistryAddress(result?.addresses, "MAILING") || locationAddress;
+  const contactAddress = locationAddress || mailingAddress;
+  const primaryTaxonomy = selectPrimaryTaxonomy(result?.taxonomies);
+
+  return {
+    npi: normalizeLookupText(result?.number),
+    designation,
+    providerName,
+    displayName: joinLookupParts([designation, providerName]) || providerName,
+    contactNo: normalizeLookupText(contactAddress?.telephone_number),
+    faxNumber: normalizeLookupText(contactAddress?.fax_number),
+    speciality: normalizeLookupText(primaryTaxonomy?.desc),
+    mailingAddress: joinLookupParts([
+      mailingAddress?.address_1,
+      mailingAddress?.address_2,
+    ]),
+    city: normalizeLookupText(mailingAddress?.city),
+    state: normalizeLookupText(mailingAddress?.state),
+    zipcode: formatPostalCode(mailingAddress?.postal_code),
+    credential: normalizeLookupText(basic.credential),
+    enumerationType,
+    source: "CMS NPI Registry",
+  };
+}
+
 function registerFacilityRoutes({ app, dependencies }) {
   const {
     auditLog,
+    fetchJsonWithTimeout,
     getFacilityDataForSession,
     hashPassword,
     isPortalAccessEnabled,
@@ -33,6 +140,45 @@ function registerFacilityRoutes({ app, dependencies }) {
 
   app.get("/api/facility/data", requireAuthenticatedUser, (req, res) => {
     return res.json(getFacilityDataForSession(req));
+  });
+
+  app.get("/api/facility/providers/lookup", requireAuthenticatedUser, async (req, res) => {
+    const npi = normalizeNpi(req.query?.npi);
+    if (npi.length !== 10) {
+      return res.status(400).json({ error: "Provider NPI must be 10 digits." });
+    }
+
+    try {
+      const params = new URLSearchParams({
+        number: npi,
+        version: "2.1",
+      });
+      const payload = await fetchJsonWithTimeout(
+        `https://npiregistry.cms.hhs.gov/api/?${params.toString()}`
+      );
+      const result = Array.isArray(payload?.results) ? payload.results[0] : null;
+
+      if (!result) {
+        return res.status(404).json({ error: `No provider was found for NPI ${npi}.` });
+      }
+
+      const provider = mapNpiRegistryProvider(result);
+      auditLog(req, "facility_provider_lookup", "success", {
+        npi,
+        providerName: provider.providerName,
+        source: provider.source,
+      });
+
+      return res.json({ provider });
+    } catch (error) {
+      auditLog(req, "facility_provider_lookup", "failed", {
+        npi,
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(502).json({
+        error: error?.message || "Unable to fetch provider details from the NPI Registry.",
+      });
+    }
   });
 
   app.post("/api/facility/accounts", requireDoctorAuth, (req, res) => {

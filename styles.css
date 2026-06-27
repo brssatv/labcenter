@@ -6611,6 +6611,13 @@ body.modal-open {
   animation: modal-pop-in var(--motion-slow) var(--ease-apple);
 }
 
+.custom-provider-dialog {
+  width: min(920px, 100%);
+  max-height: min(90vh, 980px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .custom-icd-head {
   padding: 18px 20px 14px;
   border-bottom: 1px solid #dbe4ec;
@@ -6659,6 +6666,10 @@ body.modal-open {
   margin: 0;
 }
 
+.custom-provider-body {
+  overflow: auto;
+}
+
 .custom-icd-code-card {
   display: grid;
   gap: 6px;
@@ -6685,6 +6696,10 @@ body.modal-open {
 
 .custom-icd-field {
   gap: 6px;
+}
+
+.custom-provider-name-inline {
+  grid-template-columns: 120px minmax(0, 1fr);
 }
 
 .custom-icd-field textarea {

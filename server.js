@@ -3182,6 +3182,7 @@ registerFacilityRoutes({
   app,
   dependencies: {
     auditLog,
+    fetchJsonWithTimeout,
     getFacilityDataForSession,
     hashPassword,
     isPortalAccessEnabled,
