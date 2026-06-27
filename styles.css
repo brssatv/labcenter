@@ -4793,6 +4793,22 @@ body.modal-open {
   align-items: end;
 }
 
+.mr-icd-toolbar-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.mr-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mr-subtab {
+  padding: 6px 11px;
+  font-size: 0.9rem;
+}
+
 .mr-toolbar-actions {
   display: flex;
   justify-content: flex-end;
@@ -4859,6 +4875,58 @@ body.modal-open {
   background: #e8eef5;
   font-size: 0.95rem;
   color: #233446;
+}
+
+.mr-pagination {
+  border: 1px solid #c9d4df;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.mr-pagination-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #33495f;
+}
+
+.mr-pagination-summary strong {
+  font-size: 0.95rem;
+}
+
+.mr-pagination-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.mr-inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #445a71;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.mr-inline-field select {
+  min-width: 84px;
+}
+
+.mr-pagination-page {
+  min-width: 96px;
+  text-align: center;
+  color: #445a71;
+  font-size: 0.9rem;
+  font-weight: 700;
 }
 
 .mono {

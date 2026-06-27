@@ -7704,6 +7704,7 @@ function renderMasterRegistry() {
           <tbody id="mr-table-body"></tbody>
         </table>
       </div>
+      <div id="mr-pagination" class="mr-pagination hidden"></div>
     </section>
   `;
 
@@ -7714,13 +7715,16 @@ function renderMasterRegistry() {
   const summaryNode = document.getElementById("mr-summary");
   const headNode = document.getElementById("mr-table-head");
   const bodyNode = document.getElementById("mr-table-body");
+  const paginationNode = document.getElementById("mr-pagination");
+  const icdPageSizeOptions = [25, 50, 100, 250];
+  const icdSearchMinChars = 2;
 
   let activeTab = "organisms";
   let editorMode = "";
   const tabState = {
     organisms: { query: "", type: "", status: "" },
     genes: { query: "", resistanceClass: "" },
-    icd: { query: "", panel: "" },
+    icd: { query: "", panel: "", mode: "search", page: 1, pageSize: 50 },
   };
 
   function escapeHtml(value) {
@@ -7788,6 +7792,104 @@ function renderMasterRegistry() {
         </div>
       </div>
     `;
+  }
+
+  function clearPagination() {
+    paginationNode.innerHTML = "";
+    paginationNode.classList.add("hidden");
+  }
+
+  function buildIcdPanelNamesByCode() {
+    const panelNamesByCode = new Map();
+    orderPanelCatalog.forEach((panel) => {
+      const panelName = String(panel?.name || "").trim();
+      if (!panelName) return;
+      normalizeIcdCodeList(Array.isArray(panel?.icdCodes) ? panel.icdCodes : []).forEach((code) => {
+        if (!panelNamesByCode.has(code)) panelNamesByCode.set(code, []);
+        panelNamesByCode.get(code).push(panelName);
+      });
+    });
+
+    panelNamesByCode.forEach((panelNames) => {
+      panelNames.sort((left, right) => left.localeCompare(right));
+    });
+
+    return panelNamesByCode;
+  }
+
+  function buildIcdRegistryRow(item, panelNames) {
+    const code = String(item?.code || "").trim();
+    return {
+      code,
+      description: String(item?.description || "").trim(),
+      formattedCode: item?.formattedCode || formatIcdCode(code),
+      panels: Array.isArray(panelNames) ? panelNames : [],
+    };
+  }
+
+  function getIcdPaginationState(totalRows) {
+    const pageSize = icdPageSizeOptions.includes(Number(tabState.icd.pageSize))
+      ? Number(tabState.icd.pageSize)
+      : 50;
+    const totalPages = Math.max(1, Math.ceil(Math.max(totalRows, 1) / pageSize));
+    const page = Math.min(Math.max(1, Number(tabState.icd.page) || 1), totalPages);
+    tabState.icd.page = page;
+    tabState.icd.pageSize = pageSize;
+
+    const startIndex = totalRows ? (page - 1) * pageSize : 0;
+    const endIndex = Math.min(startIndex + pageSize, totalRows);
+    return {
+      page,
+      pageSize,
+      totalPages,
+      startIndex,
+      endIndex,
+      startNumber: totalRows ? startIndex + 1 : 0,
+      endNumber: endIndex,
+    };
+  }
+
+  function renderIcdPagination(totalRows) {
+    if (!totalRows) {
+      clearPagination();
+      return;
+    }
+
+    const pagination = getIcdPaginationState(totalRows);
+    paginationNode.classList.remove("hidden");
+    paginationNode.innerHTML = `
+      <div class="mr-pagination-summary">
+        <strong>${pagination.startNumber}-${pagination.endNumber}</strong>
+        <span>of ${totalRows} ICD codes</span>
+      </div>
+      <div class="mr-pagination-controls">
+        <label class="mr-inline-field">
+          <span>Rows</span>
+          <select id="mr-icd-page-size">
+            ${icdPageSizeOptions.map((option) => `<option value="${option}" ${option === pagination.pageSize ? "selected" : ""}>${option}</option>`).join("")}
+          </select>
+        </label>
+        <button type="button" class="btn-ghost pm-row-btn" id="mr-icd-page-prev" ${pagination.page <= 1 ? "disabled" : ""}>Previous</button>
+        <span class="mr-pagination-page">Page ${pagination.page} of ${pagination.totalPages}</span>
+        <button type="button" class="btn-ghost pm-row-btn" id="mr-icd-page-next" ${pagination.page >= pagination.totalPages ? "disabled" : ""}>Next</button>
+      </div>
+    `;
+
+    document.getElementById("mr-icd-page-size")?.addEventListener("change", (event) => {
+      tabState.icd.pageSize = Number(event.target.value) || 50;
+      tabState.icd.page = 1;
+      renderRows();
+    });
+
+    document.getElementById("mr-icd-page-prev")?.addEventListener("click", () => {
+      tabState.icd.page = Math.max(1, tabState.icd.page - 1);
+      renderRows();
+    });
+
+    document.getElementById("mr-icd-page-next")?.addEventListener("click", () => {
+      tabState.icd.page += 1;
+      renderRows();
+    });
   }
 
   function renderEditor() {
@@ -8047,45 +8149,83 @@ function renderMasterRegistry() {
   }
 
   function renderIcdRows() {
-    const query = tabState.icd.query;
+    const query = String(tabState.icd.query || "").trim();
     const selectedPanel = tabState.icd.panel;
-
-    const rows = icdCatalogSearchRows
-      .map((item) => {
-        const code = String(item.code || "").trim();
-        const mappedPanels = orderPanelCatalog
-          .filter((panel) => Array.isArray(panel.icdCodes) && panel.icdCodes.includes(code))
-          .map((panel) => panel.name)
-          .sort((a, b) => a.localeCompare(b));
-        return {
-          code,
-          description: String(item.description || "").trim(),
-          formattedCode: item.formattedCode || formatIcdCode(code),
-          panels: mappedPanels,
-        };
-      })
-      .filter((row) => {
-        if (selectedPanel && !row.panels.includes(selectedPanel)) return false;
-        return matchesIcdSearch(row, query, row.panels);
-      })
-      .sort((a, b) => compareIcdCodes(a.code, b.code));
-
-    const mappedCount = rows.filter((row) => row.panels.length > 0).length;
-    const uniquePanels = new Set(rows.flatMap((row) => row.panels)).size;
+    const isSearchMode = tabState.icd.mode === "search";
+    const panelNamesByCode = buildIcdPanelNamesByCode();
+    const totalMappedCount = panelNamesByCode.size;
+    const totalLinkedPanels = new Set(Array.from(panelNamesByCode.values()).flat()).size;
 
     setTableHead(["ICD Code", "Description", "Panels", "Panel Count"]);
-    summaryNode.innerHTML = `
-      <div class="mr-stat"><strong>${rows.length}</strong><span>codes</span></div>
-      <div class="mr-stat"><strong>${mappedCount}</strong><span>mapped codes</span></div>
-      <div class="mr-stat"><strong>${uniquePanels}</strong><span>linked panels</span></div>
-    `;
 
-    if (!rows.length) {
+    if (isSearchMode && !query && !selectedPanel) {
+      summaryNode.innerHTML = `
+        <div class="mr-stat"><strong>${icdCatalogSearchRows.length}</strong><span>codes</span></div>
+        <div class="mr-stat"><strong>${totalMappedCount}</strong><span>mapped codes</span></div>
+        <div class="mr-stat"><strong>${totalLinkedPanels}</strong><span>linked panels</span></div>
+        <div class="mr-stat"><strong>Search</strong><span>mode</span></div>
+      `;
+      bodyNode.innerHTML = `<tr><td colspan="4" class="table-empty">Type at least ${icdSearchMinChars} characters or choose a panel to search ICD codes without loading the full catalog.</td></tr>`;
+      clearPagination();
+      return;
+    }
+
+    if (isSearchMode && query && query.length < icdSearchMinChars && !normalizeIcdCode(query) && !selectedPanel) {
+      summaryNode.innerHTML = `
+        <div class="mr-stat"><strong>${icdCatalogSearchRows.length}</strong><span>codes</span></div>
+        <div class="mr-stat"><strong>${totalMappedCount}</strong><span>mapped codes</span></div>
+        <div class="mr-stat"><strong>${totalLinkedPanels}</strong><span>linked panels</span></div>
+        <div class="mr-stat"><strong>Search</strong><span>mode</span></div>
+      `;
+      bodyNode.innerHTML = `<tr><td colspan="4" class="table-empty">Keep typing to search. Enter at least ${icdSearchMinChars} characters for broad text search.</td></tr>`;
+      clearPagination();
+      return;
+    }
+
+    let matchedRows = [];
+
+    if (!isSearchMode && !query && !selectedPanel) {
+      const pagination = getIcdPaginationState(icdCatalogSearchRows.length);
+      matchedRows = icdCatalogSearchRows
+        .slice(pagination.startIndex, pagination.endIndex)
+        .map((item) => buildIcdRegistryRow(item, panelNamesByCode.get(item.code) || []));
+
+      summaryNode.innerHTML = `
+        <div class="mr-stat"><strong>${icdCatalogSearchRows.length}</strong><span>codes</span></div>
+        <div class="mr-stat"><strong>${totalMappedCount}</strong><span>mapped codes</span></div>
+        <div class="mr-stat"><strong>${totalLinkedPanels}</strong><span>linked panels</span></div>
+        <div class="mr-stat"><strong>Browse</strong><span>mode</span></div>
+      `;
+
+      renderIcdPagination(icdCatalogSearchRows.length);
+    } else {
+      const filteredRows = [];
+      icdCatalogSearchRows.forEach((item) => {
+        const panelNames = panelNamesByCode.get(item.code) || [];
+        if (selectedPanel && !panelNames.includes(selectedPanel)) return;
+        if (!matchesIcdSearch(item, query, panelNames)) return;
+        filteredRows.push(buildIcdRegistryRow(item, panelNames));
+      });
+
+      const pagination = getIcdPaginationState(filteredRows.length);
+      matchedRows = filteredRows.slice(pagination.startIndex, pagination.endIndex);
+
+      summaryNode.innerHTML = `
+        <div class="mr-stat"><strong>${filteredRows.length}</strong><span>${isSearchMode ? "matches" : "codes"}</span></div>
+        <div class="mr-stat"><strong>${filteredRows.filter((row) => row.panels.length > 0).length}</strong><span>mapped codes</span></div>
+        <div class="mr-stat"><strong>${new Set(filteredRows.flatMap((row) => row.panels)).size}</strong><span>linked panels</span></div>
+        <div class="mr-stat"><strong>${isSearchMode ? "Search" : "Browse"}</strong><span>mode</span></div>
+      `;
+
+      renderIcdPagination(filteredRows.length);
+    }
+
+    if (!matchedRows.length) {
       bodyNode.innerHTML = `<tr><td colspan="4" class="table-empty">No ICD codes found.</td></tr>`;
       return;
     }
 
-    bodyNode.innerHTML = rows
+    bodyNode.innerHTML = matchedRows
       .map((row) => `
         <tr>
           <td class="mono">${escapeHtml(row.formattedCode)}</td>
@@ -8099,10 +8239,12 @@ function renderMasterRegistry() {
 
   function renderRows() {
     if (activeTab === "organisms") {
+      clearPagination();
       renderOrganismRows();
       return;
     }
     if (activeTab === "antibiotic-genes") {
+      clearPagination();
       renderResistanceGeneRows();
       return;
     }
@@ -8202,18 +8344,43 @@ function renderMasterRegistry() {
         .sort((a, b) => a.localeCompare(b));
 
       toolbarHostNode.innerHTML = buildToolbarShell(`
-        <div class="master-registry-toolbar mr-toolbar-two">
-          <label class="mr-field mr-wide">
-            <span>Search ICD Codes</span>
-            <input id="mr-icd-search" placeholder="Search ICD code, description, or panel">
-          </label>
-          <label class="mr-field">
-            <span>Panel</span>
-            <select id="mr-icd-panel">
-              <option value="">All</option>
-              ${panelNames.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}
-            </select>
-          </label>
+        <div class="mr-icd-toolbar-stack">
+          <div class="mr-subtabs" role="tablist" aria-label="ICD registry modes">
+            <button
+              type="button"
+              class="mr-tab mr-subtab ${tabState.icd.mode === "search" ? "active" : ""}"
+              data-mr-icd-mode="search"
+              aria-selected="${tabState.icd.mode === "search" ? "true" : "false"}"
+            >
+              Search
+            </button>
+            <button
+              type="button"
+              class="mr-tab mr-subtab ${tabState.icd.mode === "browse" ? "active" : ""}"
+              data-mr-icd-mode="browse"
+              aria-selected="${tabState.icd.mode === "browse" ? "true" : "false"}"
+            >
+              Browse All
+            </button>
+          </div>
+          <div class="master-registry-toolbar mr-toolbar-two">
+            <label class="mr-field mr-wide">
+              <span>${tabState.icd.mode === "search" ? "Search ICD Codes" : "Browse ICD Codes"}</span>
+              <input
+                id="mr-icd-search"
+                placeholder="${tabState.icd.mode === "search"
+                  ? "Search ICD code, description, or panel"
+                  : "Optional filter by ICD code or description"}"
+              >
+            </label>
+            <label class="mr-field">
+              <span>Panel</span>
+              <select id="mr-icd-panel">
+                <option value="">All</option>
+                ${panelNames.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}
+              </select>
+            </label>
+          </div>
         </div>
       `, "Add ICD Code");
 
@@ -8222,12 +8389,25 @@ function renderMasterRegistry() {
       searchInput.value = tabState.icd.query;
       panelInput.value = tabState.icd.panel;
 
+      toolbarHostNode.querySelectorAll("[data-mr-icd-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const nextMode = String(button.getAttribute("data-mr-icd-mode") || "").trim();
+          if (!nextMode || nextMode === tabState.icd.mode) return;
+          tabState.icd.mode = nextMode;
+          tabState.icd.page = 1;
+          renderToolbar();
+          renderRows();
+        });
+      });
+
       searchInput.addEventListener("input", () => {
         tabState.icd.query = searchInput.value;
+        tabState.icd.page = 1;
         renderRows();
       });
       panelInput.addEventListener("change", () => {
         tabState.icd.panel = panelInput.value;
+        tabState.icd.page = 1;
         renderRows();
       });
     }
