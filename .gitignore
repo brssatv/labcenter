@@ -2,6 +2,8 @@
 node_modules/
 .cache/
 .env
+.server.log
+.server.err.log
 data/audit.log
 data/ocr-cache/
 data/sessions/

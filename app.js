@@ -1936,6 +1936,262 @@ function attachRequisitionTabEvents() {
   });
 }
 
+function getPanelCatalogItemById(panelId) {
+  const id = String(panelId || "").trim();
+  if (!id) return null;
+  return orderPanelCatalog.find((panel) => String(panel.id || "") === id) || null;
+}
+
+function normalizeRequisitionSummaryItems(items = []) {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .filter((item) => {
+      const key = normalizePanelKey(item);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function getServiceLinePanelLabels(serviceLine = {}) {
+  if (Array.isArray(serviceLine?.panelIds) && serviceLine.panelIds.length) {
+    return normalizeRequisitionSummaryItems(
+      serviceLine.panelIds.map((panelId) => {
+        const panel = getPanelCatalogItemById(panelId);
+        return panel?.name || panelId;
+      })
+    );
+  }
+
+  return normalizeRequisitionSummaryItems(
+    String(serviceLine?.serviceName || "")
+      .split(",")
+      .map((value) => value.trim())
+  );
+}
+
+function getServiceLineIcdItems(serviceLine = {}) {
+  const rawCodes = Array.isArray(serviceLine?.icdCodes)
+    ? serviceLine.icdCodes
+    : String(serviceLine?.icdCodes || "")
+      .split(/[\n,;]+/)
+      .map((value) => value.trim());
+  const codes = normalizeIcdCodeList(rawCodes);
+  return codes.map((code) => {
+    const record = getIcdCatalogRecord(code);
+    return {
+      code,
+      label: record?.formattedCode || formatIcdCode(code),
+      description: record?.description || "",
+    };
+  });
+}
+
+function getAllIcdCatalogRecords() {
+  return (Array.isArray(icdCatalogSearchRows) ? icdCatalogSearchRows : [])
+    .map((item) => getIcdCatalogRecord(item?.code || item))
+    .filter(Boolean)
+    .sort((a, b) => compareIcdCodes(a.code, b.code));
+}
+
+function getPanelMappedIcdCodeSet(serviceLine = {}) {
+  const codes = new Set();
+  if (Array.isArray(serviceLine?.panelIds) && serviceLine.panelIds.length) {
+    serviceLine.panelIds.forEach((panelId) => {
+      const panel = getPanelCatalogItemById(panelId);
+      normalizeIcdCodeList(Array.isArray(panel?.icdCodes) ? panel.icdCodes : [])
+        .forEach((code) => codes.add(code));
+    });
+  }
+  return codes;
+}
+
+function buildRequisitionOrderSummary(record = {}, order = null) {
+  const serviceLines = Array.isArray(order?.services) ? order.services.filter(Boolean) : [];
+  const panelLabels = normalizeRequisitionSummaryItems(
+    serviceLines.flatMap((line) => getServiceLinePanelLabels(line))
+  );
+  const icdItems = [];
+  const seenIcdCodes = new Set();
+
+  serviceLines
+    .flatMap((line) => getServiceLineIcdItems(line))
+    .forEach((item) => {
+      if (!item?.code || seenIcdCodes.has(item.code)) return;
+      seenIcdCodes.add(item.code);
+      icdItems.push(item);
+    });
+
+  return {
+    orderId: String(order?.orderId || "").trim(),
+    accession: String(order?.accessionNo || order?.accession || "").trim(),
+    patientId: String(record?.patientId || order?.patientId || "").trim(),
+    panelLabels,
+    icdItems,
+  };
+}
+
+function renderSummaryChips(items, emptyText) {
+  const rows = normalizeRequisitionSummaryItems(items);
+  if (!rows.length) return `<p class="req-selected-empty">${escapeHtml(emptyText)}</p>`;
+  return `
+    <div class="req-selected-chip-list">
+      ${rows.map((item) => `<span class="req-selected-chip">${escapeHtml(item)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function renderRequisitionIcdSummary(items) {
+  const rows = Array.isArray(items) ? items.filter((item) => item?.code) : [];
+  if (!rows.length) return '<p class="req-selected-empty">No ICD codes are saved for this order.</p>';
+  return `
+    <div class="req-selected-icd-list">
+      ${rows
+        .map((item) => `
+          <div class="req-selected-icd">
+            <strong>${escapeHtml(item.label || formatIcdCode(item.code))}</strong>
+            <span>${escapeHtml(item.description || "Description not available")}</span>
+          </div>
+        `)
+        .join("")}
+    </div>
+  `;
+}
+
+function renderRequisitionIcdEditor(summary) {
+  const selectedCodes = new Set((Array.isArray(summary?.icdItems) ? summary.icdItems : []).map((item) => item.code));
+
+  return `
+    <form class="req-icd-editor hidden" data-req-icd-editor data-order-id="${escapeHtml(summary.orderId)}">
+      <div class="req-icd-editor-toolbar">
+        <input data-req-icd-search placeholder="Search ICD code or description">
+        <button type="submit" class="btn-primary">Save ICD Codes</button>
+        <button type="button" class="btn-ghost" data-req-icd-cancel>Cancel</button>
+      </div>
+      <div class="req-icd-editor-list" data-req-icd-selected>
+        ${renderRequisitionIcdEditorRows(Array.from(selectedCodes))}
+      </div>
+      <div class="req-icd-editor-suggestions" data-req-icd-suggestions>
+        ${renderRequisitionIcdSuggestionButtons(selectedCodes)}
+      </div>
+      <p class="req-icd-editor-status subtle" data-req-icd-status></p>
+    </form>
+  `;
+}
+
+function renderRequisitionIcdEditorRows(codes = []) {
+  const rows = normalizeIcdCodeList(codes)
+    .map((code) => getIcdCatalogRecord(code) || { code, formattedCode: formatIcdCode(code), description: "" });
+  if (!rows.length) return '<p class="req-selected-empty">No ICD codes selected yet.</p>';
+  return rows
+    .map((item) => `
+      <label class="req-icd-editor-row">
+        <input type="checkbox" data-req-edit-icd-code="${escapeHtml(item.code)}" checked>
+        <span>
+          <strong>${escapeHtml(item.formattedCode || formatIcdCode(item.code))}</strong>
+          <small>${escapeHtml(item.description || "Description not available")}</small>
+        </span>
+      </label>
+    `)
+    .join("");
+}
+
+function renderRequisitionIcdSuggestionButtons(selectedCodes = new Set(), query = "") {
+  const selectedSet = selectedCodes instanceof Set ? selectedCodes : new Set(normalizeIcdCodeList(selectedCodes));
+  const search = String(query || "").trim();
+  const rows = getAllIcdCatalogRecords()
+    .filter((record) => !selectedSet.has(record.code))
+    .filter((record) => !search || matchesIcdSearch(record, search))
+    .slice(0, 30);
+
+  if (!rows.length) return '<p class="req-selected-empty">No matching ICD codes found.</p>';
+
+  return rows
+    .map((record) => `
+      <button type="button" class="req-icd-suggestion" data-req-add-icd-code="${escapeHtml(record.code)}">
+        <strong>${escapeHtml(record.formattedCode || formatIcdCode(record.code))}</strong>
+        <span>${escapeHtml(record.description || "Description not available")}</span>
+      </button>
+    `)
+    .join("");
+}
+
+function getSelectedRequisitionIcdCodes(editorNode) {
+  return normalizeIcdCodeList(
+    Array.from(editorNode?.querySelectorAll("[data-req-edit-icd-code]:checked") || [])
+      .map((input) => input.getAttribute("data-req-edit-icd-code") || "")
+  );
+}
+
+function refreshRequisitionIcdEditor(editorNode) {
+  if (!editorNode) return;
+  const selectedCodes = getSelectedRequisitionIcdCodes(editorNode);
+  const selectedSet = new Set(selectedCodes);
+  const selectedNode = editorNode.querySelector("[data-req-icd-selected]");
+  const suggestionsNode = editorNode.querySelector("[data-req-icd-suggestions]");
+  const searchNode = editorNode.querySelector("[data-req-icd-search]");
+  if (selectedNode) selectedNode.innerHTML = renderRequisitionIcdEditorRows(selectedCodes);
+  if (suggestionsNode) {
+    suggestionsNode.innerHTML = renderRequisitionIcdSuggestionButtons(selectedSet, searchNode?.value || "");
+  }
+}
+
+async function saveOrderIcdCodes(orderId, icdCodes) {
+  const codes = normalizeIcdCodeList(icdCodes);
+  const saved = await updateOrderById(orderId, (order) => {
+    const services = Array.isArray(order?.services) ? order.services : [];
+    if (!services.length) return null;
+    return {
+      ...order,
+      services: services.map((serviceLine) => ({
+        ...serviceLine,
+        icdCodes: codes,
+      })),
+      updatedAt: new Date().toISOString(),
+    };
+  });
+  if (!saved) throw new Error("Unable to locate the saved order for this requisition.");
+  return readOrders().find((order) => String(order?.orderId || "") === String(orderId || "")) || null;
+}
+
+function renderRequisitionOrderSummary(record = {}, order = null) {
+  if (!order) return "";
+  const summary = buildRequisitionOrderSummary(record, order);
+  const metaItems = [
+    summary.orderId ? `Order #${summary.orderId}` : "",
+    summary.accession ? `Accession #${summary.accession}` : "",
+    summary.patientId ? `Patient #${summary.patientId}` : "",
+  ].filter(Boolean);
+
+  return `
+    <section class="req-selected-summary" aria-label="Selected panels and ICD codes">
+      <div class="req-selected-summary-head">
+        <div>
+          <p class="badge">Saved Order</p>
+          <h3>Selected Panels and ICD Codes</h3>
+        </div>
+        ${metaItems.length ? `<p class="req-selected-meta">${metaItems.map(escapeHtml).join(" &middot; ")}</p>` : ""}
+      </div>
+      <div class="req-selected-summary-grid">
+        <section class="req-selected-group">
+          <h4>Panels</h4>
+          ${renderSummaryChips(summary.panelLabels, "No panels are saved for this order.")}
+        </section>
+        <section class="req-selected-group">
+          <div class="req-selected-group-head">
+            <h4>ICD Codes</h4>
+            ${summary.orderId ? '<button type="button" class="btn-ghost req-edit-icd-btn" data-req-icd-edit>Edit ICD Codes</button>' : ""}
+          </div>
+          ${renderRequisitionIcdSummary(summary.icdItems)}
+          ${summary.orderId ? renderRequisitionIcdEditor(summary) : ""}
+        </section>
+      </div>
+    </section>
+  `;
+}
+
 function renderRequisitionList() {
   currentSearchInput = null;
   const allOrders = readOrders()
@@ -2149,6 +2405,7 @@ function renderRequisitionList() {
       : "Infectious Disease";
     return {
       raw: sourceRecord,
+      order,
       orderId,
       accession,
       firstName: sourceRecord.firstName || "-",
@@ -2266,7 +2523,7 @@ function renderRequisitionList() {
     const index = Number(viewBtn.getAttribute("data-view-row"));
     if (!Number.isInteger(index) || !visibleRows[index]) return;
     requisitionSubtab = "create";
-    renderRegistration(visibleRows[index].raw);
+    renderRegistration(visibleRows[index].raw, { sourceOrder: visibleRows[index].order });
   });
 
   searchBtn?.addEventListener("click", renderRows);
@@ -4063,12 +4320,14 @@ function buildRequisitionScanReviewMarkup(values = {}, matchedFields = []) {
   };
 }
 
-function renderRegistration(prefillData = null) {
+function renderRegistration(prefillData = null, options = {}) {
   if (prefillData) requisitionSubtab = "create";
   if (requisitionSubtab === "view") {
     renderRequisitionList();
     return;
   }
+
+  let sourceOrder = options?.sourceOrder || prefillData?._sourceOrder || null;
 
   panelBody.innerHTML = `
     <div class="requisition-top-controls">
@@ -4097,6 +4356,8 @@ function renderRegistration(prefillData = null) {
         </div>
       </div>
     </div>
+
+    ${renderRequisitionOrderSummary(prefillData || {}, sourceOrder)}
 
     <form id="registration-form" class="registration-form requisition-form">
       <div class="requisition-layout">
@@ -4571,6 +4832,63 @@ function renderRegistration(prefillData = null) {
   let activeProviderMatchIndex = -1;
 
   attachRequisitionTabEvents();
+
+  panelBody.querySelector(".req-selected-summary")?.addEventListener("click", (event) => {
+    const editor = panelBody.querySelector("[data-req-icd-editor]");
+    if (!editor) return;
+
+    if (event.target.closest("[data-req-icd-edit]")) {
+      editor.classList.remove("hidden");
+      editor.querySelector("[data-req-icd-search]")?.focus();
+      return;
+    }
+
+    if (event.target.closest("[data-req-icd-cancel]")) {
+      editor.classList.add("hidden");
+      return;
+    }
+
+    const addBtn = event.target.closest("[data-req-add-icd-code]");
+    if (addBtn) {
+      const code = normalizeIcdCode(addBtn.getAttribute("data-req-add-icd-code") || "");
+      const selectedCodes = getSelectedRequisitionIcdCodes(editor);
+      if (code && !selectedCodes.includes(code)) selectedCodes.push(code);
+      const selectedNode = editor.querySelector("[data-req-icd-selected]");
+      if (selectedNode) selectedNode.innerHTML = renderRequisitionIcdEditorRows(selectedCodes);
+      refreshRequisitionIcdEditor(editor);
+    }
+  });
+
+  panelBody.querySelector("[data-req-icd-editor]")?.addEventListener("input", (event) => {
+    if (event.target.matches("[data-req-icd-search]")) {
+      refreshRequisitionIcdEditor(event.currentTarget);
+    }
+  });
+
+  panelBody.querySelector("[data-req-icd-editor]")?.addEventListener("change", (event) => {
+    if (event.target.matches("[data-req-edit-icd-code]")) {
+      refreshRequisitionIcdEditor(event.currentTarget);
+    }
+  });
+
+  panelBody.querySelector("[data-req-icd-editor]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const editor = event.currentTarget;
+    const statusNode = editor.querySelector("[data-req-icd-status]");
+    const orderId = String(editor.getAttribute("data-order-id") || sourceOrder?.orderId || "").trim();
+    if (!orderId) {
+      if (statusNode) statusNode.textContent = "Unable to locate the saved order.";
+      return;
+    }
+    try {
+      if (statusNode) statusNode.textContent = "Saving ICD codes...";
+      const selectedCodes = getSelectedRequisitionIcdCodes(editor);
+      sourceOrder = await saveOrderIcdCodes(orderId, selectedCodes);
+      renderRegistration(prefillData, { sourceOrder });
+    } catch (error) {
+      if (statusNode) statusNode.textContent = error?.message || "Unable to save ICD codes.";
+    }
+  });
 
   sectionCollapseToggles.forEach((toggleButton) => {
     toggleButton.addEventListener("click", () => {
@@ -6220,17 +6538,33 @@ function renderOrderPatient(patient) {
     return row;
   }
 
-  function getAvailableIcdsForRow(row) {
+  function getPanelMappedIcdCodesForRow(row) {
     const codes = new Set();
     orderPanelCatalog
       .filter((panel) => row.panels.has(panel.id))
       .forEach((panel) => {
-      panel.icdCodes.forEach((code) => codes.add(code));
-    });
-    return Array.from(codes)
-      .map((code) => getIcdCatalogRecord(code))
-      .filter(Boolean)
-      .sort((a, b) => compareIcdCodes(a.code, b.code));
+        normalizeIcdCodeList(Array.isArray(panel.icdCodes) ? panel.icdCodes : [])
+          .forEach((code) => codes.add(code));
+      });
+    return codes;
+  }
+
+  function getAvailableIcdsForRow(row) {
+    const mappedCodes = getPanelMappedIcdCodesForRow(row);
+    const query = String(row?.icdQuery || "").trim();
+    const catalogRows = getAllIcdCatalogRecords();
+    const rows = query
+      ? catalogRows.filter((item) => matchesIcdSearch(item, query))
+      : catalogRows;
+
+    return rows
+      .slice()
+      .sort((left, right) => {
+        const leftMapped = mappedCodes.has(left.code) ? 0 : 1;
+        const rightMapped = mappedCodes.has(right.code) ? 0 : 1;
+        if (leftMapped !== rightMapped) return leftMapped - rightMapped;
+        return compareIcdCodes(left.code, right.code);
+      });
   }
 
   function updateRowComputedValues(row) {
@@ -6245,9 +6579,8 @@ function renderOrderPatient(patient) {
   }
 
   function pruneIcdSelectionForRow(row) {
-    const allowed = new Set(getAvailableIcdsForRow(row).map((item) => item.code));
     Array.from(row.icds).forEach((code) => {
-      if (!allowed.has(code)) row.icds.delete(code);
+      if (!getIcdCatalogRecord(code)) row.icds.delete(code);
     });
   }
 
@@ -6279,11 +6612,12 @@ function renderOrderPatient(patient) {
 
   function renderIcdOptions(row) {
     const rows = getAvailableIcdsForRow(row);
+    const mappedCodes = getPanelMappedIcdCodesForRow(row);
     const exactQueryCode = normalizeIcdCode(row.icdQuery || "");
     const canOfferCustomAdd = isLikelyCustomIcdCode(exactQueryCode) && !getIcdCatalogRecord(exactQueryCode);
     if (!rows.length) {
       return `
-        <p class="picker-empty">Select at least one panel first.</p>
+        <p class="picker-empty">No ICD codes found in the registry.</p>
         ${
           canOfferCustomAdd
             ? `
@@ -6298,43 +6632,38 @@ function renderOrderPatient(patient) {
       `;
     }
 
-    const filtered = rows.filter((item) => matchesIcdSearch(item, row.icdQuery));
-    if (!filtered.length) {
-      return `
-        <p class="picker-empty">No matching ICD codes.</p>
-        ${
-          canOfferCustomAdd
-            ? `
-              <button type="button" class="picker-custom-add-btn" data-row-id="${row.id}" data-add-custom-icd="${escapeHtml(exactQueryCode)}">
-                <span class="picker-custom-add-badge">New</span>
-                <strong>Add custom ICD code ${escapeHtml(formatIcdCode(exactQueryCode))}</strong>
-                <span>Save this code to the ICD catalog and use it for this order.</span>
-              </button>
-            `
-            : ""
-        }
-      `;
-    }
-
-    const visibleRows = filtered.slice(0, 50);
-    const overflowMarkup = filtered.length > visibleRows.length
-      ? `<p class="picker-empty">Showing ${visibleRows.length} of ${filtered.length} matching ICD codes.</p>`
-      : "";
+    const visibleRows = rows.slice(0, 50);
+    const overflowMarkup = rows.length > visibleRows.length
+      ? `<p class="picker-empty">Showing ${visibleRows.length} of ${rows.length} ICD codes. Type to narrow the registry.</p>`
+      : (row.panels.size
+        ? '<p class="picker-empty">Panel-mapped ICD codes are shown first; search can find any registry ICD code.</p>'
+        : "");
 
     return `${overflowMarkup}${visibleRows
       .map((icd) => {
         const checked = row.icds.has(icd.code) ? "checked" : "";
+        const mappedBadge = mappedCodes.has(icd.code) ? '<span class="picker-option-badge">Panel</span>' : "";
         return `
           <label class="picker-option">
             <input type="checkbox" data-row-id="${row.id}" data-icd-code="${icd.code}" ${checked}>
             <div class="picker-option-text">
-              <strong>${icd.formattedCode || formatIcdCode(icd.code)}</strong>
+              <strong>${icd.formattedCode || formatIcdCode(icd.code)}${mappedBadge}</strong>
               <p>${icd.description}</p>
             </div>
           </label>
         `;
       })
-      .join("")}`;
+      .join("")}${
+        canOfferCustomAdd
+          ? `
+            <button type="button" class="picker-custom-add-btn" data-row-id="${row.id}" data-add-custom-icd="${escapeHtml(exactQueryCode)}">
+              <span class="picker-custom-add-badge">New</span>
+              <strong>Add custom ICD code ${escapeHtml(formatIcdCode(exactQueryCode))}</strong>
+              <span>Save this code to the ICD catalog and use it for this order.</span>
+            </button>
+          `
+          : ""
+      }`;
   }
 
   function focusPickerSearchInput(rowId, type) {
