@@ -821,6 +821,26 @@ function auditLog(req, event, outcome, details = {}) {
   fs.appendFile(auditPath, `${JSON.stringify(entry)}\n`, () => {});
 }
 
+function readAuditLogEntries(limit = 200) {
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 200));
+  if (!fs.existsSync(auditPath)) return [];
+
+  return fs
+    .readFileSync(auditPath, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-safeLimit)
+    .reverse()
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
 function lockKey(email, ip) {
   return `${String(email || "").toLowerCase()}|${ip}`;
 }
@@ -2987,6 +3007,51 @@ registerAuthRoutes({
     validateOidcIdToken,
     verifyPassword,
   },
+});
+
+app.get("/api/audit-log/status", requireDoctorAuth, (req, res) => {
+  return res.json({ authorized: Boolean(req.session.auditLogAuthorized) });
+});
+
+app.post("/api/audit-log/authorize", requireDoctorAuth, async (req, res) => {
+  try {
+    const pin = String(req.body?.pin || "").trim();
+    if (!/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ error: "A 4-digit admin PIN is required." });
+    }
+    if (!appSettingsStore.verifyAdminPin(pin)) {
+      auditLog(req, "audit_log_access", "denied", {
+        reason: "invalid_pin",
+      });
+      return res.status(403).json({ error: "Invalid admin PIN." });
+    }
+
+    req.session.auditLogAuthorized = true;
+    await saveSessionAsync(req);
+    auditLog(req, "audit_log_access", "success");
+    return res.json({ authorized: true });
+  } catch (error) {
+    auditLog(req, "audit_log_access", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to authorize audit log access." });
+  }
+});
+
+app.get("/api/audit-log", requireDoctorAuth, (req, res) => {
+  if (!req.session.auditLogAuthorized) {
+    return res.status(403).json({ error: "Admin PIN is required to view audit logs." });
+  }
+
+  try {
+    const limit = Number(req.query?.limit || 200);
+    return res.json({ entries: readAuditLogEntries(limit) });
+  } catch (error) {
+    auditLog(req, "audit_log_read", "failed", {
+      reason: error?.message || "unexpected_error",
+    });
+    return res.status(500).json({ error: "Unable to load audit log." });
+  }
 });
 
 registerAdminSettingsRoutes({

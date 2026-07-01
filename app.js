@@ -49,6 +49,11 @@ const views = [
     title: "Admin Settings",
     subtitle: "Update protected application-wide settings.",
   },
+  {
+    key: "audit-log",
+    title: "Audit Log",
+    subtitle: "Review recent security and workflow activity.",
+  },
 ];
 
 const clientAccessViews = {
@@ -208,6 +213,15 @@ let adminSettingsState = {
 };
 let adminSettingsReady = false;
 let adminSettingsPromise = null;
+let auditLogState = {
+  entries: [],
+  loading: false,
+  error: "",
+  authorized: false,
+  checkingAccess: false,
+  pinSubmitting: false,
+  pinFailed: false,
+};
 const registrationsStorageKey = "labcenter.registrations";
 const ordersStorageKey = "labcenter.orders";
 const uploadResultsLogStorageKey = "labcenter.upload-results-log.v1";
@@ -2060,6 +2074,42 @@ function renderRequisitionIcdSummary(items) {
   `;
 }
 
+function getPanelCatalogItemsForLabels(panelLabels = []) {
+  const selectedKeys = new Set(normalizeRequisitionSummaryItems(panelLabels).map((label) => normalizePanelKey(label)));
+  return orderPanelCatalog.filter((panel) => {
+    const candidates = [panel.id, panel.name, panel.alias].map(normalizePanelKey).filter(Boolean);
+    return candidates.some((key) => selectedKeys.has(key));
+  });
+}
+
+function renderRequisitionPanelEditor(summary) {
+  const selectedPanels = getPanelCatalogItemsForLabels(summary?.panelLabels || []);
+  const selectedIds = new Set(selectedPanels.map((panel) => panel.id));
+
+  return `
+    <form class="req-panel-editor hidden" data-req-panel-editor data-order-id="${escapeHtml(summary.orderId)}">
+      <div class="req-icd-editor-toolbar">
+        <button type="submit" class="btn-primary">Apply Panels</button>
+        <button type="button" class="btn-ghost" data-req-panel-cancel>Cancel</button>
+      </div>
+      <div class="req-panel-editor-list">
+        ${orderPanelCatalog
+          .map((panel) => `
+            <label class="req-icd-editor-row">
+              <input type="checkbox" data-req-edit-panel-id="${escapeHtml(panel.id)}" ${selectedIds.has(panel.id) ? "checked" : ""}>
+              <span>
+                <strong>${escapeHtml(panel.name || panel.alias || panel.id)}</strong>
+                <small>${escapeHtml(panel.alias && panel.alias !== panel.name ? panel.alias : "Panel catalog")}</small>
+              </span>
+            </label>
+          `)
+          .join("")}
+      </div>
+      <p class="req-icd-editor-status subtle" data-req-panel-status></p>
+    </form>
+  `;
+}
+
 function renderRequisitionIcdEditor(summary) {
   const selectedCodes = new Set((Array.isArray(summary?.icdItems) ? summary.icdItems : []).map((item) => item.code));
 
@@ -2067,7 +2117,7 @@ function renderRequisitionIcdEditor(summary) {
     <form class="req-icd-editor hidden" data-req-icd-editor data-order-id="${escapeHtml(summary.orderId)}">
       <div class="req-icd-editor-toolbar">
         <input data-req-icd-search placeholder="Search ICD code or description">
-        <button type="submit" class="btn-primary">Save ICD Codes</button>
+        <button type="submit" class="btn-primary">Apply ICD Codes</button>
         <button type="button" class="btn-ghost" data-req-icd-cancel>Cancel</button>
       </div>
       <div class="req-icd-editor-list" data-req-icd-selected>
@@ -2138,27 +2188,170 @@ function refreshRequisitionIcdEditor(editorNode) {
   }
 }
 
-async function saveOrderIcdCodes(orderId, icdCodes) {
+function buildOrderWithIcdCodes(order, icdCodes) {
   const codes = normalizeIcdCodeList(icdCodes);
-  const saved = await updateOrderById(orderId, (order) => {
-    const services = Array.isArray(order?.services) ? order.services : [];
-    if (!services.length) return null;
-    return {
-      ...order,
-      services: services.map((serviceLine) => ({
-        ...serviceLine,
-        icdCodes: codes,
-      })),
-      updatedAt: new Date().toISOString(),
-    };
-  });
+  const services = Array.isArray(order?.services) ? order.services : [];
+  if (!services.length) return null;
+  return {
+    ...order,
+    services: services.map((serviceLine) => ({
+      ...serviceLine,
+      icdCodes: codes,
+    })),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function saveOrderIcdCodes(orderId, icdCodes) {
+  const saved = await updateOrderById(orderId, (order) => buildOrderWithIcdCodes(order, icdCodes));
   if (!saved) throw new Error("Unable to locate the saved order for this requisition.");
   return readOrders().find((order) => String(order?.orderId || "") === String(orderId || "")) || null;
 }
 
-function renderRequisitionOrderSummary(record = {}, order = null) {
+function buildOrderWithPanels(order, panelIds) {
+  const ids = Array.from(new Set((Array.isArray(panelIds) ? panelIds : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)));
+  if (!ids.length) return null;
+  const panelItems = ids
+    .map((panelId) => getPanelCatalogItemById(panelId))
+    .filter(Boolean);
+  if (!panelItems.length) return null;
+
+  const services = Array.isArray(order?.services) ? order.services : [];
+  const firstLine = services[0] || {};
+  const price = panelItems.reduce((total, panel) => total + (Number(panel.price) || 0), 0);
+  const concession = Number(firstLine.concession) || 0;
+  const serviceLine = {
+    ...firstLine,
+    lineNo: 1,
+    serviceName: panelItems.map((panel) => panel.name).join(", "),
+    panelIds: panelItems.map((panel) => panel.id),
+    price,
+    concession,
+    due: Math.max(price - concession, 0),
+  };
+  return {
+    ...order,
+    accessionPrefix: resolvePanelPrefixFromService(serviceLine),
+    services: [serviceLine],
+    amount: price,
+    concession,
+    due: Math.max(price - concession, 0),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function saveOrderPanels(orderId, panelIds) {
+  const saved = await updateOrderById(orderId, (order) => buildOrderWithPanels(order, panelIds));
+  if (!saved) throw new Error("Unable to locate the saved order for this requisition.");
+  return readOrders().find((order) => String(order?.orderId || "") === String(orderId || "")) || null;
+}
+
+function isPendingOrder(order) {
+  return String(order?.status || "").trim().toLowerCase() === "pending";
+}
+
+function getOrderAccessionPreview(order) {
+  const existing = String(order?.accessionNo || order?.accession || "").trim();
+  if (existing) return existing;
+  if (!order?.orderId) return "";
+  return buildAccessionNumber({
+    serviceLine: Array.isArray(order?.services) ? order.services[0] : null,
+    orderDate: order?.sampleCollectTime || order?.createdAt || new Date().toISOString(),
+    orderId: order.orderId,
+  });
+}
+
+function getOrderComputedAccession(order, orderIdOverride = "") {
+  if (!order?.orderId && !orderIdOverride) return "";
+  return buildAccessionNumber({
+    serviceLine: Array.isArray(order?.services) ? order.services[0] : null,
+    orderDate: order?.sampleCollectTime || order?.createdAt || new Date().toISOString(),
+    orderId: orderIdOverride || order.orderId,
+  });
+}
+
+function getOrderPanelIds(order) {
+  return Array.from(new Set((Array.isArray(order?.services) ? order.services : [])
+    .flatMap((line) => Array.isArray(line?.panelIds) ? line.panelIds : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)));
+}
+
+function getOrderIcdCodes(order) {
+  return normalizeIcdCodeList((Array.isArray(order?.services) ? order.services : [])
+    .flatMap((line) => Array.isArray(line?.icdCodes) ? line.icdCodes : []));
+}
+
+function areStringListsEqual(left = [], right = []) {
+  const a = Array.from(new Set(left.map((value) => String(value || "").trim()).filter(Boolean))).sort();
+  const b = Array.from(new Set(right.map((value) => String(value || "").trim()).filter(Boolean))).sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function getRequisitionChangePlan(originalRecord, updatedRecord, originalOrder, draftOrder) {
+  const fieldLabels = {
+    referenceLab: "Reference lab",
+    facilityName: "Facility",
+    provider: "Provider",
+    providerNpi: "Provider NPI",
+    firstName: "First name",
+    middleName: "Middle name",
+    lastName: "Last name",
+    suffix: "Suffix",
+    dob: "DOB",
+    sex: "Sex",
+    mrn: "MRN",
+    phone: "Phone",
+    address: "Address",
+    address2: "Address 2",
+    city: "City",
+    state: "State",
+    zipcode: "Zip",
+    county: "County",
+    country: "Country",
+    email: "Email",
+    collectionDate: "Collection date",
+    collectionTime: "Collection time",
+    receivedDate: "Received date",
+    billingType: "Billing type",
+    primaryInsurance: "Primary insurance",
+    primaryMemberPolicy: "Primary policy",
+    additionalInformation: "Additional information",
+  };
+  const registrationChanges = Object.entries(fieldLabels)
+    .filter(([key]) => String(originalRecord?.[key] || "") !== String(updatedRecord?.[key] || ""))
+    .map(([, label]) => label);
+  const originalPanelIds = getOrderPanelIds(originalOrder);
+  const draftPanelIds = getOrderPanelIds(draftOrder);
+  const originalIcdCodes = getOrderIcdCodes(originalOrder);
+  const draftIcdCodes = getOrderIcdCodes(draftOrder);
+  const originalAccession = getOrderAccessionPreview(originalOrder);
+  const draftAccessionSameOrder = getOrderComputedAccession(draftOrder, originalOrder?.orderId || draftOrder?.orderId || "");
+  const panelChanged = !areStringListsEqual(originalPanelIds, draftPanelIds);
+  const icdChanged = !areStringListsEqual(originalIcdCodes, draftIcdCodes);
+  const accessionWouldChange = panelChanged && originalAccession && draftAccessionSameOrder && originalAccession !== draftAccessionSameOrder;
+
+  return {
+    registrationChanges,
+    panelChanged,
+    icdChanged,
+    accessionWouldChange,
+    orderAction: accessionWouldChange ? "replace" : "update",
+    originalAccession,
+    draftAccessionSameOrder,
+    originalPanelLabels: getServiceLinePanelLabels(Array.isArray(originalOrder?.services) ? originalOrder.services[0] : {}),
+    draftPanelLabels: getServiceLinePanelLabels(Array.isArray(draftOrder?.services) ? draftOrder.services[0] : {}),
+    originalIcdCodes,
+    draftIcdCodes,
+  };
+}
+
+function renderRequisitionOrderSummary(record = {}, order = null, options = {}) {
   if (!order) return "";
   const summary = buildRequisitionOrderSummary(record, order);
+  const editable = Boolean(options.editable);
   const metaItems = [
     summary.orderId ? `Order #${summary.orderId}` : "",
     summary.accession ? `Accession #${summary.accession}` : "",
@@ -2176,16 +2369,20 @@ function renderRequisitionOrderSummary(record = {}, order = null) {
       </div>
       <div class="req-selected-summary-grid">
         <section class="req-selected-group">
-          <h4>Panels</h4>
+          <div class="req-selected-group-head">
+            <h4>Panels</h4>
+            ${summary.orderId && editable ? '<button type="button" class="btn-ghost req-edit-icd-btn" data-req-panel-edit>Edit Panels</button>' : ""}
+          </div>
           ${renderSummaryChips(summary.panelLabels, "No panels are saved for this order.")}
+          ${summary.orderId && editable ? renderRequisitionPanelEditor(summary) : ""}
         </section>
         <section class="req-selected-group">
           <div class="req-selected-group-head">
             <h4>ICD Codes</h4>
-            ${summary.orderId ? '<button type="button" class="btn-ghost req-edit-icd-btn" data-req-icd-edit>Edit ICD Codes</button>' : ""}
+            ${summary.orderId && editable ? '<button type="button" class="btn-ghost req-edit-icd-btn" data-req-icd-edit>Edit ICD Codes</button>' : ""}
           </div>
           ${renderRequisitionIcdSummary(summary.icdItems)}
-          ${summary.orderId ? renderRequisitionIcdEditor(summary) : ""}
+          ${summary.orderId && editable ? renderRequisitionIcdEditor(summary) : ""}
         </section>
       </div>
     </section>
@@ -2523,7 +2720,7 @@ function renderRequisitionList() {
     const index = Number(viewBtn.getAttribute("data-view-row"));
     if (!Number.isInteger(index) || !visibleRows[index]) return;
     requisitionSubtab = "create";
-    renderRegistration(visibleRows[index].raw, { sourceOrder: visibleRows[index].order });
+    renderRegistration(visibleRows[index].raw, { sourceOrder: visibleRows[index].order, mode: "view" });
   });
 
   searchBtn?.addEventListener("click", renderRows);
@@ -4328,10 +4525,36 @@ function renderRegistration(prefillData = null, options = {}) {
   }
 
   let sourceOrder = options?.sourceOrder || prefillData?._sourceOrder || null;
+  const requisitionMode = options?.mode === "view" ? "view" : options?.mode === "modify" ? "modify" : "create";
+  const isViewedRequisition = Boolean(prefillData && sourceOrder && requisitionMode !== "create");
+  const originalRequisitionRecord = options?.originalRecord || (prefillData ? JSON.parse(JSON.stringify(prefillData)) : null);
+  const originalSourceOrder = options?.originalSourceOrder || (sourceOrder ? JSON.parse(JSON.stringify(sourceOrder)) : null);
+  const canModifyViewedRequisition = isViewedRequisition && isPendingOrder(sourceOrder);
+  const isReadOnlyRequisition = requisitionMode === "view";
+  const savedRegistrationCreatedAt = String(prefillData?.createdAt || "").trim();
 
   panelBody.innerHTML = `
     <div class="requisition-top-controls">
       ${renderRequisitionTabsMarkup()}
+      ${
+        isViewedRequisition
+          ? `
+            <div class="req-modify-strip">
+              <div>
+                <p class="requisition-scan-title">${isReadOnlyRequisition ? "Viewing saved requisition" : "Modifying saved requisition"}</p>
+                <p class="requisition-scan-hint">${
+                  canModifyViewedRequisition
+                    ? isReadOnlyRequisition
+                      ? "Fields are locked until the clinician chooses to modify this pending requisition."
+                      : "Update the requisition details, panels, or ICD codes, then save the changes."
+                    : "Only pending orders can be modified. This requisition is locked because the linked order is no longer pending."
+                }</p>
+              </div>
+              <button type="button" id="req-modify-toggle" class="btn-primary" ${isReadOnlyRequisition && canModifyViewedRequisition ? "" : "disabled"}>Modify Requisition</button>
+            </div>
+          `
+          : ""
+      }
       <div class="requisition-scan-strip">
         <div class="requisition-scan-copy">
           <p class="requisition-scan-title">Upload scan copy</p>
@@ -4357,7 +4580,7 @@ function renderRegistration(prefillData = null, options = {}) {
       </div>
     </div>
 
-    ${renderRequisitionOrderSummary(prefillData || {}, sourceOrder)}
+    ${renderRequisitionOrderSummary(prefillData || {}, sourceOrder, { editable: !isReadOnlyRequisition && canModifyViewedRequisition })}
 
     <form id="registration-form" class="registration-form requisition-form">
       <div class="requisition-layout">
@@ -4674,9 +4897,9 @@ function renderRegistration(prefillData = null, options = {}) {
       </div>
 
       <div class="form-actions requisition-actions">
-        <button type="button" id="registration-clear" class="btn-ghost">Clear</button>
+        <button type="button" id="registration-clear" class="btn-ghost">${isViewedRequisition ? "Cancel Changes" : "Clear"}</button>
         <div class="action-right">
-          <button type="submit" class="btn-primary dark-submit">Save Requisition</button>
+          <button type="submit" class="btn-primary dark-submit">${isViewedRequisition ? "Save Changes" : "Save Requisition"}</button>
           <button type="button" id="register-and-order" class="btn-primary dark-submit ghost-submit">Register And Order</button>
         </div>
       </div>
@@ -4857,6 +5080,34 @@ function renderRegistration(prefillData = null, options = {}) {
         </div>
       </div>
     </div>
+    <div id="requisition-change-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="requisition-change-title">
+      <div class="custom-icd-dialog requisition-change-dialog">
+        <div class="custom-icd-head">
+          <div>
+            <p class="badge">Change Approval</p>
+            <h3 id="requisition-change-title">Review Requisition Changes</h3>
+          </div>
+          <button type="button" class="custom-icd-close" data-requisition-change-cancel aria-label="Close">×</button>
+        </div>
+        <form id="requisition-change-form" class="custom-icd-body requisition-change-body" novalidate>
+          <div id="requisition-change-summary" class="requisition-change-summary"></div>
+          <label class="custom-icd-field">
+            <span>Reason for change *</span>
+            <textarea id="requisition-change-reason" rows="3" placeholder="Enter the clinical or operational reason for this requisition change"></textarea>
+          </label>
+          <label class="scan-review-check requisition-change-approval">
+            <input id="requisition-change-approval" type="checkbox">
+            <span class="scan-review-check-mark" aria-hidden="true"></span>
+            <span><strong>Approve changes</strong><small>I approve publishing these requisition and downstream order changes.</small></span>
+          </label>
+          <p id="requisition-change-error" class="error hidden" aria-live="polite"></p>
+          <div class="custom-icd-footer">
+            <button type="button" class="btn-ghost" data-requisition-change-cancel>Cancel</button>
+            <button type="submit" class="btn-primary">Approve And Publish Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
     <p id="registration-status" class="subtle"></p>
   `;
 
@@ -4893,9 +5144,17 @@ function renderRegistration(prefillData = null, options = {}) {
   const scanUploadSelectBtn = document.getElementById("scan-upload-select");
   const scanUploadStatusNode = document.getElementById("scan-upload-status");
   const scanUploadCancelButtons = Array.from(panelBody.querySelectorAll("[data-scan-upload-cancel]"));
+  const requisitionChangeModalNode = document.getElementById("requisition-change-modal");
+  const requisitionChangeForm = document.getElementById("requisition-change-form");
+  const requisitionChangeSummaryNode = document.getElementById("requisition-change-summary");
+  const requisitionChangeReasonInput = document.getElementById("requisition-change-reason");
+  const requisitionChangeApprovalInput = document.getElementById("requisition-change-approval");
+  const requisitionChangeErrorNode = document.getElementById("requisition-change-error");
+  const requisitionChangeCancelButtons = Array.from(panelBody.querySelectorAll("[data-requisition-change-cancel]"));
   const searchInput = document.getElementById("patient-search");
   const searchClear = document.getElementById("search-clear");
   const searchResults = document.getElementById("search-results");
+  const modifyRequisitionBtn = document.getElementById("req-modify-toggle");
   const patientIdNode = panelBody.querySelector(".patient-id");
   const allergyGrid = form.querySelector(".allergy-grid");
   const customAllergyInput = document.getElementById("custom-allergy-input");
@@ -4916,6 +5175,7 @@ function renderRegistration(prefillData = null, options = {}) {
   let activeScanReviewResolver = null;
   let scanUploadInFlight = false;
   let activeScanReviewFieldKeys = [];
+  let activeRequisitionChangeResolver = null;
   let facilityMatchResults = [];
   let activeFacilityMatchIndex = -1;
   let providerMatchResults = [];
@@ -4923,29 +5183,237 @@ function renderRegistration(prefillData = null, options = {}) {
 
   attachRequisitionTabEvents();
 
+  function setRequisitionViewLock(isLocked) {
+    form.querySelectorAll("input, select, textarea, button").forEach((node) => {
+      node.disabled = Boolean(isLocked);
+    });
+    [searchInput, searchClear, requisitionScanTrigger, facilityToggleBtn, providerToggleBtn, addProviderBtn].forEach((node) => {
+      if (node) node.disabled = Boolean(isLocked);
+    });
+    panelBody.querySelector(".requisition-form")?.classList.toggle("is-read-only", Boolean(isLocked));
+  }
+
+  modifyRequisitionBtn?.addEventListener("click", () => {
+    if (!canModifyViewedRequisition) return;
+    renderRegistration(prefillData, { sourceOrder, mode: "modify" });
+  });
+
+  function renderRequisitionChangePlanMarkup(plan, replacementAccession = "") {
+    const registrationItems = plan.registrationChanges.length
+      ? plan.registrationChanges.map((label) => `<li>${escapeHtml(label)}</li>`).join("")
+      : "<li>No demographic or billing fields changed.</li>";
+    const panelText = plan.panelChanged
+      ? `${plan.originalPanelLabels.join(", ") || "None"} -> ${plan.draftPanelLabels.join(", ") || "None"}`
+      : "No panel changes.";
+    const icdText = plan.icdChanged
+      ? `${plan.originalIcdCodes.map(formatIcdCode).join(", ") || "None"} -> ${plan.draftIcdCodes.map(formatIcdCode).join(", ") || "None"}`
+      : "No ICD code changes.";
+    const orderImpact = plan.orderAction === "replace"
+      ? `
+        <li>Dismiss existing Order #${escapeHtml(sourceOrder?.orderId || "-")} with accession ${escapeHtml(plan.originalAccession || "-")}.</li>
+        <li>Create a replacement pending order${replacementAccession ? ` with accession ${escapeHtml(replacementAccession)}` : " with a new accession"}.</li>
+      `
+      : `<li>Update existing pending Order #${escapeHtml(sourceOrder?.orderId || "-")} in place.</li>`;
+    return `
+      <section class="requisition-change-card">
+        <h4>Requisition Fields</h4>
+        <ul>${registrationItems}</ul>
+      </section>
+      <section class="requisition-change-card">
+        <h4>Panels</h4>
+        <p>${escapeHtml(panelText)}</p>
+      </section>
+      <section class="requisition-change-card">
+        <h4>ICD Codes</h4>
+        <p>${escapeHtml(icdText)}</p>
+      </section>
+      <section class="requisition-change-card">
+        <h4>Downstream Order Impact</h4>
+        <ul>${orderImpact}</ul>
+      </section>
+    `;
+  }
+
+  function closeRequisitionChangeModal(result = null) {
+    requisitionChangeModalNode?.classList.add("hidden");
+    document.body.classList.remove("modal-open");
+    const resolver = activeRequisitionChangeResolver;
+    activeRequisitionChangeResolver = null;
+    if (resolver) resolver(result);
+  }
+
+  function openRequisitionChangeModal(plan, replacementAccession = "") {
+    if (!requisitionChangeModalNode || !requisitionChangeSummaryNode) return Promise.resolve(null);
+    requisitionChangeSummaryNode.innerHTML = renderRequisitionChangePlanMarkup(plan, replacementAccession);
+    if (requisitionChangeReasonInput) requisitionChangeReasonInput.value = "";
+    if (requisitionChangeApprovalInput) requisitionChangeApprovalInput.checked = false;
+    if (requisitionChangeErrorNode) {
+      requisitionChangeErrorNode.textContent = "";
+      requisitionChangeErrorNode.classList.add("hidden");
+    }
+    requisitionChangeModalNode.classList.remove("hidden");
+    document.body.classList.add("modal-open");
+    requestAnimationFrame(() => requisitionChangeReasonInput?.focus());
+    return new Promise((resolve) => {
+      activeRequisitionChangeResolver = resolve;
+    });
+  }
+
+  requisitionChangeCancelButtons.forEach((button) => {
+    button.addEventListener("click", () => closeRequisitionChangeModal(null));
+  });
+
+  requisitionChangeModalNode?.addEventListener("click", (event) => {
+    if (event.target === requisitionChangeModalNode) closeRequisitionChangeModal(null);
+  });
+
+  requisitionChangeModalNode?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeRequisitionChangeModal(null);
+    }
+  });
+
+  requisitionChangeForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const reason = String(requisitionChangeReasonInput?.value || "").trim();
+    const approved = Boolean(requisitionChangeApprovalInput?.checked);
+    if (!reason || !approved) {
+      if (requisitionChangeErrorNode) {
+        requisitionChangeErrorNode.textContent = !reason
+          ? "Enter a reason for the requisition change."
+          : "Approve publishing these changes before continuing.";
+        requisitionChangeErrorNode.classList.remove("hidden");
+      }
+      return;
+    }
+    closeRequisitionChangeModal({ reason, approved });
+  });
+
+  function getOrderFieldsFromRequisitionData(data) {
+    const patientName = `${data.firstName || ""} ${data.middleName || ""} ${data.lastName || ""}`.replace(/\s+/g, " ").trim();
+    return {
+      patientId: data.patientId || "",
+      patientName,
+      patientDob: data.dob || "",
+      provider: data.provider || "",
+      facilityName: data.facilityName || "",
+    };
+  }
+
+  async function publishApprovedRequisitionChanges(data, plan, approval) {
+    const approvedAt = new Date().toISOString();
+    const reason = String(approval?.reason || "").trim();
+    const orderFields = getOrderFieldsFromRequisitionData(data);
+    const changeMeta = {
+      reason,
+      approvedAt,
+      approvedBy: activeSession?.username || activeSession?.email || activeSession?.type || "clinician",
+      previousOrderId: originalSourceOrder?.orderId || "",
+      previousAccession: plan.originalAccession || "",
+      action: plan.orderAction,
+    };
+
+    const registrationPayload = {
+      ...(prefillData || {}),
+      ...data,
+      requisitionChange: changeMeta,
+      updatedAt: approvedAt,
+    };
+    await saveRegistrationData(registrationPayload);
+
+    if (plan.orderAction === "replace") {
+      const reservedOrderIds = await allocateOrderIds(1);
+      const replacementOrderId = String(reservedOrderIds?.[0] || "").trim();
+      if (!replacementOrderId) throw new Error("Unable to reserve a replacement order ID.");
+      const replacementServiceLine = Array.isArray(sourceOrder?.services) ? sourceOrder.services[0] : null;
+      const replacementOrder = {
+        ...sourceOrder,
+        ...orderFields,
+        orderId: replacementOrderId,
+        status: "Pending",
+        createdAt: approvedAt,
+        updatedAt: approvedAt,
+        accessionPrefix: resolvePanelPrefixFromService(replacementServiceLine),
+        accessionNo: buildAccessionNumber({
+          serviceLine: replacementServiceLine,
+          orderDate: sourceOrder?.sampleCollectTime || approvedAt,
+          orderId: replacementOrderId,
+        }),
+        requisitionChange: {
+          ...changeMeta,
+          replacedOrderId: originalSourceOrder?.orderId || "",
+        },
+      };
+
+      await updateOrderById(originalSourceOrder.orderId, (row) => ({
+        ...row,
+        status: "Dismissed",
+        dismissedAt: approvedAt,
+        dismissedReason: reason,
+        supersededByOrderId: replacementOrderId,
+        requisitionChange: {
+          ...changeMeta,
+          replacementOrderId,
+        },
+        updatedAt: approvedAt,
+      }));
+      await saveOrderRecords([replacementOrder]);
+      return replacementOrder;
+    }
+
+    const updatedOrder = {
+      ...sourceOrder,
+      ...orderFields,
+      status: "Pending",
+      accessionPrefix: resolvePanelPrefixFromService(Array.isArray(sourceOrder?.services) ? sourceOrder.services[0] : null),
+      accessionNo: String(sourceOrder?.accessionNo || sourceOrder?.accession || "").trim() || plan.originalAccession || "",
+      requisitionChange: changeMeta,
+      updatedAt: approvedAt,
+    };
+    const saved = await updateOrderById(sourceOrder.orderId, () => updatedOrder);
+    if (!saved) throw new Error("Unable to update the linked pending order.");
+    return readOrders().find((order) => String(order?.orderId || "") === String(sourceOrder?.orderId || "")) || updatedOrder;
+  }
+
   panelBody.querySelector(".req-selected-summary")?.addEventListener("click", (event) => {
     const editor = panelBody.querySelector("[data-req-icd-editor]");
-    if (!editor) return;
 
     if (event.target.closest("[data-req-icd-edit]")) {
+      if (!editor) return;
       editor.classList.remove("hidden");
       editor.querySelector("[data-req-icd-search]")?.focus();
       return;
     }
 
     if (event.target.closest("[data-req-icd-cancel]")) {
+      if (!editor) return;
       editor.classList.add("hidden");
       return;
     }
 
     const addBtn = event.target.closest("[data-req-add-icd-code]");
     if (addBtn) {
+      if (!editor) return;
       const code = normalizeIcdCode(addBtn.getAttribute("data-req-add-icd-code") || "");
       const selectedCodes = getSelectedRequisitionIcdCodes(editor);
       if (code && !selectedCodes.includes(code)) selectedCodes.push(code);
       const selectedNode = editor.querySelector("[data-req-icd-selected]");
       if (selectedNode) selectedNode.innerHTML = renderRequisitionIcdEditorRows(selectedCodes);
       refreshRequisitionIcdEditor(editor);
+      return;
+    }
+
+    const panelEditor = panelBody.querySelector("[data-req-panel-editor]");
+    if (event.target.closest("[data-req-panel-edit]")) {
+      if (!panelEditor) return;
+      panelEditor.classList.remove("hidden");
+      return;
+    }
+
+    if (event.target.closest("[data-req-panel-cancel]")) {
+      if (!panelEditor) return;
+      panelEditor.classList.add("hidden");
     }
   });
 
@@ -4971,12 +5439,42 @@ function renderRegistration(prefillData = null, options = {}) {
       return;
     }
     try {
-      if (statusNode) statusNode.textContent = "Saving ICD codes...";
+      if (statusNode) statusNode.textContent = "Applying ICD code changes to draft...";
       const selectedCodes = getSelectedRequisitionIcdCodes(editor);
-      sourceOrder = await saveOrderIcdCodes(orderId, selectedCodes);
-      renderRegistration(prefillData, { sourceOrder });
+      const nextOrder = buildOrderWithIcdCodes(sourceOrder, selectedCodes);
+      if (!nextOrder) throw new Error("Unable to apply ICD codes to this order.");
+      sourceOrder = nextOrder;
+      const currentDraftRecord = { ...(prefillData || {}), ...Object.fromEntries(new FormData(form).entries()) };
+      currentDraftRecord.patientId = patientIdNode.textContent.trim() || currentDraftRecord.patientId || "";
+      renderRegistration(currentDraftRecord, { sourceOrder, mode: requisitionMode, originalSourceOrder, originalRecord: originalRequisitionRecord });
     } catch (error) {
-      if (statusNode) statusNode.textContent = error?.message || "Unable to save ICD codes.";
+      if (statusNode) statusNode.textContent = error?.message || "Unable to apply ICD codes.";
+    }
+  });
+
+  panelBody.querySelector("[data-req-panel-editor]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const editor = event.currentTarget;
+    const statusNode = editor.querySelector("[data-req-panel-status]");
+    const orderId = String(editor.getAttribute("data-order-id") || sourceOrder?.orderId || "").trim();
+    if (!orderId) {
+      if (statusNode) statusNode.textContent = "Unable to locate the saved order.";
+      return;
+    }
+    try {
+      if (statusNode) statusNode.textContent = "Applying panel changes to draft...";
+      const selectedPanelIds = Array.from(editor.querySelectorAll("[data-req-edit-panel-id]:checked"))
+        .map((input) => input.getAttribute("data-req-edit-panel-id") || "")
+        .filter(Boolean);
+      if (!selectedPanelIds.length) throw new Error("Select at least one panel before saving.");
+      const nextOrder = buildOrderWithPanels(sourceOrder, selectedPanelIds);
+      if (!nextOrder) throw new Error("Select at least one valid panel before saving.");
+      sourceOrder = nextOrder;
+      const currentDraftRecord = { ...(prefillData || {}), ...Object.fromEntries(new FormData(form).entries()) };
+      currentDraftRecord.patientId = patientIdNode.textContent.trim() || currentDraftRecord.patientId || "";
+      renderRegistration(currentDraftRecord, { sourceOrder, mode: requisitionMode, originalSourceOrder, originalRecord: originalRequisitionRecord });
+    } catch (error) {
+      if (statusNode) statusNode.textContent = error?.message || "Unable to apply panels.";
     }
   });
 
@@ -6138,6 +6636,12 @@ function renderRegistration(prefillData = null, options = {}) {
   if (prefillData) {
     applyFormData(prefillData);
   }
+  if (isViewedRequisition && registerAndOrderBtn) {
+    registerAndOrderBtn.classList.add("hidden");
+  }
+  if (isReadOnlyRequisition) {
+    setRequisitionViewLock(true);
+  }
   syncAgeFromDob();
 
   const refreshFacilityAutocompleteState = () => {
@@ -6568,6 +7072,10 @@ function renderRegistration(prefillData = null, options = {}) {
   });
 
   clearBtn.addEventListener("click", () => {
+    if (isViewedRequisition) {
+      renderRegistration(originalRequisitionRecord || prefillData, { sourceOrder: originalSourceOrder || sourceOrder, mode: "view" });
+      return;
+    }
     form.reset();
     clearCustomAllergies();
     syncSpecimenTypeDependentFields();
@@ -6580,11 +7088,31 @@ function renderRegistration(prefillData = null, options = {}) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (isReadOnlyRequisition) return;
+    if (isViewedRequisition && !canModifyViewedRequisition) {
+      status.textContent = "Only pending orders can be modified.";
+      return;
+    }
     validateRequisitionFields();
+    if (!form.reportValidity()) return;
     const data = Object.fromEntries(new FormData(form).entries());
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
+    if (savedRegistrationCreatedAt) data.createdAt = savedRegistrationCreatedAt;
     patientIdNode.textContent = data.patientId;
     try {
+      if (isViewedRequisition) {
+        const updatedRecord = { ...(prefillData || {}), ...data };
+        const plan = getRequisitionChangePlan(originalRequisitionRecord || prefillData || {}, updatedRecord, originalSourceOrder || sourceOrder, sourceOrder);
+        const approval = await openRequisitionChangeModal(plan);
+        if (!approval?.approved) {
+          status.textContent = "Requisition changes were not published.";
+          return;
+        }
+        status.textContent = "Publishing requisition changes...";
+        const updatedOrder = await publishApprovedRequisitionChanges(data, plan, approval);
+        renderRegistration(updatedRecord, { sourceOrder: updatedOrder, mode: "view" });
+        return;
+      }
       const count = await saveRegistrationData(data);
       status.textContent = `Requisition saved for Patient ID ${data.patientId}. Total records: ${count}`;
       form.reset();
@@ -6600,6 +7128,7 @@ function renderRegistration(prefillData = null, options = {}) {
   });
 
   registerAndOrderBtn.addEventListener("click", async () => {
+    if (isViewedRequisition || isReadOnlyRequisition) return;
     validateRequisitionFields();
     if (!form.reportValidity()) return;
     const data = Object.fromEntries(new FormData(form).entries());
@@ -6613,6 +7142,10 @@ function renderRegistration(prefillData = null, options = {}) {
       status.textContent = error?.message || "Unable to save requisition.";
     }
   });
+
+  if (isReadOnlyRequisition) {
+    setRequisitionViewLock(true);
+  }
 }
 
 function renderOrderPatient(patient) {
@@ -17480,6 +18013,260 @@ function renderFacility() {
   });
 }
 
+function formatAuditEventLabel(value) {
+  return String(value || "event")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getAuditLogDetailText(entry) {
+  const details = [];
+  if (entry.patientId) details.push(`Patient ID ${entry.patientId}`);
+  if (entry.orderId) details.push(`Order ${entry.orderId}`);
+  if (entry.count !== undefined) details.push(`Count ${entry.count}`);
+  if (entry.status) details.push(`Status ${entry.status}`);
+  if (entry.reason) details.push(`Reason: ${entry.reason}`);
+  if (entry.fileName) details.push(`File: ${entry.fileName}`);
+  return details.join(" | ") || "-";
+}
+
+function renderAuditLogRows(entries) {
+  if (!entries.length) {
+    return '<tr><td colspan="6" class="audit-log-empty">No audit entries found.</td></tr>';
+  }
+
+  return entries
+    .map((entry) => {
+      const outcome = String(entry.outcome || "unknown").toLowerCase();
+      return `
+        <tr>
+          <td>${escapeHtml(formatAppDateTime(entry.ts))}</td>
+          <td><strong>${escapeHtml(formatAuditEventLabel(entry.event))}</strong></td>
+          <td><span class="audit-outcome audit-outcome-${escapeHtml(outcome)}">${escapeHtml(outcome)}</span></td>
+          <td>${escapeHtml(getAuditLogDetailText(entry))}</td>
+          <td>${escapeHtml(entry.ip || "-")}</td>
+          <td><span class="audit-session">${escapeHtml(entry.sessionId || "-")}</span></td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+async function loadAuditLog({ force = false } = {}) {
+  if (!auditLogState.authorized) {
+    if (currentView === "audit-log") renderAuditLog();
+    return;
+  }
+  if (auditLogState.loading && !force) return;
+  auditLogState = {
+    ...auditLogState,
+    loading: true,
+    error: "",
+  };
+  if (currentView === "audit-log") renderAuditLog();
+
+  try {
+    const payload = await requestJson("/api/audit-log?limit=250");
+    auditLogState = {
+      ...auditLogState,
+      entries: Array.isArray(payload.entries) ? payload.entries : [],
+      loading: false,
+      error: "",
+    };
+  } catch (error) {
+    auditLogState = {
+      ...auditLogState,
+      loading: false,
+      error: error?.message || "Unable to load audit log.",
+    };
+  }
+
+  if (currentView === "audit-log") renderAuditLog();
+}
+
+async function checkAuditLogAccess() {
+  auditLogState = {
+    ...auditLogState,
+    checkingAccess: true,
+    error: "",
+  };
+  renderAuditLog();
+
+  try {
+    const payload = await requestJson("/api/audit-log/status");
+    auditLogState = {
+      ...auditLogState,
+      authorized: Boolean(payload.authorized),
+      checkingAccess: false,
+      error: "",
+    };
+    if (auditLogState.authorized) {
+      await loadAuditLog({ force: true });
+      return;
+    }
+  } catch (error) {
+    auditLogState = {
+      ...auditLogState,
+      checkingAccess: false,
+      error: error?.message || "Unable to check audit log access.",
+    };
+  }
+
+  if (currentView === "audit-log") renderAuditLog();
+}
+
+async function authorizeAuditLogAccess(pin) {
+  auditLogState = {
+    ...auditLogState,
+    pinSubmitting: true,
+    error: "",
+    pinFailed: false,
+  };
+  renderAuditLog();
+
+  try {
+    if (!csrfToken) await fetchCsrfToken();
+    const payload = await requestJson("/api/audit-log/authorize", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({ pin }),
+    });
+    auditLogState = {
+      ...auditLogState,
+      authorized: Boolean(payload.authorized),
+      pinSubmitting: false,
+      error: "",
+      pinFailed: false,
+    };
+    await loadAuditLog({ force: true });
+  } catch (error) {
+    navigator.vibrate?.([70, 35, 70]);
+    auditLogState = {
+      ...auditLogState,
+      pinSubmitting: false,
+      error: error?.message || "Incorrect PIN. Please try again.",
+      pinFailed: true,
+    };
+    if (currentView === "audit-log") renderAuditLog();
+  }
+}
+
+function renderAuditLogGate() {
+  const { checkingAccess, pinSubmitting, error, pinFailed } = auditLogState;
+  const isBusy = checkingAccess || pinSubmitting;
+  const pinDots = Array.from({ length: 4 }, (_, index) => `<span class="audit-pin-dot" data-index="${index}" aria-hidden="true"></span>`).join("");
+  return `
+    <section class="audit-log-gate">
+      <div class="audit-log-gate-panel ${pinFailed ? "is-invalid" : ""}">
+        <div class="audit-log-lock-mark" aria-hidden="true">
+          <span class="audit-log-lock-shackle"></span>
+          <span class="audit-log-lock-body"></span>
+        </div>
+        <p class="badge">Protected Area</p>
+        <h3>Unlock Audit Log</h3>
+        <p class="subtle">Enter the 4-digit admin PIN to view recent security and workflow activity.</p>
+        <form id="audit-log-pin-form" class="audit-log-pin-form">
+          <label>
+            <span>Admin PIN</span>
+            <div class="audit-pin-entry">
+              <input id="audit-log-pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" aria-describedby="audit-log-pin-status" placeholder="0000" ${isBusy ? "disabled" : ""}>
+              <div class="audit-pin-visual" aria-hidden="true">${pinDots}</div>
+            </div>
+          </label>
+          <button type="submit" class="btn-primary audit-log-unlock-btn" ${isBusy ? "disabled" : ""}>${checkingAccess ? "Checking..." : pinSubmitting ? "Unlocking..." : "Unlock Audit Log"}</button>
+        </form>
+        <p id="audit-log-pin-status" class="audit-log-pin-status ${error ? "is-error" : ""}" aria-live="polite">
+          ${error ? `${escapeHtml(error)} Please try again.` : "Only authorized admins can open this log."}
+        </p>
+      </div>
+    </section>
+  `;
+}
+
+function renderAuditLog() {
+  const { entries, loading, error } = auditLogState;
+  if (!auditLogState.authorized) {
+    panelBody.innerHTML = renderAuditLogGate();
+    const form = document.getElementById("audit-log-pin-form");
+    const pinInput = document.getElementById("audit-log-pin");
+    form?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const pin = String(pinInput?.value || "").trim();
+      if (!/^\d{4}$/.test(pin)) {
+        navigator.vibrate?.([70, 35, 70]);
+        auditLogState = {
+          ...auditLogState,
+          error: "Enter the 4-digit admin PIN.",
+          pinFailed: true,
+        };
+        renderAuditLog();
+        document.getElementById("audit-log-pin")?.focus();
+        return;
+      }
+      authorizeAuditLogAccess(pin);
+    });
+    pinInput?.addEventListener("input", () => {
+      const value = String(pinInput.value || "").replace(/\D/g, "").slice(0, 4);
+      if (pinInput.value !== value) pinInput.value = value;
+      document.querySelectorAll(".audit-pin-dot").forEach((dot, index) => {
+        dot.classList.toggle("is-filled", index < value.length);
+      });
+      if (auditLogState.pinFailed) {
+        auditLogState = {
+          ...auditLogState,
+          error: "",
+          pinFailed: false,
+        };
+        const panel = document.querySelector(".audit-log-gate-panel");
+        const status = document.getElementById("audit-log-pin-status");
+        panel?.classList.remove("is-invalid");
+        status?.classList.remove("is-error");
+        if (status) status.textContent = "Only authorized admins can open this log.";
+      }
+    });
+    if (!auditLogState.checkingAccess && !auditLogState.pinSubmitting) pinInput?.focus();
+    return;
+  }
+
+  panelBody.innerHTML = `
+    <section class="audit-log-page">
+      <div class="audit-log-toolbar">
+        <div>
+          <h3>Recent Activity</h3>
+          <p class="subtle">${entries.length ? `${entries.length} latest entries` : "Security and workflow events recorded by the server."}</p>
+        </div>
+        <button type="button" class="secondary-btn" id="audit-log-refresh" ${loading ? "disabled" : ""}>${loading ? "Refreshing..." : "Refresh"}</button>
+      </div>
+      ${error ? `<p class="form-status error">${escapeHtml(error)}</p>` : ""}
+      <div class="audit-log-table-wrap">
+        <table class="audit-log-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Event</th>
+              <th>Outcome</th>
+              <th>Details</th>
+              <th>IP</th>
+              <th>Session</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${loading ? '<tr><td colspan="6" class="audit-log-empty">Loading audit log...</td></tr>' : renderAuditLogRows(entries)}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+
+  const refreshButton = document.getElementById("audit-log-refresh");
+  refreshButton?.addEventListener("click", () => loadAuditLog({ force: true }));
+}
+
 function renderAdminSettings(options = {}) {
   currentSearchInput = null;
   const nowIso = new Date().toISOString();
@@ -17810,6 +18597,11 @@ function renderView() {
       case "admin-settings":
         renderAdminSettings();
         break;
+      case "audit-log":
+        panelBody.classList.add("full-bleed");
+        renderAuditLog();
+        checkAuditLogAccess();
+        break;
       default:
         panelBody.innerHTML = `
           <section class="card starter-card">
@@ -17857,6 +18649,15 @@ function mountAuth() {
   portalDataPromise = null;
   adminSettingsReady = false;
   adminSettingsPromise = null;
+  auditLogState = {
+    entries: [],
+    loading: false,
+    error: "",
+    authorized: false,
+    checkingAccess: false,
+    pinSubmitting: false,
+    pinFailed: false,
+  };
   applyPortalDataPayload({
     registrations: [],
     orders: [],
