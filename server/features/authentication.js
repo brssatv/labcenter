@@ -53,7 +53,16 @@ function registerAuthRoutes({ app, dependencies }) {
     const provided = req.get("x-csrf-token");
     const expected = req.session.csrfToken;
     if (!provided || !expected || provided !== expected) {
-      auditLog(req, "csrf_check", "denied");
+      const cookieHeader = String(req.headers.cookie || "");
+      auditLog(req, "csrf_check", "denied", {
+        reason: !provided ? "missing_request_token" : !expected ? "missing_session_token" : "token_mismatch",
+        method: req.method,
+        path: req.originalUrl || req.url || "",
+        hasRequestToken: Boolean(provided),
+        hasSessionToken: Boolean(expected),
+        hasCookieHeader: Boolean(cookieHeader),
+        hasSessionCookie: /(?:^|;\s*)labcenter\.sid=/.test(cookieHeader),
+      });
       return res.status(403).json({ error: "Invalid CSRF token." });
     }
 

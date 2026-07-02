@@ -52,7 +52,10 @@ const resolveRuntimePath = (value, fallback) => {
 };
 const normalizeUrlEnv = (value) => String(value || "").trim().replace(/\/+$/, "");
 const dataDir = resolveRuntimePath(process.env.DATA_DIR, defaultDataDir);
-const sessionDir = resolveRuntimePath(process.env.SESSION_DIR, path.join(dataDir, "sessions"));
+const defaultSessionDir = isProd
+  ? path.join(dataDir, "sessions")
+  : path.join(process.env.LOCALAPPDATA || os.tmpdir(), "LabCenter", "sessions");
+const sessionDir = resolveRuntimePath(process.env.SESSION_DIR, defaultSessionDir);
 const usersPath = path.join(dataDir, "users.json");
 const facilityPath = path.join(dataDir, "facility.json");
 const auditPath = path.join(dataDir, "audit.log");

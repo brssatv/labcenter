@@ -1668,12 +1668,24 @@ async function fetchCsrfToken() {
   csrfToken = payload.csrfToken;
 }
 
-async function requestJson(url, options = {}) {
-  const response = await fetch(url, {
-    credentials: "same-origin",
-    ...options,
-  });
+function isStateChangingApiRequest(url, method) {
+  const normalizedMethod = String(method || "GET").toUpperCase();
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(normalizedMethod)) return false;
 
+  try {
+    const target = new URL(url, window.location.origin);
+    return target.origin === window.location.origin && target.pathname.startsWith("/api/");
+  } catch {
+    return String(url || "").startsWith("/api/");
+  }
+}
+
+function isInvalidCsrfError(message) {
+  return String(message || "").trim() === "Invalid CSRF token.";
+}
+
+async function fetchJsonResponse(url, options) {
+  const response = await fetch(url, options);
   const rawText = await response.text();
   let payload = null;
   if (rawText) {
@@ -1684,13 +1696,42 @@ async function requestJson(url, options = {}) {
     }
   }
 
-  if (!response.ok) {
-    const fallback = `Request failed (${response.status} ${response.statusText}).`;
-    const message = payload?.error || rawText || fallback;
-    throw new Error(message);
+  const fallback = `Request failed (${response.status} ${response.statusText}).`;
+  return {
+    ok: response.ok,
+    payload,
+    rawText,
+    message: response.ok ? "" : payload?.error || rawText || fallback,
+  };
+}
+
+async function requestJson(url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const needsCsrf = isStateChangingApiRequest(url, method);
+  const buildOptions = async ({ refreshCsrf = false } = {}) => {
+    const headers = new Headers(options.headers || {});
+    if (needsCsrf) {
+      if (refreshCsrf || !csrfToken) await fetchCsrfToken();
+      headers.set("x-csrf-token", csrfToken);
+    }
+    return {
+      ...options,
+      method,
+      headers,
+      credentials: "same-origin",
+    };
+  };
+
+  let result = await fetchJsonResponse(url, await buildOptions());
+  if (!result.ok && needsCsrf && isInvalidCsrfError(result.message)) {
+    result = await fetchJsonResponse(url, await buildOptions({ refreshCsrf: true }));
   }
 
-  return payload || {};
+  if (!result.ok) {
+    throw new Error(result.message);
+  }
+
+  return result.payload || {};
 }
 
 function getAdminAuthMode() {
