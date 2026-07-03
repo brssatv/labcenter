@@ -3820,9 +3820,10 @@ function buildPharmdOruMessage(order) {
   );
   const specimenType = escapeHl7Text(resolvePharmdSpecimenType(order, patientRecord));
   const specimenSite = escapeHl7Text(resolvePharmdSpecimenSite(order, patientRecord));
-  const detailedRows = Array.isArray(order?.processedResult?.report?.detailed)
-    ? order.processedResult.report.detailed.filter((row) => String(row?.pathogen || row?.target || "").trim())
+  const detailedRowsSource = Array.isArray(order?.processedResult?.report?.detailed)
+    ? order.processedResult.report.detailed
     : [];
+  const detailedRows = filterFinalReportRows(detailedRowsSource).filter((row) => String(row?.pathogen || row?.target || "").trim());
   if (!detailedRows.length) return "";
 
   const segments = [
@@ -10617,7 +10618,7 @@ function filterFinalReportRows(rows) {
   const normalizedRows = Array.isArray(rows) ? rows : [];
   const filteredRows = getReportFormulasApi()?.filterFinalReportRows?.(normalizedRows);
   if (Array.isArray(filteredRows)) return filteredRows;
-  return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen));
+  return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen || row?.target));
 }
 
 function renderFormulaBook() {

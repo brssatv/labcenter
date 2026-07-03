@@ -153,6 +153,7 @@ test("final report row filter removes RNaseP rows and keeps patient-facing patho
   const rows = [
     { pathogen: "RNaseP", result: "Detected" },
     { pathogen: "Human RNaseP", result: "Detected" },
+    { target: "RNaseP", result: "Detected" },
     { pathogen: "Influenza A", result: "Detected" },
     { pathogen: "SARS-CoV-2", result: "Not Detected" },
   ];

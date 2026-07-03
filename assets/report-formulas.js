@@ -201,7 +201,7 @@
 
   function filterFinalReportRows(rows) {
     const normalizedRows = Array.isArray(rows) ? rows : [];
-    return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen));
+    return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen || row?.target));
   }
 
   function getSarsCov2FinalReportDisplayLogic() {
