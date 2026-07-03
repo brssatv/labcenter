@@ -10661,6 +10661,7 @@ function renderOutputResults() {
   ];
   let activeTab = outputTabs[0].key;
   let searchQuery = "";
+  let outputSortMode = "created-desc";
   let outputTableNode = null;
   let tabsNode = null;
   let publishModalNode = null;
@@ -10733,6 +10734,33 @@ function renderOutputResults() {
       || "";
   }
 
+  function resolveOrderCreatedAt(order) {
+    return order?.createdAt
+      || order?.orderCreatedAt
+      || order?.sampleCollectTime
+      || order?.processedAt
+      || order?.updatedAt
+      || "";
+  }
+
+  function getOrderSortTimestamp(order, mode) {
+    const value = mode.startsWith("activity")
+      ? resolveOutputLastActivityAt(order)
+      : resolveOrderCreatedAt(order);
+    const timestamp = new Date(value || 0).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function compareOutputOrders(a, b) {
+    const direction = outputSortMode.endsWith("asc") ? 1 : -1;
+    const diff = getOrderSortTimestamp(a, outputSortMode) - getOrderSortTimestamp(b, outputSortMode);
+    if (diff) return diff * direction;
+    return String(a?.orderId || "").localeCompare(String(b?.orderId || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+
   function getFilteredOrders() {
     const needle = searchQuery.trim().toLowerCase();
     return readOrders()
@@ -10752,7 +10780,7 @@ function renderOutputResults() {
           .join(" ");
         return haystack.includes(needle);
       })
-      .sort((a, b) => new Date(resolveOutputLastActivityAt(b) || 0).getTime() - new Date(resolveOutputLastActivityAt(a) || 0).getTime());
+      .sort(compareOutputOrders);
   }
 
   function replaceOrderInState(updatedOrder) {
@@ -11355,6 +11383,169 @@ function renderOutputResults() {
     `;
   }
 
+  function hasPharmdSendStarted(order) {
+    const statusToken = String(
+      order?.pharmd?.sendStatus
+      || order?.pharmd?.deliveryStatus
+      || order?.pharmd?.status
+      || ""
+    ).trim().toLowerCase();
+    return Boolean(
+      order?.pharmd?.sentAt
+      || order?.pharmd?.submittedAt
+      || ["sent", "uploaded", "delivered", "transmitted"].includes(statusToken)
+    );
+  }
+
+  function resolvePharmdWorkflowState(order) {
+    const orderId = String(order?.orderId || "").trim();
+    const hasMessage = Boolean(resolvePharmdOruMessage(order));
+    const accession = resolvePharmdAccession(order);
+    const hasSavedFinal = hasSavedFinalReport(order);
+    const skipEnabled = isPharmdSkipped(order);
+    const reportReceivedAt = resolvePharmdReportReceivedAt(order);
+    const hasReceivedFile = hasPharmdReceivedFile(order);
+    const canValidate = hasSavedFinal && canValidatePharmdFinalReport(order);
+    const canPreviewCombined = canPreviewCombinedPharmdReport(order);
+    const state = {
+      orderId,
+      hasMessage,
+      hasSavedFinal,
+      hasReceivedFile,
+      skipEnabled,
+      reportReceivedAt,
+      canValidate,
+      canPreviewCombined,
+      isSending: sendingPharmdOrders.has(orderId),
+      isChecking: checkingPharmdOrders.has(orderId),
+      isOpeningReceipt: openingPharmdReceiptOrders.has(orderId),
+      isOpeningCombined: openingCombinedPharmdOrders.has(orderId),
+      isWorkflowSaving: workflowSavingOrders.has(orderId),
+      isPreviewLoading: previewLoadingOrders.has(orderId),
+      stageClass: "status-pending",
+      primaryAction: null,
+      secondaryActions: [],
+    };
+
+    if (!accession) {
+      return {
+        ...state,
+        label: "Blocked",
+        detail: "Missing accession. Add the accession before PharmD tracking can continue.",
+        secondaryActions: ["log"],
+      };
+    }
+    if (!hasSavedFinal) {
+      return {
+        ...state,
+        label: "Needs Final Report",
+        detail: "Save the final report before PharmD review or validation.",
+        secondaryActions: ["view_oru", "download_oru", "log"],
+      };
+    }
+    if (skipEnabled) {
+      return {
+        ...state,
+        label: "PharmD Bypassed",
+        detail: "PharmD review was bypassed. The saved final report can be reviewed.",
+        stageClass: "status-processed",
+        primaryAction: "validate",
+        secondaryActions: ["resume_pharmd", "view_oru", "download_oru", "log", "mark_complete"],
+      };
+    }
+    if (reportReceivedAt || hasReceivedFile) {
+      return {
+        ...state,
+        label: "Ready to Validate",
+        detail: "PharmD return file has been received.",
+        stageClass: "status-complete",
+        primaryAction: "validate",
+        secondaryActions: ["preview_combined", "view_file", "view_oru", "download_oru", "log", "mark_complete"],
+      };
+    }
+    if (hasPharmdSendStarted(order)) {
+      return {
+        ...state,
+        label: "Waiting for PharmD",
+        detail: "Sent to PharmD. Check for the return file when ready.",
+        stageClass: "status-processed",
+        primaryAction: "check_return",
+        secondaryActions: ["view_oru", "download_oru", "log", "bypass_pharmd"],
+      };
+    }
+    if (!hasMessage) {
+      return {
+        ...state,
+        label: "Blocked",
+        detail: "HL7 ORU message is unavailable for this order.",
+        secondaryActions: ["log"],
+      };
+    }
+    return {
+      ...state,
+      label: "Ready to Send",
+      detail: "Final report is saved and the ORU message is ready for PharmD.",
+      stageClass: "status-processed",
+      primaryAction: "send",
+      secondaryActions: ["view_oru", "download_oru", "log", "bypass_pharmd"],
+    };
+  }
+
+  function buildPharmdPrimaryActionMarkup(state) {
+    const orderId = escapeHtml(state.orderId);
+    if (state.primaryAction === "send") {
+      return `
+        <button type="button" class="table-action-btn output-results-primary-action" data-send-pharmd-message="${orderId}" ${state.hasMessage && !state.isSending && !state.isWorkflowSaving ? "" : "disabled"}>
+          ${state.isSending ? "Sending..." : "Send to PharmD"}
+        </button>
+      `;
+    }
+    if (state.primaryAction === "check_return") {
+      return `
+        <button type="button" class="table-action-btn output-results-primary-action" data-check-pharmd-receipt="${orderId}" ${!state.isChecking ? "" : "disabled"}>
+          ${state.isChecking ? "Checking..." : "Check Return"}
+        </button>
+      `;
+    }
+    if (state.primaryAction === "validate") {
+      return `
+        <button type="button" class="table-action-btn preview-btn output-results-primary-action" data-validate-final-report="${orderId}" ${state.canValidate && !state.isPreviewLoading ? "" : "disabled"}>
+          ${state.isPreviewLoading ? "Opening..." : "Review & Validate"}
+        </button>
+      `;
+    }
+    return '<button type="button" class="table-action-btn output-results-primary-action" disabled>No Action</button>';
+  }
+
+  function buildPharmdSecondaryActionMarkup(action, row, state) {
+    const orderId = escapeHtml(state.orderId);
+    if (action === "view_oru") {
+      return `<button type="button" class="table-action-btn" data-view-pharmd-message="${orderId}" ${state.hasMessage ? "" : "disabled"}>View ORU</button>`;
+    }
+    if (action === "download_oru") {
+      return `<button type="button" class="table-action-btn" data-download-pharmd-message="${orderId}" data-pharmd-file-name="${escapeHtml(resolvePharmdMessageFileName(row))}" ${state.hasMessage ? "" : "disabled"}>Download ORU</button>`;
+    }
+    if (action === "view_file") {
+      return `<button type="button" class="table-action-btn" data-view-pharmd-receipt="${orderId}" ${state.hasReceivedFile && !state.isOpeningReceipt ? "" : "disabled"}>${state.isOpeningReceipt ? "Opening..." : "View File"}</button>`;
+    }
+    if (action === "preview_combined") {
+      return `<button type="button" class="table-action-btn preview-btn" data-preview-pharmd-combined="${orderId}" ${state.canPreviewCombined && !state.isOpeningCombined ? "" : "disabled"}>${state.isOpeningCombined ? "Opening..." : "Preview Combined"}</button>`;
+    }
+    if (action === "bypass_pharmd") {
+      return `<button type="button" class="table-action-btn" data-toggle-skip-pharmd="${orderId}" ${state.hasSavedFinal && !state.isWorkflowSaving ? "" : "disabled"}>${state.isWorkflowSaving ? "Saving..." : "Bypass PharmD"}</button>`;
+    }
+    if (action === "resume_pharmd") {
+      return `<button type="button" class="table-action-btn" data-toggle-skip-pharmd="${orderId}" ${state.isWorkflowSaving ? "disabled" : ""}>${state.isWorkflowSaving ? "Saving..." : "Resume PharmD"}</button>`;
+    }
+    if (action === "mark_complete") {
+      return `<button type="button" class="table-action-btn" data-mark-complete="${orderId}" ${state.canValidate && !state.isWorkflowSaving ? "" : "disabled"}>${state.isWorkflowSaving ? "Saving..." : "Mark Complete"}</button>`;
+    }
+    if (action === "log") {
+      return `<button type="button" class="table-action-btn" data-view-pharmd-log="${orderId}">Log</button>`;
+    }
+    return "";
+  }
+
   function buildPendingPharmdTableMarkup(rows) {
     return `
       <div class="output-results-meta">Rows: ${rows.length}</div>
@@ -11365,60 +11556,20 @@ function renderOutputResults() {
             <th>Accession #</th>
             <th>Patient</th>
             <th>Panel</th>
-            <th>PharmD Status</th>
-            <th>HL7 Message</th>
+            <th>Workflow</th>
+            <th>Next Action</th>
+            <th>Supporting Actions</th>
             <th>Queued / Sent</th>
             <th>Report Received</th>
             <th>PharmD File</th>
-            <th>Skip PharmD</th>
-            <th>Validate</th>
-            <th>Combined</th>
-            <th>Mark as Complete</th>
           </tr>
         </thead>
         <tbody>
           ${rows
             .map((row) => {
               const orderId = String(row?.orderId || "").trim();
-              const statusInfo = resolvePharmdStatusInfo(row);
-              const message = resolvePharmdOruMessage(row);
-              const hasMessage = Boolean(message);
-              const fileName = resolvePharmdMessageFileName(row);
+              const state = resolvePharmdWorkflowState(row);
               const receivedFileName = resolvePharmdReceivedFileName(row);
-              const skipEnabled = isPharmdSkipped(row);
-              const hasSavedFinal = hasSavedFinalReport(row);
-              const hasReceivedFile = hasPharmdReceivedFile(row);
-              const canValidate = hasSavedFinal && canValidatePharmdFinalReport(row);
-              const canPreviewCombined = canPreviewCombinedPharmdReport(row);
-              const pharmdStatusToken = String(
-                row?.pharmd?.sendStatus
-                || row?.pharmd?.deliveryStatus
-                || row?.pharmd?.status
-                || ""
-              ).trim().toLowerCase();
-              const isSending = sendingPharmdOrders.has(orderId);
-              const isChecking = checkingPharmdOrders.has(orderId);
-              const isOpeningReceipt = openingPharmdReceiptOrders.has(orderId);
-              const isOpeningCombined = openingCombinedPharmdOrders.has(orderId);
-              const isWorkflowSaving = workflowSavingOrders.has(orderId);
-              const isPreviewLoading = previewLoadingOrders.has(orderId);
-              const sendDisabled = !hasMessage || isSending || isWorkflowSaving || skipEnabled;
-              const canManualCheck = !skipEnabled && !resolvePharmdReportReceivedAt(row) && Boolean(
-                resolveOrderAccession(row)
-                && (
-                  row?.pharmd?.sentAt
-                  || row?.pharmd?.submittedAt
-                  || ["sent", "uploaded", "delivered", "transmitted"].includes(pharmdStatusToken)
-                )
-              );
-              const skipDisabled = !hasSavedFinal && !skipEnabled;
-              const validationHint = skipEnabled
-                ? "Preview the saved final report."
-                : !hasSavedFinal
-                ? "Saved final report preview is unavailable."
-                : resolvePharmdReportReceivedAt(row)
-                ? "Final report is ready for validation."
-                : "Wait for PharmD report receipt or enable Skip PharmD.";
               return `
                 <tr>
                   <td>${escapeHtml(row?.orderId || "-")}</td>
@@ -11432,120 +11583,23 @@ function renderOutputResults() {
                     <div class="subtle">${escapeHtml(row?.provider || "-")} • ${escapeHtml(row?.facilityName || "-")}</div>
                   </td>
                   <td>
-                    <span class="history-status ${escapeHtml(statusInfo.className)}">${escapeHtml(statusInfo.label)}</span>
-                    ${statusInfo.detail ? `<div class="subtle output-results-inline-note">${escapeHtml(statusInfo.detail)}</div>` : ""}
+                    <span class="history-status ${escapeHtml(state.stageClass)}">${escapeHtml(state.label)}</span>
+                    <div class="subtle output-results-inline-note">${escapeHtml(state.detail)}</div>
                   </td>
                   <td>
-                    <div class="output-results-message-actions">
-                      <button
-                        type="button"
-                        class="table-action-btn"
-                        data-view-pharmd-message="${escapeHtml(row?.orderId || "")}"
-                        ${hasMessage ? "" : "disabled"}
-                      >
-                        View ORU
-                      </button>
-                      <button
-                        type="button"
-                        class="table-action-btn"
-                        data-download-pharmd-message="${escapeHtml(row?.orderId || "")}"
-                        data-pharmd-file-name="${escapeHtml(fileName)}"
-                        ${hasMessage ? "" : "disabled"}
-                      >
-                        Download ORU
-                      </button>
-                      <button
-                        type="button"
-                        class="table-action-btn"
-                        data-send-pharmd-message="${escapeHtml(orderId)}"
-                        ${sendDisabled ? "disabled" : ""}
-                      >
-                        ${skipEnabled ? "Skipped" : isSending ? "Sending..." : "Send"}
-                      </button>
-                      <button
-                        type="button"
-                        class="table-action-btn"
-                        data-check-pharmd-receipt="${escapeHtml(orderId)}"
-                        ${canManualCheck && !isChecking ? "" : "disabled"}
-                      >
-                        ${isChecking ? "Checking..." : "Manual Check"}
-                      </button>
-                      <button
-                        type="button"
-                        class="table-action-btn"
-                        data-view-pharmd-log="${escapeHtml(orderId)}"
-                      >
-                        Log
-                      </button>
-                    </div>
-                    <div class="subtle output-results-inline-note">
-                      ${skipEnabled ? "PharmD send bypassed for this saved final report." : hasMessage ? escapeHtml(fileName) : "HL7 message unavailable"}
+                    ${buildPharmdPrimaryActionMarkup(state)}
+                  </td>
+                  <td>
+                    <div class="output-results-message-actions output-results-secondary-actions">
+                      ${state.secondaryActions.map((action) => buildPharmdSecondaryActionMarkup(action, row, state)).join("")}
                     </div>
                   </td>
                   <td>${escapeHtml(formatOutputDate(resolvePharmdQueuedOrSentAt(row)))}</td>
                   <td>${escapeHtml(formatOutputDate(resolvePharmdReportReceivedAt(row)))}</td>
                   <td>
-                    <button
-                      type="button"
-                      class="table-action-btn"
-                      data-view-pharmd-receipt="${escapeHtml(orderId)}"
-                      ${hasReceivedFile && !isOpeningReceipt ? "" : "disabled"}
-                    >
-                      ${isOpeningReceipt ? "Opening..." : "View File"}
-                    </button>
                     <div class="subtle output-results-inline-note">
-                      ${hasReceivedFile ? escapeHtml(receivedFileName || "Stored PharmD return file") : "No PharmD file stored yet."}
+                      ${state.hasReceivedFile ? escapeHtml(receivedFileName || "Stored PharmD return file") : "No PharmD file stored yet."}
                     </div>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="output-results-toggle ${skipEnabled ? "is-active" : ""}"
-                      data-toggle-skip-pharmd="${escapeHtml(orderId)}"
-                      aria-pressed="${skipEnabled ? "true" : "false"}"
-                      ${isWorkflowSaving || skipDisabled ? "disabled" : ""}
-                    >
-                      <span class="output-results-toggle-knob" aria-hidden="true"></span>
-                      <span>${skipEnabled ? "On" : "Off"}</span>
-                    </button>
-                    <div class="subtle output-results-inline-note">
-                      ${hasSavedFinal ? "Bypass PharmD and validate the saved final report." : "Saved final report preview is unavailable."}
-                    </div>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="table-action-btn preview-btn"
-                      data-validate-final-report="${escapeHtml(orderId)}"
-                      ${canValidate && !isPreviewLoading ? "" : "disabled"}
-                    >
-                      ${isPreviewLoading ? "Opening..." : "Validate"}
-                    </button>
-                    <div class="subtle output-results-inline-note">${escapeHtml(validationHint)}</div>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="table-action-btn preview-btn"
-                      data-preview-pharmd-combined="${escapeHtml(orderId)}"
-                      ${canPreviewCombined && !isOpeningCombined ? "" : "disabled"}
-                    >
-                      ${isOpeningCombined ? "Opening..." : "Preview"}
-                    </button>
-                    <div class="subtle output-results-inline-note">
-                      ${canPreviewCombined ? "Preview final report with the PharmD file in one PDF." : "Requires saved final report and PharmD file."}
-                    </div>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="table-action-btn"
-                      data-mark-complete="${escapeHtml(orderId)}"
-                      ${canValidate && !isWorkflowSaving ? "" : "disabled"}
-                    >
-                      ${isWorkflowSaving ? "Saving..." : "Mark as Complete"}
-                    </button>
-                    <div class="subtle output-results-inline-note">Moves the validated report into the Completed queue.</div>
                   </td>
                 </tr>
               `;
@@ -11585,10 +11639,21 @@ function renderOutputResults() {
           <h3>Output Results</h3>
           <p class="subtle">Review result queues by operational stage so pending work is easier to triage.</p>
         </div>
-        <label class="output-results-search">
-          <span>Search</span>
-          <input id="output-results-search" type="search" placeholder="Order, accession, patient, provider">
-        </label>
+        <div class="output-results-controls">
+          <label class="output-results-search">
+            <span>Search</span>
+            <input id="output-results-search" type="search" placeholder="Order, accession, patient, provider">
+          </label>
+          <label class="output-results-sort">
+            <span>Sort</span>
+            <select id="output-results-sort">
+              <option value="created-desc" ${outputSortMode === "created-desc" ? "selected" : ""}>Created newest first</option>
+              <option value="created-asc" ${outputSortMode === "created-asc" ? "selected" : ""}>Created oldest first</option>
+              <option value="activity-desc" ${outputSortMode === "activity-desc" ? "selected" : ""}>Last activity newest first</option>
+              <option value="activity-asc" ${outputSortMode === "activity-asc" ? "selected" : ""}>Last activity oldest first</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       <div id="output-results-tabs" class="output-results-tabs" role="tablist" aria-label="Output Results Queues">
@@ -11615,6 +11680,7 @@ function renderOutputResults() {
 
   tabsNode = document.getElementById("output-results-tabs");
   const searchNode = document.getElementById("output-results-search");
+  const sortNode = document.getElementById("output-results-sort");
   outputTableNode = document.getElementById("output-results-table");
   publishModalNode = document.getElementById("output-results-publish-modal");
 
@@ -11635,6 +11701,12 @@ function renderOutputResults() {
 
   searchNode?.addEventListener("input", (event) => {
     searchQuery = event.target.value || "";
+    closeCompletedPublishModal();
+    renderOutputResultsTable();
+  });
+
+  sortNode?.addEventListener("change", (event) => {
+    outputSortMode = event.target.value || "created-desc";
     closeCompletedPublishModal();
     renderOutputResultsTable();
   });

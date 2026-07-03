@@ -4048,18 +4048,36 @@ textarea:focus {
   color: #223246;
 }
 
-.output-results-search {
+.output-results-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.output-results-search,
+.output-results-sort {
   display: grid;
   gap: 6px;
+}
+
+.output-results-search {
   min-width: min(100%, 320px);
 }
 
-.output-results-search span {
+.output-results-sort {
+  min-width: min(100%, 220px);
+}
+
+.output-results-search span,
+.output-results-sort span {
   font-weight: 600;
   color: #42566d;
 }
 
-.output-results-search input {
+.output-results-search input,
+.output-results-sort select {
   min-height: 42px;
   border-radius: 12px;
   border: 1px solid #c9d4df;
@@ -4116,6 +4134,15 @@ textarea:focus {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.output-results-primary-action {
+  min-width: 132px;
+  justify-content: center;
+}
+
+.output-results-secondary-actions {
+  max-width: 310px;
 }
 
 .output-results-inline-note {
