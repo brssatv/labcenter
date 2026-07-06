@@ -37,6 +37,13 @@
       Object.freeze({ key: "human-rnasep", label: "Human RNaseP" }),
     ]),
   });
+  const inconclusiveFinalReportFormula = Object.freeze({
+    key: "inconclusive-final-report-negative",
+    title: "Inconclusive Final Report Negative Formula",
+    reportType: "finalReport",
+    sourceResult: "Inconclusive",
+    outputResult: "Not Detected",
+  });
   const rnasepFinalReportHiddenTargetKeys = new Set(
     rnasepFinalReportFormula.hiddenTargets.map((item) => normalizePathogenRuleKey(item.label))
   );
@@ -82,6 +89,15 @@
       `IF Pathogen Name matches ${labels}`,
       "THEN omit the row from Final Report results data",
       "ELSE keep the row in Final Report output",
+    ].join("\n");
+  }
+
+  function buildInconclusivePlaceholder(formula) {
+    const normalized = formula || inconclusiveFinalReportFormula;
+    return [
+      `IF Result contains ${normalized.sourceResult}`,
+      `THEN set Final Report result to ${normalized.outputResult}`,
+      "ELSE keep the source result in Final Report output",
     ].join("\n");
   }
 
@@ -193,15 +209,42 @@
     };
   }
 
+  function getInconclusiveFinalReportFormula() {
+    return {
+      ...inconclusiveFinalReportFormula,
+      enabled: true,
+      statusLabel: "Enabled",
+      placeholder: buildInconclusivePlaceholder(inconclusiveFinalReportFormula),
+    };
+  }
+
   function isRnasepHiddenOnFinalReport(pathogenName) {
     const needle = normalizePathogenRuleKey(pathogenName);
     if (!needle) return false;
     return rnasepFinalReportHiddenTargetKeys.has(needle);
   }
 
+  function normalizeFinalReportResult(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return value;
+    return raw.toLowerCase().includes("inconclusive")
+      ? inconclusiveFinalReportFormula.outputResult
+      : value;
+  }
+
+  function normalizeFinalReportRow(row) {
+    if (!row || typeof row !== "object") return row;
+    const normalizedResult = normalizeFinalReportResult(row.result);
+    return normalizedResult === row.result
+      ? { ...row }
+      : { ...row, result: normalizedResult };
+  }
+
   function filterFinalReportRows(rows) {
     const normalizedRows = Array.isArray(rows) ? rows : [];
-    return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen || row?.target));
+    return normalizedRows
+      .filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen || row?.target))
+      .map((row) => normalizeFinalReportRow(row));
   }
 
   function getSarsCov2FinalReportDisplayLogic() {
@@ -258,6 +301,28 @@
     };
   }
 
+  function getInconclusiveFinalReportDisplayLogic() {
+    const formula = getInconclusiveFinalReportFormula();
+    return {
+      key: `${formula.key}-display-logic`,
+      title: "Display Logic on Final Report",
+      reportType: formula.reportType,
+      enabled: true,
+      statusLabel: formula.statusLabel,
+      summary: "Final Report treats inconclusive source results as not detected in patient-facing output while preserving the source processed result data.",
+      evaluationSteps: [
+        `Inspect each output row result for ${formula.sourceResult}.`,
+        `Replace matching Final Report output values with ${formula.outputResult}.`,
+        "Leave non-inconclusive source results unchanged for downstream report and ORU output.",
+      ],
+      displaySteps: [
+        `Pathogens Detected excludes rows normalized to ${formula.outputResult}.`,
+        `List of Pathogens Tested shows the normalized ${formula.outputResult} status.`,
+        "The stored processed result data remains unchanged for audit and troubleshooting purposes.",
+      ],
+    };
+  }
+
   function buildUnconfiguredReportFormulaReference(selectedReportType) {
     return {
       sectionKey: "report-formulas",
@@ -294,6 +359,7 @@
     if (!isNativeReportType) return [];
 
     const rnasepFormula = getRnasepFinalReportFormula();
+    const inconclusiveFormula = getInconclusiveFinalReportFormula();
     return [
       buildConfiguredReportFormulaReference(
         selectedReportType,
@@ -312,6 +378,15 @@
         getRnasepFinalReportDisplayLogic(),
         {
           note: "This RNaseP suppression formula hides RNaseP control rows from the patient-facing Final Report without changing the underlying processed result data.",
+          toggleable: false,
+        }
+      ),
+      buildConfiguredReportFormulaReference(
+        selectedReportType,
+        inconclusiveFormula,
+        getInconclusiveFinalReportDisplayLogic(),
+        {
+          note: "This inconclusive result formula normalizes inconclusive rows to Not Detected in patient-facing Final Report and ORU output without changing the underlying processed result data.",
           toggleable: false,
         }
       ),
@@ -336,6 +411,9 @@
     if (key === rnasepFinalReportFormula.key) {
       return true;
     }
+    if (key === inconclusiveFinalReportFormula.key) {
+      return true;
+    }
     return false;
   }
 
@@ -348,12 +426,17 @@
     if (key === rnasepFinalReportFormula.key) {
       return getRnasepFinalReportFormula();
     }
+    if (key === inconclusiveFinalReportFormula.key) {
+      return getInconclusiveFinalReportFormula();
+    }
     return null;
   }
 
   return {
     filterFinalReportRows,
     getFormulaBookSections,
+    getInconclusiveFinalReportFormula,
+    getInconclusiveFinalReportDisplayLogic,
     getReportFormulaReferences,
     getReportTypeOptions,
     getRnasepFinalReportFormula,
@@ -364,6 +447,8 @@
     isReportFormulaEnabled,
     isRnasepHiddenOnFinalReport,
     isSarsCov2FinalReportFormulaEnabled,
+    normalizeFinalReportResult,
+    normalizeFinalReportRow,
     setReportFormulaEnabled,
     setSarsCov2FinalReportFormulaEnabled,
     resetFormulaSettings,

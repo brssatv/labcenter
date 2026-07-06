@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const {
   filterFinalReportRows,
   getFormulaBookSections,
+  getInconclusiveFinalReportFormula,
+  getInconclusiveFinalReportDisplayLogic,
   getRnasepFinalReportFormula,
   getRnasepFinalReportDisplayLogic,
   getReportFormulaReferences,
@@ -13,6 +15,8 @@ const {
   getReportFormulaReference,
   isRnasepHiddenOnFinalReport,
   isSarsCov2FinalReportFormulaEnabled,
+  normalizeFinalReportResult,
+  normalizeFinalReportRow,
   setSarsCov2FinalReportFormulaEnabled,
   resetFormulaSettings,
 } = require("../assets/report-formulas.js");
@@ -66,6 +70,19 @@ test("RNaseP final report formula exposes the hide-row display rule", () => {
   assert.match(formula.placeholder, /THEN omit the row from Final Report results data/);
 });
 
+test("Inconclusive final report formula exposes the negative output rule", () => {
+  const formula = getInconclusiveFinalReportFormula();
+
+  assert.equal(formula.reportType, "finalReport");
+  assert.equal(formula.enabled, true);
+  assert.equal(formula.statusLabel, "Enabled");
+  assert.equal(formula.title, "Inconclusive Final Report Negative Formula");
+  assert.equal(formula.sourceResult, "Inconclusive");
+  assert.equal(formula.outputResult, "Not Detected");
+  assert.match(formula.placeholder, /IF Result contains Inconclusive/);
+  assert.match(formula.placeholder, /THEN set Final Report result to Not Detected/);
+});
+
 test("final report reference resolves the active SARS-CoV-2 formula", () => {
   const reference = getReportFormulaReference("finalReport");
 
@@ -82,17 +99,18 @@ test("final report reference resolves the active SARS-CoV-2 formula", () => {
 test("final report exposes separate SARS-CoV-2 and RNaseP formula references", () => {
   const references = getReportFormulaReferences("finalReport");
 
-  assert.equal(references.length, 2);
+  assert.equal(references.length, 3);
   assert.deepEqual(
     references.map((reference) => reference.formula.title),
     [
       "SARS-CoV-2 Final Report Formula",
       "RNaseP Final Report Suppression Formula",
+      "Inconclusive Final Report Negative Formula",
     ]
   );
   assert.deepEqual(
     references.map((reference) => reference.toggleable),
-    [true, false]
+    [true, false, false]
   );
 });
 
@@ -142,6 +160,15 @@ test("RNaseP display logic stays separate from the SARS-CoV-2 rollup logic", () 
   assert.match(displayLogic.displaySteps[0], /Pathogens Detected omits RNaseP control rows/i);
 });
 
+test("Inconclusive display logic documents normalization without mutating source data", () => {
+  const displayLogic = getInconclusiveFinalReportDisplayLogic();
+
+  assert.equal(displayLogic.enabled, true);
+  assert.match(displayLogic.summary, /treats inconclusive source results as not detected/i);
+  assert.match(displayLogic.evaluationSteps[0], /Inconclusive/);
+  assert.match(displayLogic.displaySteps[0], /Not Detected/);
+});
+
 test("RNaseP final report hide rule matches common control-row variants", () => {
   assert.equal(isRnasepHiddenOnFinalReport("RNaseP"), true);
   assert.equal(isRnasepHiddenOnFinalReport("Human RNaseP"), true);
@@ -149,17 +176,34 @@ test("RNaseP final report hide rule matches common control-row variants", () => 
   assert.equal(isRnasepHiddenOnFinalReport("Influenza A"), false);
 });
 
-test("final report row filter removes RNaseP rows and keeps patient-facing pathogens", () => {
+test("final report result normalizer maps inconclusive values to not detected", () => {
+  assert.equal(normalizeFinalReportResult("Inconclusive"), "Not Detected");
+  assert.equal(normalizeFinalReportResult("INCONCLUSIVE - review"), "Not Detected");
+  assert.equal(normalizeFinalReportResult("Detected - Low"), "Detected - Low");
+  assert.equal(normalizeFinalReportResult(""), "");
+});
+
+test("final report row normalizer clones rows and preserves source data", () => {
+  const source = { pathogen: "Influenza A", result: "Inconclusive", ctValue: "32.1" };
+  const normalized = normalizeFinalReportRow(source);
+
+  assert.deepEqual(normalized, { pathogen: "Influenza A", result: "Not Detected", ctValue: "32.1" });
+  assert.deepEqual(source, { pathogen: "Influenza A", result: "Inconclusive", ctValue: "32.1" });
+  assert.notEqual(normalized, source);
+});
+
+test("final report row filter removes RNaseP rows and normalizes inconclusive patient-facing pathogens", () => {
   const rows = [
     { pathogen: "RNaseP", result: "Detected" },
     { pathogen: "Human RNaseP", result: "Detected" },
     { target: "RNaseP", result: "Detected" },
-    { pathogen: "Influenza A", result: "Detected" },
+    { pathogen: "Influenza A", result: "Inconclusive" },
     { pathogen: "SARS-CoV-2", result: "Not Detected" },
   ];
 
   assert.deepEqual(filterFinalReportRows(rows), [
-    { pathogen: "Influenza A", result: "Detected" },
+    { pathogen: "Influenza A", result: "Not Detected" },
     { pathogen: "SARS-CoV-2", result: "Not Detected" },
   ]);
+  assert.deepEqual(rows[3], { pathogen: "Influenza A", result: "Inconclusive" });
 });

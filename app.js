@@ -3766,6 +3766,7 @@ function formatPharmdObservationValue(row) {
   const raw = String(row?.result || row?.ampStatus || "").trim();
   const normalized = raw.toLowerCase();
   if (!normalized) return "Not Detected";
+  if (normalized.includes("inconclusive")) return "Not Detected";
   if (normalized.includes("not detected") || normalized === "-" || normalized.includes("negative") || normalized.includes("undetermined")) {
     return "Not Detected";
   }
@@ -10614,11 +10615,25 @@ function isRnasepHiddenOnFinalReport(pathogenName) {
   return normalized === "rnasep" || normalized === "humanrnasep";
 }
 
+function normalizeFinalReportResult(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized.includes("inconclusive")) return "Not Detected";
+  return value;
+}
+
+function normalizeFinalReportRow(row) {
+  if (!row || typeof row !== "object") return row;
+  const normalizedResult = normalizeFinalReportResult(row.result);
+  return normalizedResult === row.result ? { ...row } : { ...row, result: normalizedResult };
+}
+
 function filterFinalReportRows(rows) {
   const normalizedRows = Array.isArray(rows) ? rows : [];
   const filteredRows = getReportFormulasApi()?.filterFinalReportRows?.(normalizedRows);
   if (Array.isArray(filteredRows)) return filteredRows;
-  return normalizedRows.filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen || row?.target));
+  return normalizedRows
+    .filter((row) => !isRnasepHiddenOnFinalReport(row?.pathogen || row?.target))
+    .map((row) => normalizeFinalReportRow(row));
 }
 
 function renderFormulaBook() {
