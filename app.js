@@ -7948,31 +7948,32 @@ function renderPatientSearch() {
                 <button type="button" class="custom-icd-close" data-patient-edit-close aria-label="Close">×</button>
               </div>
               <form id="patient-edit-form" class="custom-icd-body patient-edit-body" novalidate>
-                <p class="subtle custom-icd-copy">Update the stored patient details below. Changes are written back to LabCenter storage and reflected in Patient Search right away.</p>
-                <div class="patient-edit-summary">
-                  <div>
-                    <span>Patient ID</span>
-                    <strong id="patient-edit-id">-</strong>
+                <div class="patient-edit-scroll">
+                  <p class="subtle custom-icd-copy">Update the stored patient details below. Changes are written back to LabCenter storage and reflected in Patient Search right away.</p>
+                  <div class="patient-edit-summary">
+                    <div>
+                      <span>Patient ID</span>
+                      <strong id="patient-edit-id">-</strong>
+                    </div>
+                    <div>
+                      <span>Record</span>
+                      <strong id="patient-edit-name">Patient</strong>
+                    </div>
                   </div>
-                  <div>
-                    <span>Record</span>
-                    <strong id="patient-edit-name">Patient</strong>
-                  </div>
-                </div>
 
-                <section class="patient-edit-section">
-                  <h4>Facility and Provider</h4>
-                  <div class="field-grid two-col">
-                    <label><span>Reference Lab</span><input name="referenceLab" placeholder="Reference Lab"></label>
-                    <label><span>Facility</span><input name="facilityName" placeholder="Facility"></label>
-                  </div>
-                  <div class="field-grid two-col">
-                    <label><span>Provider</span><input name="provider" placeholder="Provider"></label>
-                    <label><span>Provider NPI</span><input name="providerNpi" placeholder="Provider NPI"></label>
-                  </div>
-                </section>
+                  <section class="patient-edit-section">
+                    <h4>Facility and Provider</h4>
+                    <div class="field-grid two-col">
+                      <label><span>Reference Lab</span><input name="referenceLab" placeholder="Reference Lab"></label>
+                      <label><span>Facility</span><input name="facilityName" placeholder="Facility"></label>
+                    </div>
+                    <div class="field-grid two-col">
+                      <label><span>Provider</span><input name="provider" placeholder="Provider"></label>
+                      <label><span>Provider NPI</span><input name="providerNpi" placeholder="Provider NPI"></label>
+                    </div>
+                  </section>
 
-                <section class="patient-edit-section">
+                  <section class="patient-edit-section">
                   <h4>Patient Information</h4>
                   <div class="field-grid three-col">
                     <label><span>First Name</span><input name="firstName" placeholder="First Name"></label>
@@ -8024,9 +8025,9 @@ function renderPatientSearch() {
                     <label><span>Race</span><input name="race" placeholder="Race"></label>
                     <label><span>Patient ID</span><input name="patientId" placeholder="Patient ID" readonly></label>
                   </div>
-                </section>
+                  </section>
 
-                <section class="patient-edit-section">
+                  <section class="patient-edit-section">
                   <h4>Billing and Insurance</h4>
                   <div class="field-grid two-col">
                     <label><span>Billing Type</span>
@@ -8078,9 +8079,9 @@ function renderPatientSearch() {
                     <label><span>Compensation Manager</span><input name="compensationManager" placeholder="Compensation Manager"></label>
                     <label><span>Injury Date</span><input type="date" name="injuryDate"></label>
                   </div>
-                </section>
+                  </section>
 
-                <section class="patient-edit-section">
+                  <section class="patient-edit-section">
                   <h4>Collection and Notes</h4>
                   <div class="field-grid three-col">
                     <label><span>Date Of Collection</span><input type="date" name="collectionDate"></label>
@@ -8090,7 +8091,8 @@ function renderPatientSearch() {
                   <div class="field-grid one-col">
                     <label><span>Additional Information</span><textarea name="additionalInformation" rows="3" placeholder="Additional patient or billing notes"></textarea></label>
                   </div>
-                </section>
+                  </section>
+                </div>
 
                 <p id="patient-edit-feedback" class="error hidden" aria-live="polite"></p>
                 <div class="custom-icd-footer patient-edit-footer">
