@@ -3982,6 +3982,11 @@ function canPreviewCombinedPharmdReport(order) {
   return Boolean(hasSavedFinalReport(order) && hasPharmdReceivedFile(order));
 }
 
+function buildCombinedPharmdPreviewFileName(orderId) {
+  const normalizedOrderId = String(orderId || "").trim() || "Combined";
+  return `Order_${normalizedOrderId}_Final_PharmD_Combined.pdf`;
+}
+
 function resolvePharmdMessageFileName(order) {
   const explicit = String(
     order?.pharmd?.messageFileName
@@ -10829,7 +10834,7 @@ function renderOutputResults() {
 
     const isFaxConfirmView = publishModalView === "fax-confirm";
     const isFaxSending = publishingFaxOrders.has(String(order?.orderId || "").trim());
-    const hasFinalReport = hasSavedFinalReport(order);
+    const hasCombinedReport = canPreviewCombinedPharmdReport(order);
     const lastPublishedFax = order?.publishedReports?.final?.channel === "fax"
       ? order.publishedReports.final
       : null;
@@ -10875,7 +10880,7 @@ function renderOutputResults() {
                   <p class="badge">Fax Confirmation</p>
                   <h4>Confirm Send Fax</h4>
                 </div>
-                <span class="history-status ${hasFinalReport ? "status-complete" : "status-pending"}">${hasFinalReport ? "PDF Ready" : "PDF Missing"}</span>
+                <span class="history-status ${hasCombinedReport ? "status-complete" : "status-pending"}">${hasCombinedReport ? "PDF Ready" : "PDF Missing"}</span>
               </div>
               <div class="output-results-publish-route">
                 <div>
@@ -10888,13 +10893,13 @@ function renderOutputResults() {
                 </div>
                 <div>
                   <span>Attachment</span>
-                  <strong>${escapeHtml(order?.generatedReports?.final?.fileName || `Order_${order?.orderId || ""}_Final_Report.pdf`)}</strong>
+                  <strong>${escapeHtml(buildCombinedPharmdPreviewFileName(order?.orderId))}</strong>
                 </div>
               </div>
               <p class="subtle output-results-publish-note">
-                ${hasFinalReport
-                  ? "The saved final report PDF will be queued with SRFax after you confirm."
-                  : "A saved final report PDF is required before this fax can be sent."}
+                ${hasCombinedReport
+                  ? "The combined PharmD PDF you preview will be queued with SRFax after you confirm."
+                  : "Both the saved final report and the PharmD return file are required before this fax can be sent."}
               </p>
               ${lastPublishedCopy ? `<p class="subtle output-results-publish-history">${escapeHtml(lastPublishedCopy)}</p>` : ""}
             </section>
@@ -10906,7 +10911,7 @@ function renderOutputResults() {
                   type="button"
                   class="table-action-btn publish-report-btn"
                   data-confirm-publish-fax="${escapeHtml(order?.orderId || "")}"
-                  ${hasFinalReport && !isFaxSending ? "" : "disabled"}
+                  ${hasCombinedReport && !isFaxSending ? "" : "disabled"}
                 >
                   ${isFaxSending ? "Sending..." : "Confirm Send Fax"}
                 </button>
@@ -10951,8 +10956,8 @@ function renderOutputResults() {
   async function sendCompletedReportFax(orderId) {
     const order = findOrderById(orderId);
     if (!order) throw new Error("Order not found.");
-    if (!hasSavedFinalReport(order)) {
-      throw new Error("A saved final report PDF is required before a fax can be sent.");
+    if (!canPreviewCombinedPharmdReport(order)) {
+      throw new Error("Both the saved final report and the PharmD return file are required before a fax can be sent.");
     }
     if (!csrfToken) await fetchCsrfToken();
     const payload = await requestJson(`/api/orders/${encodeURIComponent(orderId)}/publish-fax`, {
@@ -11344,6 +11349,7 @@ function renderOutputResults() {
             <th>Facility</th>
             <th>Last Activity</th>
             <th>Stage</th>
+            ${showCompletedActions ? '<th class="output-results-preview-col">Preview Combined PDF</th>' : ""}
             ${showCompletedActions ? '<th class="output-results-publish-col">Actions</th>' : ""}
           </tr>
         </thead>
@@ -11351,6 +11357,8 @@ function renderOutputResults() {
           ${rows
             .map((row) => {
               const orderId = String(row?.orderId || "").trim();
+              const canPreviewCombined = canPreviewCombinedPharmdReport(row);
+              const isOpeningCombined = openingCombinedPharmdOrders.has(orderId);
               const isWorkflowSaving = workflowSavingOrders.has(orderId);
               const isPublished = Boolean(row?.publishedReports?.final?.publishedAt);
               return `
@@ -11366,6 +11374,21 @@ function renderOutputResults() {
                   <td>${escapeHtml(row?.facilityName || "-")}</td>
                   <td>${escapeHtml(formatOutputDate(resolveOutputLastActivityAt(row)))}</td>
                   <td><span class="history-status ${resolveOutputBadgeClass(row)}">${escapeHtml(resolveOutputStageLabel(row))}</span></td>
+                  ${showCompletedActions ? `
+                    <td class="output-results-preview-cell">
+                      <button
+                        type="button"
+                        class="table-action-btn preview-btn"
+                        data-preview-pharmd-combined="${escapeHtml(orderId)}"
+                        ${canPreviewCombined && !isOpeningCombined ? "" : "disabled"}
+                      >
+                        ${isOpeningCombined ? "Opening..." : "Preview"}
+                      </button>
+                      <div class="subtle output-results-inline-note">
+                        ${canPreviewCombined ? "Preview the exact combined PDF that will be faxed." : "Requires saved final report and PharmD file."}
+                      </div>
+                    </td>
+                  ` : ""}
                   ${showCompletedActions ? `
                     <td class="output-results-publish-cell">
                       <div class="output-results-message-actions">

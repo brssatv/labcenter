@@ -4248,6 +4248,12 @@ textarea:focus {
   transform: translateX(10px);
 }
 
+.output-results-preview-col,
+.output-results-preview-cell {
+  min-width: 220px;
+  white-space: normal;
+}
+
 .output-results-publish-col,
 .output-results-publish-cell {
   min-width: 260px;

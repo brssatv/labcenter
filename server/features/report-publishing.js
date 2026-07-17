@@ -71,6 +71,41 @@ function buildCombinedPharmdFileName(orderId) {
   return sanitizeReportPdfFileName(`Order_${String(orderId || "").trim() || "Combined"}_Final_PharmD_Combined.pdf`);
 }
 
+async function buildCombinedPharmdPdf(orderId, existingOrder, dependencies) {
+  const generatedFinal = existingOrder?.generatedReports?.final;
+  const receivedReport = existingOrder?.pharmd?.receivedReport;
+  if (!generatedFinal?.bucket || !generatedFinal?.key) {
+    throw createStatusError("Saved final report PDF not found for this order.", 404);
+  }
+  if (!receivedReport?.bucket || !receivedReport?.key) {
+    throw createStatusError("PharmD return file not found for this order.", 404);
+  }
+
+  const finalReport = await loadStoredPortalFileBuffer(generatedFinal, dependencies, {
+    notFoundMessage: "Saved final report PDF not found for this order.",
+    loadFailedMessage: "Saved final report PDF could not be loaded.",
+    serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
+  });
+  const pharmdReport = await loadStoredPortalFileBuffer(receivedReport, dependencies, {
+    notFoundMessage: "PharmD return file not found for this order.",
+    loadFailedMessage: "PharmD return file could not be loaded.",
+    serviceUnavailableMessage: "S3 file storage is not configured for this environment.",
+  });
+  const combinedBuffer = await mergePdfBuffers([
+    { buffer: pharmdReport.buffer, label: "PharmD return PDF" },
+    { buffer: finalReport.buffer, label: "saved final report PDF" },
+  ], {
+    normalizePageSize: "last-source",
+  });
+
+  return {
+    combinedBuffer,
+    fileName: buildCombinedPharmdFileName(orderId),
+    finalReport,
+    pharmdReport,
+  };
+}
+
 async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType }, dependencies) {
   const {
     shouldUseS3ForRequest,
@@ -624,32 +659,12 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         return res.status(404).json({ error: "Order not found." });
       }
 
-      const generatedFinal = existingOrder?.generatedReports?.final;
-      const receivedReport = existingOrder?.pharmd?.receivedReport;
-      if (!generatedFinal?.bucket || !generatedFinal?.key) {
-        return res.status(404).json({ error: "Saved final report PDF not found for this order." });
-      }
-      if (!receivedReport?.bucket || !receivedReport?.key) {
-        return res.status(404).json({ error: "PharmD return file not found for this order." });
-      }
-
-      const finalReport = await loadStoredPortalFileBuffer(generatedFinal, dependencies, {
-        notFoundMessage: "Saved final report PDF not found for this order.",
-        loadFailedMessage: "Saved final report PDF could not be loaded.",
-        serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
-      });
-      const pharmdReport = await loadStoredPortalFileBuffer(receivedReport, dependencies, {
-        notFoundMessage: "PharmD return file not found for this order.",
-        loadFailedMessage: "PharmD return file could not be loaded.",
-        serviceUnavailableMessage: "S3 file storage is not configured for this environment.",
-      });
-      const combinedBuffer = await mergePdfBuffers([
-        { buffer: pharmdReport.buffer, label: "PharmD return PDF" },
-        { buffer: finalReport.buffer, label: "saved final report PDF" },
-      ], {
-        normalizePageSize: "last-source",
-      });
-      const fileName = buildCombinedPharmdFileName(orderId);
+      const {
+        combinedBuffer,
+        fileName,
+        finalReport,
+        pharmdReport,
+      } = await buildCombinedPharmdPdf(orderId, existingOrder, dependencies);
 
       auditLog(req, "view_pharmd_combined_report_pdf", "success", {
         orderId,
@@ -812,11 +827,6 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       return res.status(404).json({ error: "Order not found." });
     }
 
-    const generatedFinal = existingOrder?.generatedReports?.final;
-    if (!generatedFinal?.bucket || !generatedFinal?.key) {
-      return res.status(404).json({ error: "Saved final report PDF not found for this order." });
-    }
-
     const requestedBy = String(
       req?.session?.user?.email
       || req?.session?.user?.displayName
@@ -824,16 +834,8 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       || "system"
     ).trim();
     const senderEmail = resolvePublishFaxSenderEmail(req, srfaxConfig.senderEmail);
-    const fileName = sanitizeReportPdfFileName(
-      generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`
-    );
 
     try {
-      const storedReport = await loadStoredPortalFileBuffer(generatedFinal, dependencies, {
-        notFoundMessage: "Saved final report PDF not found for this order.",
-        loadFailedMessage: "Saved final report PDF could not be loaded.",
-        serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
-      });
       let faxResult = null;
 
       if (publishFaxMode === "disabled") {
@@ -841,6 +843,13 @@ function registerReportPublishingRoutes({ app, dependencies }) {
           error: "Fax publishing is disabled. Configure SRFax credentials and enable LABCENTER_PUBLISH_FAX_MODE to send faxes.",
         });
       }
+
+      const {
+        combinedBuffer,
+        fileName,
+        finalReport,
+        pharmdReport,
+      } = await buildCombinedPharmdPdf(orderId, existingOrder, dependencies);
 
       if (publishFaxMode === "simulated") {
         faxResult = {
@@ -869,7 +878,7 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         faxResult = await queueSrfaxFax({
           orderId,
           fileName,
-          pdfBuffer: storedReport.buffer,
+          pdfBuffer: combinedBuffer,
           senderEmail,
           srfaxConfig,
         });
@@ -906,7 +915,11 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         senderFaxNumber: srfaxConfig.displayNumber,
         recipientFaxNumber: srfaxConfig.displayNumber,
         senderEmail,
-        bytes: storedReport.buffer.length,
+        finalBucket: finalReport.bucket,
+        finalKey: finalReport.key,
+        pharmdBucket: pharmdReport.bucket,
+        pharmdKey: pharmdReport.key,
+        bytes: combinedBuffer.length,
       });
 
       return res.json({

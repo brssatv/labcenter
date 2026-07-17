@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { PDFDocument } = require("pdf-lib");
 
 function createCookieJar() {
   const jar = new Map();
@@ -26,6 +27,17 @@ function createCookieJar() {
         .join("; ");
     },
   };
+}
+
+async function createSamplePdfBuffer(label, width = 420, height = 280) {
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([width, height]);
+  page.drawText(String(label || "Sample PDF"), {
+    x: 32,
+    y: height - 52,
+    size: 18,
+  });
+  return Buffer.from(await pdf.save());
 }
 
 async function startTestServer(seedOrder, envOverrides = {}) {
@@ -334,7 +346,7 @@ test("publish fax route returns 503 when fax publishing is disabled", async (t) 
   assert.match(payload.error, /Fax publishing is disabled/i);
 });
 
-test("publish fax route records a simulated SRFax send using the saved final PDF", async (t) => {
+test("publish fax route returns 404 when the PharmD return file is missing for the combined PDF", async (t) => {
   const localStorageKey = "generated-reports/final/00001/preview.pdf";
   const harness = await startTestServer({
     generatedReports: {
@@ -350,7 +362,6 @@ test("publish fax route records a simulated SRFax send using the saved final PDF
     },
   }, {
     LABCENTER_PUBLISH_FAX_MODE: "simulated",
-    SRFAX_SENDER_EMAIL: "qa@example.com",
   });
   t.after(async () => {
     await harness.close();
@@ -359,6 +370,65 @@ test("publish fax route records a simulated SRFax send using the saved final PDF
   const absoluteLocalPath = path.join(harness.dataDir, "generated-reports", "final", "00001", "preview.pdf");
   fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
   fs.writeFileSync(absoluteLocalPath, Buffer.from("%PDF-local-preview", "utf8"));
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/publish-fax`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({ confirmed: true }),
+  });
+
+  assert.equal(response.status, 404);
+  const payload = await response.json();
+  assert.equal(payload.error, "PharmD return file not found for this order.");
+});
+
+test("publish fax route records a simulated SRFax send using the combined PharmD PDF", async (t) => {
+  const localStorageKey = "generated-reports/final/00001/preview.pdf";
+  const pharmdStorageKey = "pharmd-receipts/00001/receipt.pdf";
+  const harness = await startTestServer({
+    generatedReports: {
+      final: {
+        bucket: "local",
+        key: localStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_Final_Report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 17,
+        generatedAt: "2026-06-01T08:45:00.000Z",
+      },
+    },
+    pharmd: {
+      reportReceivedAt: "2026-06-01T09:10:00.000Z",
+      receivedReport: {
+        bucket: "local",
+        key: pharmdStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_PharmD_Report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 17,
+        createdAt: "2026-06-01T09:10:00.000Z",
+      },
+    },
+  }, {
+    LABCENTER_PUBLISH_FAX_MODE: "simulated",
+    SRFAX_SENDER_EMAIL: "qa@example.com",
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const finalPdfBuffer = await createSamplePdfBuffer("Final report preview");
+  const pharmdPdfBuffer = await createSamplePdfBuffer("PharmD return");
+  const absoluteLocalPath = path.join(harness.dataDir, "generated-reports", "final", "00001", "preview.pdf");
+  fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
+  fs.writeFileSync(absoluteLocalPath, finalPdfBuffer);
+  const absolutePharmdPath = path.join(harness.dataDir, "pharmd-receipts", "00001", "receipt.pdf");
+  fs.mkdirSync(path.dirname(absolutePharmdPath), { recursive: true });
+  fs.writeFileSync(absolutePharmdPath, pharmdPdfBuffer);
 
   const response = await fetch(`${harness.baseUrl}/api/orders/00001/publish-fax`, {
     method: "POST",
@@ -386,6 +456,6 @@ test("publish fax route records a simulated SRFax send using the saved final PDF
   assert.equal(payload.order?.publishedReports?.final?.mode, "simulated");
   assert.equal(payload.order?.publishedReports?.final?.senderFaxNumber, "352-565-4554");
   assert.equal(payload.order?.publishedReports?.final?.recipientFaxNumber, "352-565-4554");
-  assert.equal(payload.order?.publishedReports?.final?.fileName, "Order_00001_Final_Report.pdf");
+  assert.equal(payload.order?.publishedReports?.final?.fileName, "Order_00001_Final_PharmD_Combined.pdf");
   assert.ok(payload.order?.publishedReports?.final?.publishedAt);
 });
