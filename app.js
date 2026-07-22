@@ -12232,12 +12232,13 @@ function createOrderHistoryReviewMenuModel(options = {}) {
 }
 
 function renderOrderHistory(initialTab = "all-orders") {
-  const historyTabs = [
+  const allHistoryTabs = [
     { key: "all-orders", label: "All Orders" },
     { key: "order-settlements", label: "Order Settlements" },
     { key: "add-service", label: "Add Service To Order" },
     { key: "upload-results", label: "Upload Test Results" },
   ];
+  const historyTabs = activeSession.type === "client" ? allHistoryTabs.slice(0, 1) : allHistoryTabs;
   const validHistoryTabs = new Set(historyTabs.map((item) => item.key));
   const startingTab = validHistoryTabs.has(initialTab) ? initialTab : "all-orders";
 
@@ -12307,6 +12308,7 @@ function renderOrderHistory(initialTab = "all-orders") {
   const generatingSummaryReports = new Set();
   const generatingFinalReports = new Set();
   const publishingFinalReports = new Set();
+  const openingResultPreviews = new Set();
   const validationDraftReports = new Map();
   const validationUndoState = new Map();
   const headerMap = {
@@ -12321,6 +12323,7 @@ function renderOrderHistory(initialTab = "all-orders") {
     due: "Due",
     uploadRaw: "Upload Tests Raw",
     status: "Status",
+    resultPreview: "Preview Result",
     reviewAction: getOrderHistoryReviewMenuLabel(),
     preview: "Preview",
     reportActions: getOrderHistoryReportMenuLabel(),
@@ -15999,6 +16002,8 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
 
   function renderTable() {
     const showRawUploadColumn = shouldShowRawUploadColumn();
+    const showClientResultPreview = activeSession.type === "client" && activeTab === "all-orders";
+    const showResultActionColumns = activeSession.type !== "client" || activeTab !== "all-orders";
     const rows = applyFilters(readOrders()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     if (openReportMenuOrderId && !rows.some((row) => String(row?.orderId || "").trim() === openReportMenuOrderId)) {
       openReportMenuOrderId = "";
@@ -16018,6 +16023,8 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
           <tr>
             ${Object.entries(headerMap)
               .filter(([key]) => showRawUploadColumn || key !== "uploadRaw")
+              .filter(([key]) => showClientResultPreview || key !== "resultPreview")
+              .filter(([key]) => showResultActionColumns || !["reviewAction", "preview", "reportActions", "publishReport"].includes(key))
               .map(([key, title]) => {
                 const headerClass = headerClassMap[key];
                 return `<th${headerClass ? ` class="${headerClass}"` : ""}>${title}</th>`;
@@ -16036,10 +16043,17 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
             <th><input data-filter-field="due" class="history-filter-input" placeholder="Filter"></th>
             ${showRawUploadColumn ? "<th></th>" : ""}
             <th><input data-filter-field="status" class="history-filter-input" placeholder="Filter"></th>
-            <th class="review-action-col"></th>
-            <th></th>
-            <th class="reports-action-col"></th>
-            <th class="report-action-col"></th>
+            ${showClientResultPreview ? "<th></th>" : ""}
+            ${
+              showResultActionColumns
+                ? `
+                  <th class="review-action-col"></th>
+                  <th></th>
+                  <th class="reports-action-col"></th>
+                  <th class="report-action-col"></th>
+                `
+                : ""
+            }
           </tr>
         </thead>
         <tbody>
@@ -16056,6 +16070,9 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               const isGeneratingSummary = generatingSummaryReports.has(Number(row.orderId));
               const isGeneratingFinal = generatingFinalReports.has(Number(row.orderId));
               const isPublishingFinal = publishingFinalReports.has(Number(row.orderId));
+              const isOpeningResultPreview = openingResultPreviews.has(String(row.orderId));
+              const isPharmdBypassed = isPharmdSkipped(row);
+              const canPreviewResult = isPharmdBypassed ? hasSavedFinalReport(row) : canPreviewCombinedPharmdReport(row);
               return `
                 <tr>
                   <td>${row.orderId}</td>
@@ -16086,26 +16103,51 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                       : ""
                   }
                   <td><span class="history-status ${statusClass}">${row.status || "-"}</span></td>
-                  <td>
-                    ${buildReviewActionMarkup(row)}
-                  </td>
-                  <td>
-                    ${
-                      row.processedResult?.report
-                        ? `<button type="button" class="table-action-btn preview-btn" data-preview-order="${row.orderId}">Preview</button>`
-                        : `<span class="subtle">-</span>`
-                    }
-                  </td>
-                  <td class="reports-action-cell">
-                    ${buildReportsActionMarkup(row, { isGenerating, isGeneratingSummary, isGeneratingFinal })}
-                  </td>
-                  <td class="report-action-cell">
-                    ${
-                      row.processedResult?.report
-                        ? `<button type="button" class="table-action-btn publish-report-btn" data-publish-final-report-order="${row.orderId}" ${isPublishingFinal ? "disabled" : ""}>${isPublishingFinal ? "PrePublishing..." : "PrePublish"}</button>`
-                        : `<span class="subtle">-</span>`
-                    }
-                  </td>
+                  ${
+                    showClientResultPreview
+                      ? `
+                        <td class="output-results-preview-cell">
+                          <button
+                            type="button"
+                            class="table-action-btn preview-btn"
+                            data-preview-result="${escapeHtml(row.orderId)}"
+                            ${canPreviewResult && !isOpeningResultPreview ? "" : "disabled"}
+                          >
+                            ${isOpeningResultPreview ? "Opening..." : "Preview"}
+                          </button>
+                          <div class="subtle output-results-inline-note">
+                            ${isPharmdBypassed
+                              ? (canPreviewResult ? "Preview the saved final report." : "Requires a saved final report.")
+                              : (canPreviewResult ? "Preview the combined PharmD and final report PDF." : "Requires saved final report and PharmD file.")}
+                          </div>
+                        </td>
+                      `
+                      : ""
+                  }
+                  ${
+                    showResultActionColumns
+                      ? `
+                        <td>${buildReviewActionMarkup(row)}</td>
+                        <td>
+                          ${
+                            row.processedResult?.report
+                              ? `<button type="button" class="table-action-btn preview-btn" data-preview-order="${row.orderId}">Preview</button>`
+                              : `<span class="subtle">-</span>`
+                          }
+                        </td>
+                        <td class="reports-action-cell">
+                          ${buildReportsActionMarkup(row, { isGenerating, isGeneratingSummary, isGeneratingFinal })}
+                        </td>
+                        <td class="report-action-cell">
+                          ${
+                            row.processedResult?.report
+                              ? `<button type="button" class="table-action-btn publish-report-btn" data-publish-final-report-order="${row.orderId}" ${isPublishingFinal ? "disabled" : ""}>${isPublishingFinal ? "PrePublishing..." : "PrePublish"}</button>`
+                              : `<span class="subtle">-</span>`
+                          }
+                        </td>
+                      `
+                      : ""
+                  }
                 </tr>
               `;
             })
@@ -16121,6 +16163,47 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
   }
 
   tableNode.addEventListener("click", async (event) => {
+    const resultPreviewBtn = event.target.closest("[data-preview-result]");
+    if (resultPreviewBtn) {
+      const orderId = String(resultPreviewBtn.getAttribute("data-preview-result") || "").trim();
+      const order = readOrders().find((item) => String(item?.orderId || "").trim() === orderId);
+      if (!order || openingResultPreviews.has(orderId)) return;
+
+      const isPharmdBypassed = isPharmdSkipped(order);
+      const endpoint = isPharmdBypassed
+        ? `/api/orders/${encodeURIComponent(orderId)}/final-report-pdf`
+        : `/api/pharmd/orders/${encodeURIComponent(orderId)}/combined-report-pdf`;
+      const previewWindow = window.open("", "_blank", "popup=yes,width=1080,height=860");
+      if (!previewWindow) {
+        alert("Unable to open preview window. Please allow pop-ups and try again.");
+        return;
+      }
+      previewWindow.document.write("<p style=\"font-family:Arial,sans-serif;padding:24px\">Loading report preview...</p>");
+      previewWindow.document.close();
+      openingResultPreviews.add(orderId);
+      renderTable();
+      try {
+        const response = await fetch(endpoint, { credentials: "same-origin" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload?.error || "Unable to load the report preview.");
+        }
+        const blob = await response.blob();
+        if (!blob.size) throw new Error("The report preview is empty.");
+        const blobUrl = URL.createObjectURL(blob);
+        previewWindow.location.replace(blobUrl);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60 * 1000);
+      } catch (error) {
+        previewWindow.document.open();
+        previewWindow.document.write(`<p style="font-family:Arial,sans-serif;padding:24px">${escapeHtml(error?.message || "Unable to load the report preview.")}</p>`);
+        previewWindow.document.close();
+      } finally {
+        openingResultPreviews.delete(orderId);
+        renderTable();
+      }
+      return;
+    }
+
     const processBtn = event.target.closest("[data-process-order]");
     if (processBtn) {
       const orderId = processBtn.getAttribute("data-process-order");
