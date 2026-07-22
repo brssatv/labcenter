@@ -131,6 +131,15 @@ async function buildCombinedPharmdPdf(orderId, existingOrder, dependencies) {
   };
 }
 
+function normalizeSrfaxRecipientFaxDigits(value) {
+  const digits = String(value || "").replace(/\D+/g, "");
+  const normalized = digits.length === 10 ? `1${digits}` : digits;
+  if (!/^1\d{10}$/.test(normalized)) {
+    throw new Error("Facility fax number must contain a valid 10-digit U.S. or Canadian number.");
+  }
+  return normalized;
+}
+
 async function buildPublishFaxPdf(orderId, existingOrder, dependencies) {
   if (!existingOrder?.pharmd?.skipPharmd) {
     const combined = await buildCombinedPharmdPdf(orderId, existingOrder, dependencies);
@@ -535,6 +544,8 @@ async function queueSrfaxFax({
     throw new Error("Facility fax number is not configured for this order.");
   }
 
+  const srfaxRecipientFaxDigits = normalizeSrfaxRecipientFaxDigits(recipientFaxDigits);
+
   const payload = new URLSearchParams({
     action: "Queue_Fax",
     access_id: srfaxConfig.accessId,
@@ -542,7 +553,7 @@ async function queueSrfaxFax({
     sCallerID: srfaxConfig.senderFaxDigits,
     sSenderEmail: senderEmail,
     sFaxType: "SINGLE",
-    sToFaxNumber: String(recipientFaxDigits || "").trim(),
+    sToFaxNumber: srfaxRecipientFaxDigits,
     sResponseFormat: "JSON",
     sAccountCode: String(orderId || "").trim().slice(0, 20),
     sCPSubject: `Final Report Order ${String(orderId || "").trim()}`.slice(0, 80),
@@ -1083,5 +1094,6 @@ function registerReportPublishingRoutes({ app, dependencies }) {
 }
 
 module.exports = {
+  normalizeSrfaxRecipientFaxDigits,
   registerReportPublishingRoutes,
 };
