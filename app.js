@@ -13054,7 +13054,7 @@ function renderOrderHistory(initialTab = "all-orders") {
     const patientId = String(order?.patientId || patientRecord?.patientId || "-").trim() || "-";
     const specimenType = pickReportMetadataValue(metadata, ["Specimen Type"])
       || pickReportMetadataValue(metadata, ["Sample Type"])
-      || "UTI Urine Swab";
+      || "Swab";
     const orderDateTime = order?.createdAt || order?.orderBookingTime || order?.sampleCollectTime || "";
     const dateCollected = order?.sampleCollectTime || orderDateTime;
     const dateReceived = order?.orderBookingTime || order?.sampleCollectTime || orderDateTime;
