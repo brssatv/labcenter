@@ -57,8 +57,8 @@ const views = [
 ];
 
 const clientAccessViews = {
-  report_view: ["dashboard", "patient-search", "order-history"],
-  report_view_order: ["dashboard", "registration", "patient-search", "order-history"],
+  report_view: ["dashboard", "order-history"],
+  report_view_order: ["dashboard", "registration", "order-history"],
   no_login: [],
 };
 
