@@ -11060,7 +11060,10 @@ function renderOutputResults() {
   async function sendCompletedReportFax(orderId) {
     const order = findOrderById(orderId);
     if (!order) throw new Error("Order not found.");
-    if (!canPreviewCombinedPharmdReport(order)) {
+    if (isPharmdSkipped(order) && !hasSavedFinalReport(order)) {
+      throw new Error("The saved final report is required before a fax can be sent.");
+    }
+    if (!isPharmdSkipped(order) && !canPreviewCombinedPharmdReport(order)) {
       throw new Error("Both the saved final report and the PharmD return file are required before a fax can be sent.");
     }
     if (!csrfToken) await fetchCsrfToken();
