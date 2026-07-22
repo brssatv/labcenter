@@ -10903,7 +10903,11 @@ function renderOutputResults() {
 
     const isFaxConfirmView = publishModalView === "fax-confirm";
     const isFaxSending = publishingFaxOrders.has(String(order?.orderId || "").trim());
-    const hasCombinedReport = canPreviewCombinedPharmdReport(order);
+    const isPharmdBypassed = isPharmdSkipped(order);
+    const hasFaxReport = isPharmdBypassed ? hasSavedFinalReport(order) : canPreviewCombinedPharmdReport(order);
+    const faxAttachmentName = isPharmdBypassed
+      ? String(order?.generatedReports?.final?.fileName || `Order_${order?.orderId || "-"}_Final_Report.pdf`)
+      : buildCombinedPharmdPreviewFileName(order?.orderId);
     const orderId = String(order?.orderId || "").trim();
     const lastPublishedFax = order?.publishedReports?.final?.channel === "fax"
       ? order.publishedReports.final
@@ -10922,7 +10926,7 @@ function renderOutputResults() {
     const recipientFaxError = publishModalFaxState.orderId === orderId
       ? String(publishModalFaxState.error || "").trim()
       : "";
-    const faxReadyToSend = hasCombinedReport && recipientAvailable && !isFaxDetailsLoading;
+    const faxReadyToSend = hasFaxReport && recipientAvailable && !isFaxDetailsLoading;
     const lastPublishedCopy = lastPublishedFax?.publishedAt
       ? `Last fax activity ${formatOutputDate(lastPublishedFax.publishedAt)}${lastPublishedFax?.status ? ` • ${String(lastPublishedFax.status).replace(/^\w/, (value) => value.toUpperCase())}` : ""}.`
       : "";
@@ -10965,7 +10969,7 @@ function renderOutputResults() {
                   <p class="badge">Fax Confirmation</p>
                   <h4>Confirm Send Fax</h4>
                 </div>
-                <span class="history-status ${hasCombinedReport ? "status-complete" : "status-pending"}">${hasCombinedReport ? "PDF Ready" : "PDF Missing"}</span>
+                <span class="history-status ${hasFaxReport ? "status-complete" : "status-pending"}">${hasFaxReport ? "PDF Ready" : "PDF Missing"}</span>
               </div>
               <div class="output-results-publish-route">
                 <div>
@@ -10978,7 +10982,7 @@ function renderOutputResults() {
                 </div>
                 <div>
                   <span>Attachment</span>
-                  <strong>${escapeHtml(buildCombinedPharmdPreviewFileName(order?.orderId))}</strong>
+                  <strong>${escapeHtml(faxAttachmentName)}</strong>
                 </div>
               </div>
               <p class="subtle output-results-publish-note">
@@ -10986,9 +10990,13 @@ function renderOutputResults() {
                   ? "Loading the facility fax number for this order."
                   : !recipientAvailable
                   ? escapeHtml(recipientFaxError || "Facility fax number is not configured for this order.")
-                  : hasCombinedReport
-                  ? "The combined PharmD PDF you preview will be queued with SRFax after you confirm."
-                  : "Both the saved final report and the PharmD return file are required before this fax can be sent."}
+                  : hasFaxReport
+                  ? (isPharmdBypassed
+                    ? "The saved final report will be queued with SRFax after you confirm."
+                    : "The combined PharmD PDF you preview will be queued with SRFax after you confirm.")
+                  : (isPharmdBypassed
+                    ? "A saved final report is required before this fax can be sent."
+                    : "Both the saved final report and the PharmD return file are required before this fax can be sent.")}
               </p>
               ${lastPublishedCopy ? `<p class="subtle output-results-publish-history">${escapeHtml(lastPublishedCopy)}</p>` : ""}
             </section>

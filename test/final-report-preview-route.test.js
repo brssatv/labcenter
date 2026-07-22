@@ -361,19 +361,23 @@ test("publish fax route returns 503 when fax publishing is disabled", async (t) 
   assert.match(payload.error, /Fax publishing is disabled/i);
 });
 
-test("publish fax details route returns the resolved facility fax number for the order", async (t) => {
+test("publish fax details route returns the matched account fax number for the order", async (t) => {
   const harness = await startTestServer({});
   t.after(async () => {
     await harness.close();
   });
 
   writeFacilityData(harness, {
+    accounts: [
+      {
+        name: "Preview Facility",
+        fax_number: "5554441212",
+      },
+    ],
     providers: [
       {
         provider_name: "Preview Provider",
-        validator_name: "Preview Provider",
-        display_name: "Preview Provider",
-        fax_number: "5554441212",
+        fax_number: "5550009999",
       },
     ],
   });
@@ -390,6 +394,81 @@ test("publish fax details route returns the resolved facility fax number for the
   assert.equal(payload.recipientFaxDigits, "5554441212");
   assert.equal(payload.recipientFaxNumber, "555-444-1212");
   assert.equal(payload.recipientAvailable, true);
+});
+
+test("publish fax details route reads a nested matched account fax number", async (t) => {
+  const harness = await startTestServer({});
+  t.after(async () => {
+    await harness.close();
+  });
+
+  writeFacilityData(harness, {
+    accounts: [
+      {
+        name: "Preview Facility",
+        basic_information: {
+          accountName: "Preview Facility",
+          faxNumber: "5557772323",
+        },
+      },
+    ],
+    providers: [],
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/publish-fax-details`, {
+    headers: { Cookie: harness.cookieJar.header() },
+  });
+
+  const payload = await response.json();
+  assert.equal(response.status, 200, payload.error);
+  assert.equal(payload.recipientFaxDigits, "5557772323");
+  assert.equal(payload.recipientFaxNumber, "555-777-2323");
+  assert.equal(payload.recipientAvailable, true);
+});
+
+test("publish fax route sends only the saved final report when PharmD is bypassed", async (t) => {
+  const localStorageKey = "generated-reports/final/00001/bypassed.pdf";
+  const harness = await startTestServer({
+    generatedReports: {
+      final: {
+        bucket: "local",
+        key: localStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_Final_Report.pdf",
+        mimeType: "application/pdf",
+      },
+    },
+    pharmd: { skipPharmd: true },
+  }, {
+    LABCENTER_PUBLISH_FAX_MODE: "simulated",
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  writeFacilityData(harness, {
+    accounts: [{ name: "Preview Facility", fax_number: "5557772323" }],
+    providers: [],
+  });
+  const finalPdfBuffer = await createSamplePdfBuffer("Bypassed final report");
+  const absoluteLocalPath = path.join(harness.dataDir, "generated-reports", "final", "00001", "bypassed.pdf");
+  fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
+  fs.writeFileSync(absoluteLocalPath, finalPdfBuffer);
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/publish-fax`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({ confirmed: true }),
+  });
+
+  const payload = await response.json();
+  assert.equal(response.status, 200, payload.error);
+  assert.equal(payload.order?.publishedReports?.final?.fileName, "Order_00001_Final_Report.pdf");
+  assert.equal(payload.fax?.recipientFaxDigits, "5557772323");
 });
 
 test("publish fax route returns 404 when the PharmD return file is missing for the combined PDF", async (t) => {
@@ -467,7 +546,7 @@ test("publish fax route returns 404 when no facility fax number is configured fo
   });
 
   writeFacilityData(harness, {
-    providers: [],
+    providers: [{ provider_name: "Preview Provider", fax_number: "5550009999" }],
   });
 
   const finalPdfBuffer = await createSamplePdfBuffer("Final report preview");
@@ -530,14 +609,13 @@ test("publish fax route records a simulated SRFax send using the combined PharmD
   });
 
   writeFacilityData(harness, {
-    providers: [
+    accounts: [
       {
-        provider_name: "Preview Provider",
-        validator_name: "Preview Provider",
-        display_name: "Preview Provider",
+        name: "Preview Facility",
         fax_number: "5554441212",
       },
     ],
+    providers: [],
   });
 
   const finalPdfBuffer = await createSamplePdfBuffer("Final report preview");

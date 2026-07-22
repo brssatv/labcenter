@@ -2345,6 +2345,24 @@ function resolveProviderForOrderPublish(order) {
   return matches[0] || null;
 }
 
+function resolveFacilityFaxForOrderPublish(order) {
+  const facilityData = loadFacilityData();
+  const accounts = Array.isArray(facilityData?.accounts) ? facilityData.accounts : [];
+  const matchKeys = new Set(
+    [order?.accountId, order?.accountName, order?.facilityId, order?.facilityName]
+      .map(normalizeMatchKey)
+      .filter(Boolean)
+  );
+  const account = accounts.find((row) =>
+    [row?.id, row?.name, row?.account_code, row?.facility_name, row?.facilityName, row?.basic_information?.accountName]
+      .map(normalizeMatchKey)
+      .some((value) => value && matchKeys.has(value))
+  );
+  return normalizeFaxRecipient(
+    account?.fax_number || account?.faxNumber || account?.basic_information?.faxNumber
+  );
+}
+
 function getProviderPublishTargets(providerRow) {
   const configuration = providerRow?.provider_configuration && typeof providerRow.provider_configuration === "object"
     ? providerRow.provider_configuration
@@ -3282,6 +3300,7 @@ registerReportPublishingRoutes({
     reportPdfRendererPath,
     requireAuthenticatedUser,
     resolveProviderForOrderPublish,
+    resolveFacilityFaxForOrderPublish,
     resolveLocalReportStoragePath,
     s3Storage,
     shouldUseS3ForRequest,

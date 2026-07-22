@@ -82,15 +82,10 @@ function createPublishFaxRecord(existingRecord, patch = {}, {
 }
 
 function resolveOrderFaxRecipient(order, dependencies) {
-  const providerRow = typeof dependencies.resolveProviderForOrderPublish === "function"
-    ? dependencies.resolveProviderForOrderPublish(order)
-    : null;
-  const publishTargets = providerRow && typeof dependencies.getProviderPublishTargets === "function"
-    ? dependencies.getProviderPublishTargets(providerRow)
-    : null;
-  const recipientFaxDigits = String(publishTargets?.faxRecipient || "").trim();
+  const recipientFaxDigits = String(typeof dependencies.resolveFacilityFaxForOrderPublish === "function"
+    ? dependencies.resolveFacilityFaxForOrderPublish(order)
+    : "").trim();
   return {
-    providerRow,
     recipientFaxDigits,
     recipientFaxNumber: formatFaxDisplayNumber(recipientFaxDigits),
     recipientAvailable: Boolean(recipientFaxDigits),
@@ -133,6 +128,33 @@ async function buildCombinedPharmdPdf(orderId, existingOrder, dependencies) {
     fileName: buildCombinedPharmdFileName(orderId),
     finalReport,
     pharmdReport,
+  };
+}
+
+async function buildPublishFaxPdf(orderId, existingOrder, dependencies) {
+  if (!existingOrder?.pharmd?.skipPharmd) {
+    const combined = await buildCombinedPharmdPdf(orderId, existingOrder, dependencies);
+    return {
+      pdfBuffer: combined.combinedBuffer,
+      fileName: combined.fileName,
+      finalReport: combined.finalReport,
+      pharmdReport: combined.pharmdReport,
+      reportType: "combined",
+    };
+  }
+
+  const generatedFinal = existingOrder?.generatedReports?.final;
+  const finalReport = await loadStoredPortalFileBuffer(generatedFinal, dependencies, {
+    notFoundMessage: "Saved final report PDF not found for this order.",
+    loadFailedMessage: "Saved final report PDF could not be loaded.",
+    serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
+  });
+  return {
+    pdfBuffer: finalReport.buffer,
+    fileName: sanitizeReportPdfFileName(generatedFinal?.fileName || `Order_${orderId}_Final_Report.pdf`),
+    finalReport,
+    pharmdReport: null,
+    reportType: "final",
   };
 }
 
@@ -928,11 +950,12 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       }
 
       const {
-        combinedBuffer,
+        pdfBuffer,
         fileName,
         finalReport,
         pharmdReport,
-      } = await buildCombinedPharmdPdf(orderId, existingOrder, dependencies);
+        reportType,
+      } = await buildPublishFaxPdf(orderId, existingOrder, dependencies);
       const {
         recipientFaxDigits,
         recipientFaxNumber,
@@ -972,7 +995,7 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         faxResult = await queueSrfaxFax({
           orderId,
           fileName,
-          pdfBuffer: combinedBuffer,
+          pdfBuffer,
           senderEmail,
           recipientFaxDigits,
           recipientFaxNumber,
@@ -1018,9 +1041,10 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         senderEmail,
         finalBucket: finalReport.bucket,
         finalKey: finalReport.key,
-        pharmdBucket: pharmdReport.bucket,
-        pharmdKey: pharmdReport.key,
-        bytes: combinedBuffer.length,
+        pharmdBucket: pharmdReport?.bucket || "",
+        pharmdKey: pharmdReport?.key || "",
+        reportType,
+        bytes: pdfBuffer.length,
       });
 
       return res.json({
