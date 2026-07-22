@@ -2290,7 +2290,13 @@ async function saveOrderPanels(orderId, panelIds) {
 }
 
 function isPendingOrder(order) {
-  return String(order?.status || "").trim().toLowerCase() === "pending";
+  const status = String(order?.status || "").trim().toLowerCase();
+  if (status === "pending") return true;
+  if (status !== "processed" || !order?.processedResult?.report) return false;
+
+  const isCompleted = Boolean(order?.completedAt || order?.pharmd?.completedAt);
+  const isPublished = Boolean(order?.publishedReports?.final?.publishedAt);
+  return !isCompleted && !isPublished;
 }
 
 function getOrderAccessionPreview(order) {
@@ -12966,7 +12972,7 @@ function renderOrderHistory(initialTab = "all-orders") {
   function joinAddressParts(parts) {
     const values = parts
       .map((item) => String(item || "").trim())
-      .filter(Boolean);
+      .filter((item) => item && item !== "-" && item.toLowerCase() !== "undefined");
     return values.length ? values.join(", ") : "-";
   }
 
@@ -13067,16 +13073,6 @@ function renderOrderHistory(initialTab = "all-orders") {
       || providerRecord?.provider_information?.npi
       || "-"
     ).trim() || "-";
-    const providerAddress = joinAddressParts([
-      providerRecord?.mailing_address,
-      providerRecord?.provider_information?.mailingAddress,
-      providerRecord?.city,
-      providerRecord?.provider_information?.city,
-      providerRecord?.state,
-      providerRecord?.provider_information?.state,
-      providerRecord?.zipcode,
-      providerRecord?.provider_information?.zipcode,
-    ]);
     const facilityAddress = joinAddressParts([
       facilityRecord?.mailing_address,
       facilityRecord?.city,
@@ -13199,7 +13195,7 @@ function renderOrderHistory(initialTab = "all-orders") {
         { label: "Ordering Provider", value: providerName || "-" },
         { label: "NPI ID", value: providerNpi },
         { label: "Phone No", value: providerPhone },
-        { label: "Address", value: providerAddress !== "-" ? providerAddress : facilityAddress },
+        { label: "Address", value: facilityAddress },
       ],
       detectedPathogens,
       detectedGenes,
