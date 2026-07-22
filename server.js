@@ -40,7 +40,7 @@ const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 3000);
 const HOST = String(process.env.HOST || (isProd ? "0.0.0.0" : "127.0.0.1")).trim() || (isProd ? "0.0.0.0" : "127.0.0.1");
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-only-change-me";
-const SESSION_TTL_MS = 15 * 60 * 1000;
+const SESSION_TTL_MS = 60 * 60 * 1000;
 const SESSION_WARNING_MS = 2 * 60 * 1000;
 const apiBodyLimit = "16mb";
 const sourceDataDir = path.join(__dirname, "data");
