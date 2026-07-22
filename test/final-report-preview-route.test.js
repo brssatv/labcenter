@@ -40,6 +40,21 @@ async function createSamplePdfBuffer(label, width = 420, height = 280) {
   return Buffer.from(await pdf.save());
 }
 
+function writeFacilityData(harness, payload = {}) {
+  const facilityPath = path.join(harness.dataDir, "facility.json");
+  fs.writeFileSync(
+    facilityPath,
+    `${JSON.stringify({
+      importedAt: null,
+      sourceFiles: {},
+      accounts: [],
+      providers: [],
+      ...payload,
+    }, null, 2)}\n`,
+    "utf8"
+  );
+}
+
 async function startTestServer(seedOrder, envOverrides = {}) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "labcenter-final-preview-test-"));
   const dataDir = path.join(tempRoot, "runtime-data");
@@ -346,6 +361,37 @@ test("publish fax route returns 503 when fax publishing is disabled", async (t) 
   assert.match(payload.error, /Fax publishing is disabled/i);
 });
 
+test("publish fax details route returns the resolved facility fax number for the order", async (t) => {
+  const harness = await startTestServer({});
+  t.after(async () => {
+    await harness.close();
+  });
+
+  writeFacilityData(harness, {
+    providers: [
+      {
+        provider_name: "Preview Provider",
+        validator_name: "Preview Provider",
+        display_name: "Preview Provider",
+        fax_number: "5554441212",
+      },
+    ],
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/publish-fax-details`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.senderFaxNumber, "352-565-4554");
+  assert.equal(payload.recipientFaxDigits, "5554441212");
+  assert.equal(payload.recipientFaxNumber, "555-444-1212");
+  assert.equal(payload.recipientAvailable, true);
+});
+
 test("publish fax route returns 404 when the PharmD return file is missing for the combined PDF", async (t) => {
   const localStorageKey = "generated-reports/final/00001/preview.pdf";
   const harness = await startTestServer({
@@ -386,6 +432,68 @@ test("publish fax route returns 404 when the PharmD return file is missing for t
   assert.equal(payload.error, "PharmD return file not found for this order.");
 });
 
+test("publish fax route returns 404 when no facility fax number is configured for the order", async (t) => {
+  const localStorageKey = "generated-reports/final/00001/preview.pdf";
+  const pharmdStorageKey = "pharmd-receipts/00001/receipt.pdf";
+  const harness = await startTestServer({
+    generatedReports: {
+      final: {
+        bucket: "local",
+        key: localStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_Final_Report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 17,
+        generatedAt: "2026-06-01T08:45:00.000Z",
+      },
+    },
+    pharmd: {
+      reportReceivedAt: "2026-06-01T09:10:00.000Z",
+      receivedReport: {
+        bucket: "local",
+        key: pharmdStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_PharmD_Report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 17,
+        createdAt: "2026-06-01T09:10:00.000Z",
+      },
+    },
+  }, {
+    LABCENTER_PUBLISH_FAX_MODE: "simulated",
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  writeFacilityData(harness, {
+    providers: [],
+  });
+
+  const finalPdfBuffer = await createSamplePdfBuffer("Final report preview");
+  const pharmdPdfBuffer = await createSamplePdfBuffer("PharmD return");
+  const absoluteLocalPath = path.join(harness.dataDir, "generated-reports", "final", "00001", "preview.pdf");
+  fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
+  fs.writeFileSync(absoluteLocalPath, finalPdfBuffer);
+  const absolutePharmdPath = path.join(harness.dataDir, "pharmd-receipts", "00001", "receipt.pdf");
+  fs.mkdirSync(path.dirname(absolutePharmdPath), { recursive: true });
+  fs.writeFileSync(absolutePharmdPath, pharmdPdfBuffer);
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/publish-fax`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({ confirmed: true }),
+  });
+
+  assert.equal(response.status, 404);
+  const payload = await response.json();
+  assert.equal(payload.error, "Facility fax number is not configured for this order.");
+});
+
 test("publish fax route records a simulated SRFax send using the combined PharmD PDF", async (t) => {
   const localStorageKey = "generated-reports/final/00001/preview.pdf";
   const pharmdStorageKey = "pharmd-receipts/00001/receipt.pdf";
@@ -421,6 +529,17 @@ test("publish fax route records a simulated SRFax send using the combined PharmD
     await harness.close();
   });
 
+  writeFacilityData(harness, {
+    providers: [
+      {
+        provider_name: "Preview Provider",
+        validator_name: "Preview Provider",
+        display_name: "Preview Provider",
+        fax_number: "5554441212",
+      },
+    ],
+  });
+
   const finalPdfBuffer = await createSamplePdfBuffer("Final report preview");
   const pharmdPdfBuffer = await createSamplePdfBuffer("PharmD return");
   const absoluteLocalPath = path.join(harness.dataDir, "generated-reports", "final", "00001", "preview.pdf");
@@ -448,14 +567,16 @@ test("publish fax route records a simulated SRFax send using the combined PharmD
   assert.equal(payload.fax?.status, "simulated");
   assert.match(String(payload.fax?.faxDetailsId || ""), /^SIM-/);
   assert.equal(payload.fax?.senderFaxNumber, "352-565-4554");
-  assert.equal(payload.fax?.recipientFaxNumber, "352-565-4554");
+  assert.equal(payload.fax?.recipientFaxDigits, "5554441212");
+  assert.equal(payload.fax?.recipientFaxNumber, "555-444-1212");
   assert.equal(payload.fax?.senderEmail, "qa@example.com");
   assert.equal(payload.order?.publishedReports?.final?.channel, "fax");
   assert.equal(payload.order?.publishedReports?.final?.deliveryVendor, "SRFax");
   assert.equal(payload.order?.publishedReports?.final?.status, "simulated");
   assert.equal(payload.order?.publishedReports?.final?.mode, "simulated");
   assert.equal(payload.order?.publishedReports?.final?.senderFaxNumber, "352-565-4554");
-  assert.equal(payload.order?.publishedReports?.final?.recipientFaxNumber, "352-565-4554");
+  assert.equal(payload.order?.publishedReports?.final?.recipientFaxDigits, "5554441212");
+  assert.equal(payload.order?.publishedReports?.final?.recipientFaxNumber, "555-444-1212");
   assert.equal(payload.order?.publishedReports?.final?.fileName, "Order_00001_Final_PharmD_Combined.pdf");
   assert.ok(payload.order?.publishedReports?.final?.publishedAt);
 });

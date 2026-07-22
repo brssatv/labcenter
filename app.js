@@ -10690,6 +10690,14 @@ function renderOutputResults() {
   let publishModalOrderId = "";
   let publishModalView = "menu";
   const publishFaxDisplayNumber = "352-565-4554";
+  let publishModalFaxState = {
+    orderId: "",
+    loading: false,
+    recipientFaxNumber: "",
+    recipientFaxDigits: "",
+    recipientAvailable: false,
+    error: "",
+  };
   const sendingPharmdOrders = new Set();
   const checkingPharmdOrders = new Set();
   const openingPharmdReceiptOrders = new Set();
@@ -10814,9 +10822,70 @@ function renderOutputResults() {
     writeOrders(orders);
   }
 
+  function resetPublishModalFaxState(order = null) {
+    const orderId = String(order?.orderId || "").trim();
+    const recipientFaxNumber = String(order?.publishedReports?.final?.recipientFaxNumber || "").trim();
+    const recipientFaxDigits = String(order?.publishedReports?.final?.recipientFaxDigits || "").trim();
+    publishModalFaxState = {
+      orderId,
+      loading: false,
+      recipientFaxNumber,
+      recipientFaxDigits,
+      recipientAvailable: Boolean(recipientFaxNumber || recipientFaxDigits),
+      error: "",
+    };
+  }
+
+  async function loadCompletedPublishFaxDetails(orderId) {
+    const normalizedOrderId = String(orderId || "").trim();
+    if (!normalizedOrderId) throw new Error("Order not found.");
+    publishModalFaxState = {
+      orderId: normalizedOrderId,
+      loading: true,
+      recipientFaxNumber: "",
+      recipientFaxDigits: "",
+      recipientAvailable: false,
+      error: "",
+    };
+    renderCompletedPublishModal();
+    try {
+      const payload = await requestJson(`/api/orders/${encodeURIComponent(normalizedOrderId)}/publish-fax-details`, {
+        method: "GET",
+      });
+      if (publishModalOrderId !== normalizedOrderId) return payload;
+      const recipientFaxNumber = String(payload?.recipientFaxNumber || "").trim();
+      const recipientFaxDigits = String(payload?.recipientFaxDigits || "").trim();
+      const recipientAvailable = Boolean(payload?.recipientAvailable && (recipientFaxNumber || recipientFaxDigits));
+      publishModalFaxState = {
+        orderId: normalizedOrderId,
+        loading: false,
+        recipientFaxNumber,
+        recipientFaxDigits,
+        recipientAvailable,
+        error: recipientAvailable ? "" : "Facility fax number is not configured for this order.",
+      };
+      renderCompletedPublishModal();
+      return payload;
+    } catch (error) {
+      if (publishModalOrderId === normalizedOrderId) {
+        publishModalFaxState = {
+          orderId: normalizedOrderId,
+          loading: false,
+          recipientFaxNumber: "",
+          recipientFaxDigits: "",
+          recipientAvailable: false,
+          error: error?.message || "Unable to load fax details.",
+        };
+        renderCompletedPublishModal();
+      }
+      throw error;
+    }
+  }
+
   function closeCompletedPublishModal() {
     publishModalOrderId = "";
     publishModalView = "menu";
+    resetPublishModalFaxState();
     renderCompletedPublishModal();
   }
 
@@ -10835,9 +10904,25 @@ function renderOutputResults() {
     const isFaxConfirmView = publishModalView === "fax-confirm";
     const isFaxSending = publishingFaxOrders.has(String(order?.orderId || "").trim());
     const hasCombinedReport = canPreviewCombinedPharmdReport(order);
+    const orderId = String(order?.orderId || "").trim();
     const lastPublishedFax = order?.publishedReports?.final?.channel === "fax"
       ? order.publishedReports.final
       : null;
+    const isFaxDetailsLoading = isFaxConfirmView
+      && publishModalFaxState.orderId === orderId
+      && publishModalFaxState.loading;
+    const recipientFaxNumber = String(
+      (publishModalFaxState.orderId === orderId
+        ? publishModalFaxState.recipientFaxNumber
+        : lastPublishedFax?.recipientFaxNumber) || ""
+    ).trim();
+    const recipientAvailable = publishModalFaxState.orderId === orderId
+      ? Boolean(publishModalFaxState.recipientAvailable)
+      : Boolean(recipientFaxNumber);
+    const recipientFaxError = publishModalFaxState.orderId === orderId
+      ? String(publishModalFaxState.error || "").trim()
+      : "";
+    const faxReadyToSend = hasCombinedReport && recipientAvailable && !isFaxDetailsLoading;
     const lastPublishedCopy = lastPublishedFax?.publishedAt
       ? `Last fax activity ${formatOutputDate(lastPublishedFax.publishedAt)}${lastPublishedFax?.status ? ` • ${String(lastPublishedFax.status).replace(/^\w/, (value) => value.toUpperCase())}` : ""}.`
       : "";
@@ -10889,7 +10974,7 @@ function renderOutputResults() {
                 </div>
                 <div>
                   <span>Receiver</span>
-                  <strong>${escapeHtml(publishFaxDisplayNumber)}</strong>
+                  <strong>${escapeHtml(isFaxDetailsLoading ? "Loading..." : (recipientFaxNumber || "Unavailable"))}</strong>
                 </div>
                 <div>
                   <span>Attachment</span>
@@ -10897,7 +10982,11 @@ function renderOutputResults() {
                 </div>
               </div>
               <p class="subtle output-results-publish-note">
-                ${hasCombinedReport
+                ${isFaxDetailsLoading
+                  ? "Loading the facility fax number for this order."
+                  : !recipientAvailable
+                  ? escapeHtml(recipientFaxError || "Facility fax number is not configured for this order.")
+                  : hasCombinedReport
                   ? "The combined PharmD PDF you preview will be queued with SRFax after you confirm."
                   : "Both the saved final report and the PharmD return file are required before this fax can be sent."}
               </p>
@@ -10911,7 +11000,7 @@ function renderOutputResults() {
                   type="button"
                   class="table-action-btn publish-report-btn"
                   data-confirm-publish-fax="${escapeHtml(order?.orderId || "")}"
-                  ${hasCombinedReport && !isFaxSending ? "" : "disabled"}
+                  ${faxReadyToSend && !isFaxSending ? "" : "disabled"}
                 >
                   ${isFaxSending ? "Sending..." : "Confirm Send Fax"}
                 </button>
@@ -10950,6 +11039,7 @@ function renderOutputResults() {
     }
     publishModalOrderId = String(orderId || "").trim();
     publishModalView = "menu";
+    resetPublishModalFaxState(order);
     renderCompletedPublishModal();
   }
 
@@ -11977,6 +12067,7 @@ function renderOutputResults() {
       if (channel === "fax") {
         publishModalView = "fax-confirm";
         renderCompletedPublishModal();
+        loadCompletedPublishFaxDetails(order?.orderId).catch(() => {});
         return;
       }
       alert(`Email publishing for Order #${order?.orderId || "-"} will be connected next.`);

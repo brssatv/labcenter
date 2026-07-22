@@ -55,15 +55,45 @@ function resolvePublishFaxSenderEmail(req, senderEmailOverride) {
     || "";
 }
 
-function createPublishFaxRecord(existingRecord, patch = {}, displayNumber) {
+function formatFaxDisplayNumber(value) {
+  const digits = String(value || "").replace(/\D+/g, "");
+  const normalized = digits.length === 11 && digits.startsWith("1")
+    ? digits.slice(1)
+    : digits;
+  if (normalized.length === 10) {
+    return `${normalized.slice(0, 3)}-${normalized.slice(3, 6)}-${normalized.slice(6)}`;
+  }
+  return String(value || "").trim();
+}
+
+function createPublishFaxRecord(existingRecord, patch = {}, {
+  senderFaxNumber = "",
+  recipientFaxNumber = "",
+} = {}) {
   const currentRecord = existingRecord && typeof existingRecord === "object" ? existingRecord : {};
   return {
     ...currentRecord,
     ...patch,
-    senderFaxNumber: displayNumber,
-    recipientFaxNumber: displayNumber,
+    senderFaxNumber,
+    recipientFaxNumber,
     deliveryVendor: "SRFax",
     channel: "fax",
+  };
+}
+
+function resolveOrderFaxRecipient(order, dependencies) {
+  const providerRow = typeof dependencies.resolveProviderForOrderPublish === "function"
+    ? dependencies.resolveProviderForOrderPublish(order)
+    : null;
+  const publishTargets = providerRow && typeof dependencies.getProviderPublishTargets === "function"
+    ? dependencies.getProviderPublishTargets(providerRow)
+    : null;
+  const recipientFaxDigits = String(publishTargets?.faxRecipient || "").trim();
+  return {
+    providerRow,
+    recipientFaxDigits,
+    recipientFaxNumber: formatFaxDisplayNumber(recipientFaxDigits),
+    recipientAvailable: Boolean(recipientFaxDigits),
   };
 }
 
@@ -461,7 +491,15 @@ function renderReportPdfFromHtml(htmlMarkup, dependencies) {
   });
 }
 
-async function queueSrfaxFax({ orderId, fileName, pdfBuffer, senderEmail, srfaxConfig }) {
+async function queueSrfaxFax({
+  orderId,
+  fileName,
+  pdfBuffer,
+  senderEmail,
+  recipientFaxDigits,
+  recipientFaxNumber,
+  srfaxConfig,
+}) {
   if (!srfaxConfig.accessId || !srfaxConfig.accessPwd) {
     throw new Error("SRFax credentials are not configured.");
   }
@@ -471,6 +509,9 @@ async function queueSrfaxFax({ orderId, fileName, pdfBuffer, senderEmail, srfaxC
   if (!pdfBuffer?.length) {
     throw new Error("Saved final report PDF could not be loaded.");
   }
+  if (!String(recipientFaxDigits || "").trim()) {
+    throw new Error("Facility fax number is not configured for this order.");
+  }
 
   const payload = new URLSearchParams({
     action: "Queue_Fax",
@@ -479,7 +520,7 @@ async function queueSrfaxFax({ orderId, fileName, pdfBuffer, senderEmail, srfaxC
     sCallerID: srfaxConfig.senderFaxDigits,
     sSenderEmail: senderEmail,
     sFaxType: "SINGLE",
-    sToFaxNumber: srfaxConfig.receiverFaxDigits,
+    sToFaxNumber: String(recipientFaxDigits || "").trim(),
     sResponseFormat: "JSON",
     sAccountCode: String(orderId || "").trim().slice(0, 20),
     sCPSubject: `Final Report Order ${String(orderId || "").trim()}`.slice(0, 80),
@@ -524,7 +565,7 @@ async function queueSrfaxFax({ orderId, fileName, pdfBuffer, senderEmail, srfaxC
       status: "queued",
       faxDetailsId: String(result || "").trim(),
       result,
-      message: `Fax queued successfully for ${srfaxConfig.displayNumber}.`,
+      message: `Fax queued successfully for ${recipientFaxNumber || formatFaxDisplayNumber(recipientFaxDigits)}.`,
       mode: "live",
     };
   } catch (error) {
@@ -809,6 +850,48 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     }
   });
 
+  app.get("/api/orders/:orderId/publish-fax-details", requireAuthenticatedUser, async (req, res) => {
+    try {
+      const orderId = String(req.params.orderId || "").trim();
+      if (!orderId) {
+        return res.status(400).json({ error: "Order ID is required." });
+      }
+
+      const existingOrder = portalStore.getOrderById(orderId);
+      if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+
+      const {
+        recipientFaxDigits,
+        recipientFaxNumber,
+        recipientAvailable,
+      } = resolveOrderFaxRecipient(existingOrder, dependencies);
+
+      auditLog(req, "view_publish_fax_details", "success", {
+        orderId,
+        senderFaxNumber: srfaxConfig.displayNumber,
+        recipientFaxNumber: recipientFaxNumber || "",
+        recipientAvailable,
+      });
+
+      return res.json({
+        senderFaxNumber: srfaxConfig.displayNumber,
+        recipientFaxNumber: recipientFaxNumber || "",
+        recipientFaxDigits,
+        recipientAvailable,
+      });
+    } catch (error) {
+      auditLog(req, "view_publish_fax_details", "failed", {
+        orderId: String(req.params.orderId || ""),
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(Number(error?.statusCode) || 500).json({
+        error: error?.message || "Unable to load fax details.",
+      });
+    }
+  });
+
   app.post("/api/orders/:orderId/publish-fax", async (req, res) => {
     if (!hasReportPdfAccess(req)) {
       return res.status(401).json({ error: "Authentication required." });
@@ -850,13 +933,23 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         finalReport,
         pharmdReport,
       } = await buildCombinedPharmdPdf(orderId, existingOrder, dependencies);
+      const {
+        recipientFaxDigits,
+        recipientFaxNumber,
+        recipientAvailable,
+      } = resolveOrderFaxRecipient(existingOrder, dependencies);
+      if (!recipientAvailable) {
+        return res.status(404).json({
+          error: "Facility fax number is not configured for this order.",
+        });
+      }
 
       if (publishFaxMode === "simulated") {
         faxResult = {
           status: "simulated",
           faxDetailsId: `SIM-${Date.now()}`,
           result: "Simulated fax queue request",
-          message: `Fax simulated successfully for ${srfaxConfig.displayNumber}.`,
+          message: `Fax simulated successfully for ${recipientFaxNumber}.`,
           mode: "simulated",
         };
       } else if (publishFaxMode === "log") {
@@ -864,13 +957,14 @@ function registerReportPublishingRoutes({ app, dependencies }) {
           status: "logged",
           faxDetailsId: `LOG-${Date.now()}`,
           result: "Logged fax queue request",
-          message: `Fax request logged for ${srfaxConfig.displayNumber}.`,
+          message: `Fax request logged for ${recipientFaxNumber}.`,
           mode: "log",
         };
         console.info("[publish-fax]", {
           orderId,
           senderFaxNumber: srfaxConfig.displayNumber,
-          recipientFaxNumber: srfaxConfig.displayNumber,
+          recipientFaxNumber,
+          recipientFaxDigits,
           senderEmail,
           fileName,
         });
@@ -880,6 +974,8 @@ function registerReportPublishingRoutes({ app, dependencies }) {
           fileName,
           pdfBuffer: combinedBuffer,
           senderEmail,
+          recipientFaxDigits,
+          recipientFaxNumber,
           srfaxConfig,
         });
       }
@@ -903,7 +999,11 @@ function registerReportPublishingRoutes({ app, dependencies }) {
               status: faxResult.status,
               mode: faxResult.mode,
               endpoint: faxResult.mode === "live" ? srfaxConfig.endpoint : "",
-            }, srfaxConfig.displayNumber),
+              recipientFaxDigits,
+            }, {
+              senderFaxNumber: srfaxConfig.displayNumber,
+              recipientFaxNumber,
+            }),
           },
         },
       ])[0];
@@ -913,7 +1013,8 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         mode: faxResult.mode,
         faxDetailsId: faxResult.faxDetailsId,
         senderFaxNumber: srfaxConfig.displayNumber,
-        recipientFaxNumber: srfaxConfig.displayNumber,
+        recipientFaxNumber,
+        recipientFaxDigits,
         senderEmail,
         finalBucket: finalReport.bucket,
         finalKey: finalReport.key,
@@ -930,7 +1031,8 @@ function registerReportPublishingRoutes({ app, dependencies }) {
           status: faxResult.status,
           faxDetailsId: faxResult.faxDetailsId,
           senderFaxNumber: srfaxConfig.displayNumber,
-          recipientFaxNumber: srfaxConfig.displayNumber,
+          recipientFaxNumber,
+          recipientFaxDigits,
           senderEmail,
         },
         order: savedOrder,
@@ -946,7 +1048,7 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         mode: publishFaxMode,
         reason: error?.message || "unexpected_error",
         senderFaxNumber: srfaxConfig.displayNumber,
-        recipientFaxNumber: srfaxConfig.displayNumber,
+        recipientFaxNumber: "",
         senderEmail,
       });
       return res.status(statusCode).json({
