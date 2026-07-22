@@ -11439,7 +11439,7 @@ function renderOutputResults() {
             <th>Facility</th>
             <th>Last Activity</th>
             <th>Stage</th>
-            ${showCompletedActions ? '<th class="output-results-preview-col">Preview Combined PDF</th>' : ""}
+            ${showCompletedActions ? '<th class="output-results-preview-col">Preview Report</th>' : ""}
             ${showCompletedActions ? '<th class="output-results-publish-col">Actions</th>' : ""}
           </tr>
         </thead>
@@ -11447,8 +11447,13 @@ function renderOutputResults() {
           ${rows
             .map((row) => {
               const orderId = String(row?.orderId || "").trim();
+              const isPharmdBypassed = isPharmdSkipped(row);
+              const canPreviewFinal = hasSavedFinalReport(row);
               const canPreviewCombined = canPreviewCombinedPharmdReport(row);
+              const isOpeningFinal = previewLoadingOrders.has(orderId);
               const isOpeningCombined = openingCombinedPharmdOrders.has(orderId);
+              const canPreviewReport = isPharmdBypassed ? canPreviewFinal : canPreviewCombined;
+              const isOpeningReport = isPharmdBypassed ? isOpeningFinal : isOpeningCombined;
               const isWorkflowSaving = workflowSavingOrders.has(orderId);
               const isPublished = Boolean(row?.publishedReports?.final?.publishedAt);
               return `
@@ -11469,13 +11474,15 @@ function renderOutputResults() {
                       <button
                         type="button"
                         class="table-action-btn preview-btn"
-                        data-preview-pharmd-combined="${escapeHtml(orderId)}"
-                        ${canPreviewCombined && !isOpeningCombined ? "" : "disabled"}
+                        ${isPharmdBypassed ? "data-validate-final-report" : "data-preview-pharmd-combined"}="${escapeHtml(orderId)}"
+                        ${canPreviewReport && !isOpeningReport ? "" : "disabled"}
                       >
-                        ${isOpeningCombined ? "Opening..." : "Preview"}
+                        ${isOpeningReport ? "Opening..." : "Preview"}
                       </button>
                       <div class="subtle output-results-inline-note">
-                        ${canPreviewCombined ? "Preview the exact combined PDF that will be faxed." : "Requires saved final report and PharmD file."}
+                        ${isPharmdBypassed
+                          ? (canPreviewFinal ? "Preview the saved final report." : "Requires a saved final report.")
+                          : (canPreviewCombined ? "Preview the combined PharmD and final report PDF." : "Requires saved final report and PharmD file.")}
                       </div>
                     </td>
                   ` : ""}
