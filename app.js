@@ -11424,7 +11424,7 @@ function renderOutputResults() {
       delete pharmd.completionSource;
       return {
         ...row,
-        status: "Processed",
+        status: "Pending",
         completedAt: "",
         updatedAt: nowIso,
         pharmd,
