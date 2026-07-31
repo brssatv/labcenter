@@ -68,6 +68,7 @@ async function startTestServer(seedOrder, envOverrides = {}) {
     PORT: process.env.PORT,
     NODE_ENV: process.env.NODE_ENV,
     SESSION_SECRET: process.env.SESSION_SECRET,
+    LABCENTER_ENABLE_REPORT_PDF: process.env.LABCENTER_ENABLE_REPORT_PDF,
     LABCENTER_PUBLISH_FAX_MODE: process.env.LABCENTER_PUBLISH_FAX_MODE,
     SRFAX_ACCESS_ID: process.env.SRFAX_ACCESS_ID,
     SRFAX_ACCESS_PWD: process.env.SRFAX_ACCESS_PWD,
@@ -80,6 +81,7 @@ async function startTestServer(seedOrder, envOverrides = {}) {
   process.env.PORT = "0";
   process.env.NODE_ENV = "test";
   process.env.SESSION_SECRET = "test-secret-for-final-preview-route";
+  process.env.LABCENTER_ENABLE_REPORT_PDF = "true";
   Object.entries(envOverrides || {}).forEach(([key, value]) => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = String(value);
