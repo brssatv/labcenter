@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 const { PDFDocument } = require("pdf-lib");
@@ -234,6 +235,87 @@ test("final report preview route returns a locally stored PDF when local metadat
   assert.equal(response.headers.get("content-type"), "application/pdf");
   const body = Buffer.from(await response.arrayBuffer());
   assert.equal(body.toString("utf8"), "%PDF-local-preview");
+});
+
+test("generated report preview route returns a locally stored summary PDF", async (t) => {
+  const localStorageKey = "generated-reports/summary/00001/summary.pdf";
+  const harness = await startTestServer({
+    generatedReports: {
+      summary: {
+        bucket: "local",
+        key: localStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_Summary_Report.pdf",
+        mimeType: "application/pdf",
+      },
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const absoluteLocalPath = path.join(harness.dataDir, localStorageKey);
+  fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
+  fs.writeFileSync(absoluteLocalPath, Buffer.from("%PDF-local-summary", "utf8"));
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/00001/generated-report-pdf/summary`, {
+    headers: {
+      Cookie: harness.cookieJar.header(),
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/pdf");
+  const body = Buffer.from(await response.arrayBuffer());
+  assert.equal(body.toString("utf8"), "%PDF-local-summary");
+});
+
+test("report rendering reuses an unchanged saved PDF and returns lightweight preview metadata", async (t) => {
+  const html = "<!doctype html><html><body><h1>Cached summary</h1></body></html>";
+  const sourceHash = crypto.createHash("sha256").update(html, "utf8").digest("hex");
+  const localStorageKey = "generated-reports/summary/00001/cached-summary.pdf";
+  const harness = await startTestServer({
+    generatedReports: {
+      summary: {
+        bucket: "local",
+        key: localStorageKey,
+        storageType: "local",
+        fileName: "Order_00001_Summary_Report.pdf",
+        mimeType: "application/pdf",
+        sourceHash,
+      },
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const absoluteLocalPath = path.join(harness.dataDir, localStorageKey);
+  fs.mkdirSync(path.dirname(absoluteLocalPath), { recursive: true });
+  fs.writeFileSync(absoluteLocalPath, Buffer.from("%PDF-cached-summary", "utf8"));
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/render-report-pdf`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({
+      orderId: "00001",
+      reportType: "summary",
+      fileName: "Order_00001_Summary_Report.pdf",
+      responseMode: "saved-url",
+      html,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.ready, true);
+  assert.equal(payload.cached, true);
+  assert.equal(payload.reportType, "summary");
+  assert.equal(fs.readFileSync(absoluteLocalPath, "utf8"), "%PDF-cached-summary");
 });
 
 test("prepublish route does not require provider publish settings and marks the order ready for PharmD", async (t) => {

@@ -14554,6 +14554,8 @@ function renderOrderHistory(initialTab = "all-orders") {
     const fileName = String(options?.fileName || "").trim() || `Report_${Date.now()}.pdf`;
     const orderId = String(options?.orderId || "").trim();
     const reportType = String(options?.reportType || "final").trim() || "final";
+    const previewUrl = String(options?.previewUrl || "").trim();
+    const isMicrosoftEdge = /\bEdg\//.test(navigator.userAgent);
     if (!csrfToken) await fetchCsrfToken();
 
     const response = await fetch("/api/orders/render-report-pdf", {
@@ -14568,6 +14570,7 @@ function renderOrderHistory(initialTab = "all-orders") {
         fileName,
         orderId,
         reportType,
+        responseMode: isMicrosoftEdge && previewUrl ? "saved-url" : "pdf",
       }),
     });
 
@@ -14582,6 +14585,12 @@ function renderOrderHistory(initialTab = "all-orders") {
       throw new Error(payload?.error || raw || "Unable to generate report PDF.");
     }
 
+    if (isMicrosoftEdge && previewUrl) {
+      await response.json();
+      const separator = previewUrl.includes("?") ? "&" : "?";
+      reportWindow.location.replace(`${previewUrl}${separator}v=${Date.now()}`);
+      return;
+    }
     const pdfBlob = await response.blob();
     const pdfUrl = URL.createObjectURL(pdfBlob);
     reportWindow.location.href = pdfUrl;
@@ -14666,6 +14675,7 @@ function renderOrderHistory(initialTab = "all-orders") {
         orderId: order.orderId,
         fileName: `Order_${order.orderId}_Final_Report.pdf`,
         reportType: "report",
+        previewUrl: `/api/orders/${encodeURIComponent(order.orderId)}/generated-report-pdf/report`,
       });
     } catch (error) {
       writeReportWindowError(reportWindow, {
@@ -14754,6 +14764,7 @@ function renderOrderHistory(initialTab = "all-orders") {
         orderId: order.orderId,
         fileName: `Order_${order.orderId}_Final_Report.pdf`,
         reportType: "final",
+        previewUrl: `/api/orders/${encodeURIComponent(order.orderId)}/final-report-pdf`,
       });
     } catch (error) {
       writeReportWindowError(reportWindow, {
@@ -14887,6 +14898,7 @@ function renderOrderHistory(initialTab = "all-orders") {
         orderId: order.orderId,
         fileName: `Order_${order.orderId}_Summary_Report.pdf`,
         reportType: "summary",
+        previewUrl: `/api/orders/${encodeURIComponent(order.orderId)}/generated-report-pdf/summary`,
       });
     } catch (error) {
       writeReportWindowError(reportWindow, {

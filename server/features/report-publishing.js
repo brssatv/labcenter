@@ -1,4 +1,5 @@
 const fs = require("fs");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
@@ -167,7 +168,7 @@ async function buildPublishFaxPdf(orderId, existingOrder, dependencies) {
   };
 }
 
-async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType }, dependencies) {
+async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType, sourceHash = "" }, dependencies) {
   const {
     shouldUseS3ForRequest,
     s3Storage,
@@ -204,6 +205,7 @@ async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orde
       createdAt: generatedAt,
       metadata: {
         generatedAt,
+        sourceHash,
       },
     });
     if (existingOrder) {
@@ -219,6 +221,7 @@ async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orde
               mimeType: "application/pdf",
               sizeBytes: storedReport.sizeBytes,
               generatedAt,
+              sourceHash,
             },
           },
           updatedAt: generatedAt,
@@ -251,6 +254,7 @@ async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orde
       metadata: {
         generatedAt,
         storageType: "local",
+        sourceHash,
       },
     });
     if (existingOrder) {
@@ -267,6 +271,7 @@ async function persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orde
               mimeType: "application/pdf",
               sizeBytes: pdfBuffer.length,
               generatedAt,
+              sourceHash,
             },
           },
           updatedAt: generatedAt,
@@ -622,6 +627,62 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     publishFaxMode,
     srfaxConfig,
   } = dependencies;
+  const activeReportRenderJobs = new Map();
+
+  app.get("/api/orders/:orderId/generated-report-pdf/:reportType", requireAuthenticatedUser, async (req, res) => {
+    try {
+      const orderId = String(req.params.orderId || "").trim();
+      const reportType = String(req.params.reportType || "").trim().toLowerCase();
+      if (!orderId) {
+        return res.status(400).json({ error: "Order ID is required." });
+      }
+      if (!["report", "summary"].includes(reportType)) {
+        return res.status(400).json({ error: "Unsupported generated report type." });
+      }
+
+      const existingOrder = portalStore.getOrderById(orderId);
+      if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+
+      const generatedReport = existingOrder?.generatedReports?.[reportType];
+      const defaultLabel = reportType === "summary" ? "Summary_Report" : "Report";
+      const fileName = sanitizeReportPdfFileName(
+        generatedReport?.fileName || `Order_${orderId}_${defaultLabel}.pdf`
+      );
+      const storedReport = await loadStoredPortalFileBuffer(generatedReport, dependencies, {
+        notFoundMessage: "Saved generated report PDF not found for this order.",
+        loadFailedMessage: "Saved generated report PDF could not be loaded.",
+        serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
+      });
+
+      auditLog(req, "view_saved_generated_report_pdf", "success", {
+        orderId,
+        reportType,
+        bucket: storedReport.bucket,
+        key: storedReport.key,
+        storageType: storedReport.storageType,
+        bytes: storedReport.buffer.length,
+      });
+
+      res.setHeader("Content-Type", storedReport.contentType || "application/pdf");
+      res.setHeader("Content-Disposition", storedReport.contentDisposition || `inline; filename="${fileName}"`);
+      res.setHeader("Cache-Control", "private, max-age=0, no-store");
+      if (storedReport.contentLength) {
+        res.setHeader("Content-Length", String(storedReport.contentLength));
+      }
+      return res.send(storedReport.buffer);
+    } catch (error) {
+      auditLog(req, "view_saved_generated_report_pdf", "failed", {
+        orderId: String(req.params.orderId || ""),
+        reportType: String(req.params.reportType || ""),
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(Number(error?.statusCode) || 500).json({
+        error: error?.message || "Unable to load saved generated report PDF.",
+      });
+    }
+  });
 
   app.get("/api/orders/:orderId/final-report-pdf", requireAuthenticatedUser, async (req, res) => {
     try {
@@ -781,20 +842,60 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     const fileName = sanitizeReportPdfFileName(req.body?.fileName || "");
     const orderId = String(req.body?.orderId || "").trim();
     const reportType = String(req.body?.reportType || "final").trim() || "final";
+    const responseMode = String(req.body?.responseMode || "pdf").trim().toLowerCase();
+    const sourceHash = crypto.createHash("sha256").update(html, "utf8").digest("hex");
     try {
       const existingOrder = orderId ? portalStore.getOrderById(orderId) : null;
       if (orderId && (!existingOrder || !canAccessOrderRecord(req, existingOrder))) {
         return res.status(404).json({ error: "Order not found." });
       }
 
-      const pdfBuffer = await renderReportPdfFromHtml(html, dependencies);
-      await persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType }, dependencies);
+      const savedReport = existingOrder?.generatedReports?.[reportType];
+      let pdfBuffer = null;
+      let cached = false;
+      if (savedReport?.sourceHash === sourceHash) {
+        try {
+          const storedReport = await loadStoredPortalFileBuffer(savedReport, dependencies);
+          pdfBuffer = storedReport.buffer;
+          cached = true;
+        } catch {
+          pdfBuffer = null;
+        }
+      }
+
+      if (!pdfBuffer) {
+        const jobKey = `${orderId || "unassigned"}:${reportType}:${sourceHash}`;
+        let renderJob = activeReportRenderJobs.get(jobKey);
+        if (!renderJob) {
+          renderJob = (async () => {
+            const renderedBuffer = await renderReportPdfFromHtml(html, dependencies);
+            await persistRenderedReportBuffer(
+              req,
+              existingOrder,
+              renderedBuffer,
+              { orderId, fileName, reportType, sourceHash },
+              dependencies
+            );
+            return renderedBuffer;
+          })();
+          activeReportRenderJobs.set(jobKey, renderJob);
+          const clearRenderJob = () => {
+            if (activeReportRenderJobs.get(jobKey) === renderJob) activeReportRenderJobs.delete(jobKey);
+          };
+          renderJob.then(clearRenderJob, clearRenderJob);
+        }
+        pdfBuffer = await renderJob;
+      }
       auditLog(req, "render_final_report_pdf", "success", {
         bytes: pdfBuffer.length,
+        cached,
         fileName,
         orderId,
         reportType,
       });
+      if (responseMode === "saved-url") {
+        return res.json({ ready: true, cached, orderId, reportType });
+      }
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
       res.setHeader("Cache-Control", "no-store");
