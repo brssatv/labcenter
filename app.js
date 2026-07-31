@@ -16008,9 +16008,18 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
   }
 
   function renderTable() {
+    const activeFilterInput = document.activeElement?.closest?.(".history-filter-input");
+    const activeFilterField = activeFilterInput?.getAttribute("data-filter-field") || "";
+    const activeFilterSelectionStart = activeFilterInput?.selectionStart;
+    const activeFilterSelectionEnd = activeFilterInput?.selectionEnd;
     const showRawUploadColumn = shouldShowRawUploadColumn();
     const showClientResultPreview = activeSession.type === "client" && activeTab === "all-orders";
     const showResultActionColumns = activeSession.type !== "client" || activeTab !== "all-orders";
+    const visibleColumnCount = Object.keys(headerMap)
+      .filter((key) => showRawUploadColumn || key !== "uploadRaw")
+      .filter((key) => showClientResultPreview || key !== "resultPreview")
+      .filter((key) => showResultActionColumns || !["reviewAction", "preview", "reportActions", "publishReport"].includes(key))
+      .length;
     const rows = applyFilters(readOrders()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     if (openReportMenuOrderId && !rows.some((row) => String(row?.orderId || "").trim() === openReportMenuOrderId)) {
       openReportMenuOrderId = "";
@@ -16018,11 +16027,6 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     if (openReviewMenuOrderId && !rows.some((row) => String(row?.orderId || "").trim() === openReviewMenuOrderId)) {
       openReviewMenuOrderId = "";
     }
-    if (!rows.length) {
-      tableNode.innerHTML = `<p class="subtle table-empty">No orders found.</p>`;
-      return;
-    }
-
     tableNode.innerHTML = `
       <div class="order-history-meta">Rows: ${rows.length}</div>
       <table class="order-history-table">
@@ -16064,7 +16068,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
           </tr>
         </thead>
         <tbody>
-          ${rows
+          ${rows.length ? rows
             .map((row) => {
               const statusClass =
                 row.status === "Processed"
@@ -16158,7 +16162,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                 </tr>
               `;
             })
-            .join("")}
+            .join("") : `<tr><td colspan="${visibleColumnCount}" class="table-empty">No orders found.</td></tr>`}
         </tbody>
       </table>
     `;
@@ -16167,6 +16171,17 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       const field = input.getAttribute("data-filter-field");
       if (field) input.value = filters[field] || "";
     });
+
+    if (activeFilterField) {
+      const nextActiveFilterInput = tableNode.querySelector(`[data-filter-field="${activeFilterField}"]`);
+      nextActiveFilterInput?.focus();
+      if (
+        typeof activeFilterSelectionStart === "number"
+        && typeof activeFilterSelectionEnd === "number"
+      ) {
+        nextActiveFilterInput?.setSelectionRange(activeFilterSelectionStart, activeFilterSelectionEnd);
+      }
+    }
   }
 
   tableNode.addEventListener("click", async (event) => {
