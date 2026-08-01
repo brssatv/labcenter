@@ -163,6 +163,52 @@ test("order update route persists Skip PharmD workflow fields", async (t) => {
   assert.equal(storedOrder?.pharmd?.skipPharmd, true);
   assert.equal(storedOrder?.pharmd?.validationReadyAt, "2026-06-01T09:00:00.000Z");
   assert.equal(storedOrder?.generatedReports?.final?.key, "labcenter/reports/final/00001/preview.pdf");
+
+  const auditResponse = await fetch(`${harness.baseUrl}/api/portal/orders/00001/audit-events`, {
+    headers: { Cookie: harness.cookieJar.header() },
+  });
+  assert.equal(auditResponse.status, 200);
+  const auditPayload = await auditResponse.json();
+  assert.equal(auditPayload.events.length, 1);
+  assert.equal(auditPayload.events[0].eventType, "order_updated");
+  assert.equal(auditPayload.events[0].actor, "admin@clinic.local");
+});
+
+test("order update route records an undone rejection in the audit trail", async (t) => {
+  const harness = await startOrderUpdateHarness({
+    status: "Rejected",
+    statusBeforeRejection: "Processed",
+    rejectedAt: "2026-06-01T09:00:00.000Z",
+    rejectionReason: "Incorrect patient selection",
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/portal/orders/00001`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({
+      order: {
+        status: "Processed",
+        rejectionUndoneAt: "2026-06-01T09:15:00.000Z",
+        rejectionUndoneBy: "admin@clinic.local",
+      },
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const auditResponse = await fetch(`${harness.baseUrl}/api/portal/orders/00001/audit-events`, {
+    headers: { Cookie: harness.cookieJar.header() },
+  });
+  const auditPayload = await auditResponse.json();
+  assert.equal(auditPayload.events[0].eventType, "order_rejection_undone");
+  assert.equal(auditPayload.events[0].details.previousStatus, "Rejected");
+  assert.equal(auditPayload.events[0].details.status, "Processed");
 });
 
 test("order update route persists Completed workflow fields for Pending PharmD", async (t) => {

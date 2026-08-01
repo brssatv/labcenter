@@ -125,3 +125,20 @@ test("portal store normalizes ICD codes on order services before persistence", (
   assert.deepEqual(stored.services[0].panelIds, ["uti-pcr-panel", "uti-pcr-panel"]);
   assert.deepEqual(stored.services[0].icdCodes, ["N390", "Z87440"]);
 });
+
+test("portal store appends and lists immutable order audit events", () => {
+  const dataDir = createTempDataDir();
+  const store = createPortalStore({ dataDir });
+  store.appendOrderAuditEvent({
+    orderId: "00001",
+    eventType: "order_rejected",
+    eventAt: "2026-07-31T20:00:00.000Z",
+    actor: "admin@clinic.local",
+    reason: "Incorrect patient information",
+  });
+  const events = store.listOrderAuditEvents("00001");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].eventType, "order_rejected");
+  assert.equal(events[0].reason, "Incorrect patient information");
+  assert.equal(events[0].actor, "admin@clinic.local");
+});

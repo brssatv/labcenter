@@ -166,6 +166,16 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
         timeZone: getAppTimeZone(),
       });
       const savedOrders = portalStore.upsertOrders(preparedOrders);
+      const actor = String(req?.session?.user?.email || req?.session?.user?.displayName || req?.session?.clientUser?.username || "system").trim();
+      savedOrders.forEach((order) => {
+        portalStore.appendOrderAuditEvent({
+          orderId: order.orderId,
+          eventType: "order_created",
+          eventAt: order.createdAt || nowIso,
+          actor,
+          details: { accessionNo: order.accessionNo || "" },
+        });
+      });
       auditLog(req, "orders_bulk_save", "success", {
         count: savedOrders.length,
       });
@@ -175,6 +185,18 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
         reason: error?.message || "unexpected_error",
       });
       return res.status(500).json({ error: "Unable to save orders." });
+    }
+  });
+
+  app.get("/api/portal/orders/:orderId/audit-events", requireAuthenticatedUser, (req, res) => {
+    try {
+      const order = portalStore.getOrderById(req.params.orderId);
+      if (!order || !canAccessOrderRecord(req, order)) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+      return res.json({ events: portalStore.listOrderAuditEvents(order.orderId) });
+    } catch (error) {
+      return res.status(500).json({ error: "Unable to load the order audit trail." });
     }
   });
 
@@ -203,6 +225,41 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
           updatedAt: nowIso,
         },
       ])[0];
+
+      const actor = String(req?.session?.user?.email || req?.session?.user?.displayName || req?.session?.clientUser?.username || "system").trim();
+      const previousStatus = String(current?.status || "").trim().toLowerCase();
+      const nextStatus = String(saved?.status || "").trim().toLowerCase();
+      const currentChangeAt = String(current?.requisitionChange?.approvedAt || "");
+      const savedChangeAt = String(saved?.requisitionChange?.approvedAt || "");
+      let eventType = "order_updated";
+      let eventAt = saved.updatedAt || nowIso;
+      let reason = String(saved?.requisitionChange?.reason || "").trim();
+      if (nextStatus === "rejected" && previousStatus !== "rejected") {
+        eventType = "order_rejected";
+        eventAt = saved.rejectedAt || eventAt;
+        reason = String(saved.rejectionReason || reason).trim();
+      } else if (previousStatus === "rejected" && nextStatus !== "rejected") {
+        eventType = "order_rejection_undone";
+        eventAt = saved.rejectionUndoneAt || eventAt;
+        reason = String(saved.rejectionReason || "").trim();
+      } else if (savedChangeAt && savedChangeAt !== currentChangeAt) {
+        eventType = "requisition_modified";
+        eventAt = savedChangeAt;
+      } else if (saved?.processedResult?.processedAt && !current?.processedResult?.processedAt) {
+        eventType = "results_processed";
+        eventAt = saved.processedResult.processedAt;
+      } else if (nextStatus === "complete" && previousStatus !== "complete") {
+        eventType = "order_completed";
+        eventAt = saved.completedAt || eventAt;
+      }
+      portalStore.appendOrderAuditEvent({
+        orderId: saved.orderId,
+        eventType,
+        eventAt,
+        actor,
+        reason,
+        details: { previousStatus: current.status || "", status: saved.status || "" },
+      });
 
       auditLog(req, "order_update", "success", {
         orderId: saved.orderId,

@@ -11,7 +11,7 @@ test("review menu label stays aligned with the combined action trigger", () => {
   assert.equal(getOrderHistoryReviewMenuLabel(), "Review Result");
 });
 
-test("review menu exposes validate and transcribe actions", () => {
+test("review menu exposes validate, transcribe, and reject actions", () => {
   assert.deepEqual(getOrderHistoryReviewMenuActions(), [
     {
       key: "validate",
@@ -23,6 +23,11 @@ test("review menu exposes validate and transcribe actions", () => {
       key: "transcribe",
       label: "Transcribe",
       tone: "transcribe",
+    },
+    {
+      key: "reject",
+      label: "Reject Order",
+      tone: "reject",
     },
   ]);
 });
@@ -47,6 +52,7 @@ test("review menu promotes transcribe when no processed report exists", () => {
     [
       { key: "transcribe", disabled: false, label: "Transcribe" },
       { key: "validate", disabled: true, label: "Validate (Requires Report)" },
+      { key: "reject", disabled: false, label: "Reject Order" },
     ]
   );
 });
@@ -71,6 +77,7 @@ test("review menu promotes validate and keeps transcribe available once a report
     [
       { key: "validate", disabled: false, label: "Validate" },
       { key: "transcribe", disabled: false, label: "Transcribe" },
+      { key: "reject", disabled: false, label: "Reject Order" },
     ]
   );
 });

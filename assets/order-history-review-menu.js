@@ -18,6 +18,11 @@
       label: "Transcribe",
       tone: "transcribe",
     }),
+    Object.freeze({
+      key: "reject",
+      label: "Reject Order",
+      tone: "reject",
+    }),
   ]);
 
   function cloneAction(action) {
