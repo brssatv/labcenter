@@ -918,12 +918,22 @@ function registerReportPublishingRoutes({ app, dependencies }) {
 
     const orderId = String(req.body?.orderId || "").trim();
     const html = String(req.body?.html || "");
+    const oruMessage = String(req.body?.oruMessage || "").trim();
     const fileName = sanitizeReportPdfFileName(req.body?.fileName || `Order_${orderId || Date.now()}_Final_Report.pdf`);
     if (!orderId) {
       return res.status(400).json({ error: "Order ID is required." });
     }
     if (!html.trim()) {
       return res.status(400).json({ error: "Final report HTML content is required." });
+    }
+    if (!oruMessage) {
+      return res.status(400).json({ error: "An ORU message built from the latest saved results is required." });
+    }
+    if (oruMessage.length > 1024 * 1024) {
+      return res.status(413).json({ error: "ORU message is too large." });
+    }
+    if (!oruMessage.startsWith("MSH|") || !oruMessage.includes("|ORU^R01|")) {
+      return res.status(400).json({ error: "A valid HL7 ORU^R01 message is required." });
     }
     if (html.length > 4 * 1024 * 1024) {
       return res.status(413).json({ error: "Final report HTML content is too large." });
@@ -935,8 +945,16 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         return res.status(404).json({ error: "Order not found." });
       }
 
+      const sourceHash = crypto.createHash("sha256").update(html, "utf8").digest("hex");
+      const oruSourceHash = crypto.createHash("sha256").update(oruMessage, "utf8").digest("hex");
       const pdfBuffer = await renderReportPdfFromHtml(html, dependencies);
-      await persistRenderedReportBuffer(req, existingOrder, pdfBuffer, { orderId, fileName, reportType: "final" }, dependencies);
+      await persistRenderedReportBuffer(
+        req,
+        existingOrder,
+        pdfBuffer,
+        { orderId, fileName, reportType: "final", sourceHash },
+        dependencies
+      );
       const refreshedOrder = portalStore.getOrderById(orderId) || existingOrder;
       const prePublishedAt = new Date().toISOString();
       const prePublishedBy = String(
@@ -945,23 +963,60 @@ function registerReportPublishingRoutes({ app, dependencies }) {
         || req?.session?.clientUser?.username
         || "system"
       ).trim();
+      const nextPharmd = {
+        ...((refreshedOrder?.pharmd && typeof refreshedOrder.pharmd === "object") ? refreshedOrder.pharmd : {}),
+        oruMessage,
+        oruSourceHash,
+        oruGeneratedAt: prePublishedAt,
+        status: "ready",
+        sendStatus: "ready",
+        deliveryStatus: "ready",
+        error: "",
+        lastError: "",
+        prePublishedAt,
+        prePublishedBy,
+        prePublishedFileName: fileName,
+        readyForPharmdAt: prePublishedAt,
+      };
+      [
+        "sentAt",
+        "submittedAt",
+        "lastAttemptAt",
+        "connectionEstablishedAt",
+        "remotePath",
+        "receivedAt",
+        "pdfReceivedAt",
+        "reportReceivedAt",
+        "reportReceivedFileName",
+        "reportReceivedRemotePath",
+        "reportReceivedAccession",
+        "reportReceivedMatchedBy",
+        "reportReceivedSource",
+        "receivedReport",
+        "receiptAutoCheckCount",
+        "receiptManualCheckCount",
+        "receiptLastCheckedAt",
+        "receiptLastCheckSource",
+        "receiptLastCheckResult",
+        "receiptLastError",
+        "receiptNextCheckAt",
+        "receiptPollingStatus",
+        "receiptPollingStoppedAt",
+      ].forEach((key) => delete nextPharmd[key]);
+
       const savedOrder = portalStore.upsertOrders([
         {
           ...refreshedOrder,
           updatedAt: prePublishedAt,
-          pharmd: {
-            ...((refreshedOrder?.pharmd && typeof refreshedOrder.pharmd === "object") ? refreshedOrder.pharmd : {}),
-            prePublishedAt,
-            prePublishedBy,
-            prePublishedFileName: fileName,
-            readyForPharmdAt: prePublishedAt,
-          },
+          pharmd: nextPharmd,
         },
       ])[0];
 
       auditLog(req, "prepublish_final_report", "success", {
         orderId,
         fileName,
+        sourceHash,
+        oruSourceHash,
         storedToS3: Boolean(
           savedOrder?.generatedReports?.final?.bucket
           && savedOrder?.generatedReports?.final?.key

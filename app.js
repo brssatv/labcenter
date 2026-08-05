@@ -2959,7 +2959,7 @@ function formatPharmdObservationValue(row) {
   return raw;
 }
 
-function buildPharmdOruMessage(order) {
+function buildPharmdOruMessage(order, options = {}) {
   if (!order) return "";
   const patientRecord = resolveOrderPatientRecordForPharmd(order) || {};
   const nameParts = splitFullNameParts(order?.patientName || buildOrderPatientDisplayName(patientRecord));
@@ -2970,9 +2970,11 @@ function buildPharmdOruMessage(order) {
   const panelId = String(panelLine?.panelIds?.[0] || "").trim();
   const panelName = String(panelLine?.serviceName || order?.processedResult?.report?.panelName || "Lab Panel").trim() || "Lab Panel";
   const accession = resolvePharmdAccession(order);
-  const messageTimestamp = formatHl7Timestamp(order?.pharmd?.sentAt || order?.processedAt || order?.updatedAt || order?.createdAt);
+  const messageTimestamp = formatHl7Timestamp(
+    options.messageTimestamp || order?.pharmd?.sentAt || order?.processedAt || order?.updatedAt || order?.createdAt
+  );
   const messageControlId = escapeHl7Text(
-    String(order?.pharmd?.messageControlId || `${order?.orderId || "ORDER"}-${messageTimestamp}`).trim()
+    String(options.messageControlId || order?.pharmd?.messageControlId || `${order?.orderId || "ORDER"}-${messageTimestamp}`).trim()
   );
   const patientDob = formatHl7Timestamp(patientRecord?.dob || order?.patientDob || "", { dateOnly: true });
   const sex = String(patientRecord?.sex || order?.sex || "").trim().toUpperCase();
@@ -11167,6 +11169,14 @@ function renderOrderHistory(initialTab = "all-orders") {
 
     const assetSources = await getReportTemplateAssetSources();
     const html = buildDetectedSummaryReportHtml(order, assetSources, { variant: "final" });
+    const prepublishRequestedAt = new Date().toISOString();
+    const oruMessage = buildPharmdOruMessage(order, {
+      messageTimestamp: prepublishRequestedAt,
+      messageControlId: `${order.orderId || "ORDER"}-${formatHl7Timestamp(prepublishRequestedAt)}`,
+    });
+    if (!oruMessage) {
+      throw new Error("Unable to build an ORU message from the latest saved results.");
+    }
     if (!csrfToken) await fetchCsrfToken();
 
     const response = await requestJson("/api/orders/publish-final-report", {
@@ -11178,6 +11188,7 @@ function renderOrderHistory(initialTab = "all-orders") {
       body: JSON.stringify({
         orderId: String(orderId),
         html,
+        oruMessage,
         fileName: `Order_${orderId}_Final_Report.pdf`,
       }),
     });

@@ -346,6 +346,7 @@ test("prepublish route does not require provider publish settings and marks the 
       orderId: "00001",
       fileName: "Order_00001_Final_Report.pdf",
       html: "<!doctype html><html><body><h1>PrePublish</h1><p>Ready for PharmD.</p></body></html>",
+      oruMessage: "MSH|^~\\&|LabCenter|Preview Facility|PharmD|CPD|20260601084600||ORU^R01|00001-20260601084600|P|2.5.1\rOBX|1|ST|^Influenza A|Pathogens|Detected|",
     }),
   });
 
@@ -356,6 +357,9 @@ test("prepublish route does not require provider publish settings and marks the 
   assert.equal(payload.order?.pharmd?.prePublishedBy, "admin@clinic.local");
   assert.equal(payload.order?.pharmd?.prePublishedFileName, "Order_00001_Final_Report.pdf");
   assert.equal(payload.order?.pharmd?.readyForPharmdAt, payload.order?.pharmd?.prePublishedAt);
+  assert.match(payload.order?.pharmd?.oruMessage || "", /Influenza A\|Pathogens\|Detected/);
+  assert.equal(payload.order?.pharmd?.status, "ready");
+  assert.ok(payload.order?.pharmd?.oruSourceHash);
   assert.equal(payload.order?.generatedReports?.final?.bucket, "local");
   assert.equal(payload.order?.generatedReports?.final?.storageType, "local");
   assert.ok(String(payload.order?.generatedReports?.final?.key || "").startsWith("generated-reports/final/00001/"));
@@ -363,6 +367,57 @@ test("prepublish route does not require provider publish settings and marks the 
     fs.existsSync(path.resolve(harness.dataDir, payload.order.generatedReports.final.key)),
     "expected local prepublished final report to exist on disk"
   );
+});
+
+test("prepublish replaces a stale ORU and resets prior delivery state", async (t) => {
+  const staleOru = "MSH|^~\\&|LabCenter|Preview Facility|PharmD|CPD|20260601080000||ORU^R01|OLD|P|2.5.1\rOBX|1|ST|^Influenza A|Pathogens|Not Detected|";
+  const latestOru = "MSH|^~\\&|LabCenter|Preview Facility|PharmD|CPD|20260601100000||ORU^R01|NEW|P|2.5.1\rOBX|1|ST|^Influenza A|Pathogens|Detected - High|";
+  const harness = await startTestServer({
+    pharmd: {
+      oruMessage: staleOru,
+      status: "sent",
+      sendStatus: "sent",
+      deliveryStatus: "sent",
+      sentAt: "2026-06-01T09:00:00.000Z",
+      remotePath: "oru/old.hl7",
+      receivedAt: "2026-06-01T09:30:00.000Z",
+      reportReceivedAt: "2026-06-01T09:30:00.000Z",
+      reportReceivedFileName: "old-return.pdf",
+      receivedReport: { bucket: "local", key: "old-return.pdf" },
+      receiptPollingStatus: "matched",
+      logs: [{ ts: "2026-06-01T09:00:00.000Z", level: "info", step: "send", message: "Previously sent." }],
+    },
+  });
+  t.after(async () => harness.close());
+
+  const response = await fetch(`${harness.baseUrl}/api/orders/publish-final-report`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({
+      orderId: "00001",
+      fileName: "Order_00001_Final_Report.pdf",
+      html: "<!doctype html><html><body><h1>Approved updated result</h1></body></html>",
+      oruMessage: latestOru,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.order?.pharmd?.oruMessage, latestOru);
+  assert.equal(payload.order?.pharmd?.status, "ready");
+  assert.equal(payload.order?.pharmd?.sendStatus, "ready");
+  assert.equal(payload.order?.pharmd?.deliveryStatus, "ready");
+  assert.equal(payload.order?.pharmd?.sentAt, undefined);
+  assert.equal(payload.order?.pharmd?.remotePath, undefined);
+  assert.equal(payload.order?.pharmd?.reportReceivedAt, undefined);
+  assert.equal(payload.order?.pharmd?.receivedReport, undefined);
+  assert.equal(payload.order?.pharmd?.receiptPollingStatus, undefined);
+  assert.equal(payload.order?.pharmd?.logs?.length, 1, "historical delivery logs should be retained");
+  assert.ok(payload.order?.generatedReports?.final?.sourceHash);
 });
 
 test("publish fax route requires an explicit confirmation flag", async (t) => {
