@@ -9187,6 +9187,12 @@ function renderOrderHistory(initialTab = "all-orders") {
     return extractResistanceGeneNames(value)[0] || "";
   }
 
+  function resolveReportRowType(row) {
+    const explicitType = String(row?.recordType || "").trim().toLowerCase();
+    if (explicitType === "abr" || explicitType === "pathogen") return explicitType;
+    return extractResistanceGeneNames(row?.pathogen).length ? "abr" : "pathogen";
+  }
+
   function dedupeReportRows(rows) {
     const map = new Map();
     rows.forEach((row) => {
@@ -9463,16 +9469,8 @@ function renderOrderHistory(initialTab = "all-orders") {
     const detailedRowsSource = Array.isArray(report?.detailed) ? report.detailed : [];
     const detailedRowsRaw = excludeRnaseP ? filterFinalReportRows(detailedRowsSource) : detailedRowsSource;
     const detailedRows = dedupeReportRows(detailedRowsRaw);
-    const detailedRowsWithGenes = detailedRows.map((row) => ({
-      row,
-      resistanceGenes: extractResistanceGeneNames(row?.pathogen),
-    }));
-    const pathogenRows = detailedRowsWithGenes
-      .filter(({ resistanceGenes }) => !resistanceGenes.length)
-      .map(({ row }) => row);
-    const geneRows = detailedRowsWithGenes
-      .filter(({ resistanceGenes }) => resistanceGenes.length)
-      .map(({ row }) => row);
+    const pathogenRows = detailedRows.filter((row) => resolveReportRowType(row) === "pathogen");
+    const geneRows = detailedRows.filter((row) => resolveReportRowType(row) === "abr");
     const detectedPathogens = pathogenRows.filter((row) => isDetectedResult(row?.result));
     const detectedGenes = geneRows.filter((row) => isDetectedResult(row?.result));
 
@@ -11761,12 +11759,9 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const detailedEntries = (Array.isArray(report.detailed) ? report.detailed : [])
       .map((item, index) => ({ item, sourceIndex: index }));
 
-    const isAbrGeneRow = (row) => String(row?.recordType || "").trim().toLowerCase() === "abr"
-      || extractResistanceGeneNames(row?.pathogen).length > 0;
+    const isAbrGeneRow = (row) => resolveReportRowType(row) === "abr";
     const pathogenDetectedEntries = detectedEntries.filter(({ item }) => !isAbrGeneRow(item));
     const abrDetectedEntries = detectedEntries.filter(({ item }) => isAbrGeneRow(item));
-    const pathogenDetailedEntries = detailedEntries.filter(({ item }) => !isAbrGeneRow(item));
-    const abrDetailedEntries = detailedEntries.filter(({ item }) => isAbrGeneRow(item));
     const undoState = editable ? validationUndoState.get(String(order.orderId || "")) : null;
 
     function buildSummaryCards(entries, label) {
@@ -11796,16 +11791,31 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         .join("");
     }
 
-    function buildDetailedRows(entries, label, addType) {
+    function buildDetailedRows(entries) {
       const dataRows = entries.length
         ? entries
             .slice(0, 220)
             .map(({ item, sourceIndex }) => {
+              const rowType = resolveReportRowType(item);
+              const label = rowType === "abr" ? "ABR Gene" : "Pathogen";
+              const typeField = editable
+                ? `<select class="preview-edit-input lab-detail-type-select" data-validate-field="recordType" data-validate-section="detailed" data-validate-index="${sourceIndex}" aria-label="Result type">
+                    <option value="pathogen" ${rowType === "pathogen" ? "selected" : ""}>Pathogen</option>
+                    <option value="abr" ${rowType === "abr" ? "selected" : ""}>ABR Gene</option>
+                  </select>`
+                : `<strong>${escapeHtml(label)}</strong>`;
+              const nameWarning = rowType === "abr"
+                && String(item.pathogen || "").trim()
+                && !extractResistanceGeneNames(item.pathogen).length
+                ? `<div class="lab-detail-name-warning">Unrecognized ABR gene; check spelling.</div>`
+                : "";
               if (!editable) {
                 return `
                   <tr>
+                    <td class="lab-detail-type-cell">${typeField}</td>
                     <td>
                       <strong>${escapeHtml(item.pathogen || "-")}</strong>
+                      ${nameWarning}
                       <div class="subtle">${escapeHtml(item.sample || "-")} ${item.well ? `| Well ${escapeHtml(item.well)}` : ""}</div>
                     </td>
                     <td>${escapeHtml(item.result || "-")}</td>
@@ -11817,7 +11827,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                 const transcribeTargetMarkup = manualTranscriptionApi?.buildManualTranscriptionTargetFieldMarkup?.({
                   model: transcribeUiModel,
                   item,
-                  kind: addType === "abr" ? "abr" : "pathogen",
+                  kind: rowType,
                   sourceIndex,
                   section: "detailed",
                   escapeHtml,
@@ -11835,6 +11845,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                 `;
                 return `
                   <tr>
+                    <td class="lab-detail-type-cell">${typeField}</td>
                     <td class="lab-detail-primary-cell">
                       <div class="lab-detail-row-head">
                         ${transcribeTargetMarkup}
@@ -11848,6 +11859,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                           Remove
                         </button>
                       </div>
+                      ${nameWarning}
                       <div class="transcribe-row-meta">
                         <span class="transcribe-row-chip">${escapeHtml(item.sample || "-")}</span>
                         ${item.well ? `<span class="transcribe-row-chip">Well ${escapeHtml(item.well)}</span>` : ""}
@@ -11869,6 +11881,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               }
               return `
                 <tr>
+                  <td class="lab-detail-type-cell">${typeField}</td>
                   <td class="lab-detail-primary-cell">
                     <div class="lab-detail-row-head">
                       <input class="preview-edit-input" data-validate-field="pathogen" data-validate-section="detailed" data-validate-index="${sourceIndex}" value="${escapeHtml(item.pathogen || "")}" placeholder="${escapeHtml(label)}">
@@ -11882,6 +11895,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                         Remove
                       </button>
                     </div>
+                    ${nameWarning}
                     <div class="subtle">${escapeHtml(item.sample || "-")} ${item.well ? `| Well ${escapeHtml(item.well)}` : ""}</div>
                   </td>
                   <td><input class="preview-edit-input" data-validate-field="result" data-validate-section="detailed" data-validate-index="${sourceIndex}" value="${escapeHtml(item.result || "")}" placeholder="Result"></td>
@@ -11890,22 +11904,21 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               `;
             })
             .join("")
-        : `<tr><td colspan="3">No ${label.toLowerCase()} rows available.</td></tr>`;
+        : `<tr><td colspan="4">No detailed result rows available.</td></tr>`;
 
       if (!editable) return dataRows;
       return `
         ${dataRows}
         <tr class="lab-detail-add-row">
-          <td colspan="3">
-            <button
-              type="button"
-              class="lab-detail-add-btn"
-              data-add-validate-row="${escapeHtml(addType)}"
-              data-order-id="${escapeHtml(order.orderId || "")}"
-            >
-              <span class="lab-detail-add-icon">+</span>
-              <span>Add ${escapeHtml(label)}</span>
-            </button>
+          <td colspan="4">
+            <div class="lab-detail-add-actions">
+              <button type="button" class="lab-detail-add-btn" data-add-validate-row="pathogen" data-order-id="${escapeHtml(order.orderId || "")}">
+                <span class="lab-detail-add-icon">+</span><span>Add Pathogen</span>
+              </button>
+              <button type="button" class="lab-detail-add-btn" data-add-validate-row="abr" data-order-id="${escapeHtml(order.orderId || "")}">
+                <span class="lab-detail-add-icon">+</span><span>Add ABR Gene</span>
+              </button>
+            </div>
           </td>
         </tr>
       `;
@@ -11913,8 +11926,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
 
     const pathogenSummaryRows = buildSummaryCards(pathogenDetectedEntries, "Pathogen");
     const abrSummaryRows = buildSummaryCards(abrDetectedEntries, "ABR Gene");
-    const pathogenDetailRowsMarkup = buildDetailedRows(pathogenDetailedEntries, "Pathogen", "pathogen");
-    const abrDetailRowsMarkup = buildDetailedRows(abrDetailedEntries, "ABR Gene", "abr");
+    const detailedRowsMarkup = buildDetailedRows(detailedEntries);
     const manualEditNote = getValidationManualEditNote(report);
     const transcribeIntroMarkup = isTranscribeMode
       ? manualTranscriptionApi?.buildManualTranscriptionIntroMarkup?.(transcribeUiModel, escapeHtml) || ""
@@ -11955,25 +11967,14 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
             <table class="lab-detail-table">
               <thead>
                 <tr>
-                  <th>Pathogens</th>
+                  <th>Type</th>
+                  <th>Target / Gene</th>
                   <th>Result</th>
                   <th>CT Value</th>
                 </tr>
               </thead>
               <tbody>
-                ${pathogenDetailRowsMarkup}
-              </tbody>
-            </table>
-            <table class="lab-detail-table">
-              <thead>
-                <tr>
-                  <th>ABR Genes</th>
-                  <th>Result</th>
-                  <th>CT Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${abrDetailRowsMarkup}
+                ${detailedRowsMarkup}
               </tbody>
             </table>
             ${
@@ -12319,8 +12320,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const [removedRow] = nextReport.detailed.splice(index, 1);
     if (!removedRow) return false;
     const refreshedReport = recalculateDetectedRows(nextReport) || nextReport;
-    const isAbrRow = String(removedRow.recordType || "").trim().toLowerCase() === "abr"
-      || extractResistanceGeneNames(removedRow.pathogen).length > 0;
+    const isAbrRow = resolveReportRowType(removedRow) === "abr";
     const itemLabel = String(removedRow.pathogen || "").trim() || (isAbrRow ? "ABR gene row" : "Pathogen row");
     validationDraftReports.set(orderKey, refreshedReport);
     validationUndoState.set(orderKey, {

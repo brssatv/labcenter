@@ -7678,6 +7678,24 @@ body.modal-open {
   vertical-align: top;
 }
 
+.lab-detail-type-cell {
+  width: 150px;
+  vertical-align: top;
+}
+
+.lab-detail-type-select {
+  min-width: 125px;
+  font-weight: 700;
+}
+
+.lab-detail-name-warning {
+  margin-top: 5px;
+  color: #9a3f17;
+  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .lab-detail-row-head {
   display: flex;
   align-items: center;
@@ -7713,6 +7731,15 @@ body.modal-open {
 
 .lab-detail-add-row td {
   padding: 0;
+}
+
+.lab-detail-add-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lab-detail-add-actions .lab-detail-add-btn + .lab-detail-add-btn {
+  border-left: 1px solid #b7c7d7;
 }
 
 .lab-detail-add-btn {
