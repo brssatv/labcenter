@@ -499,6 +499,7 @@ function renderRequisitionList() {
         <div class="req-view-selection"><span id="req-selected-count">0</span> records selected</div>
         <div class="req-view-header-actions">
           <button type="button" class="btn-primary req-mail-btn">Resend Result Email</button>
+          <button type="button" class="btn-primary req-export-btn">Download Data</button>
           <button type="button" class="btn-ghost req-tools-btn">Tools ▾</button>
         </div>
       </div>
@@ -830,6 +831,11 @@ function renderRequisitionList() {
       node.value = "";
     });
     renderRows();
+  });
+
+  window.RequisitionExport?.init({
+    trigger: panelBody.querySelector(".req-export-btn"),
+    getRows: () => allOrders.map((item, idx) => mapOrder(item, idx)),
   });
 
   renderRows();
