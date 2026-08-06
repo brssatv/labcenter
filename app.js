@@ -7029,6 +7029,7 @@ function renderOutputResults() {
   let publishModalOrderId = "";
   let publishModalView = "menu";
   const publishFaxDisplayNumber = "352-565-4554";
+  let publishModalEmailState = { orderId: "", loading: false, senderEmail: "", recipientEmail: "", error: "" };
   let publishModalFaxState = {
     orderId: "",
     loading: false,
@@ -7042,6 +7043,7 @@ function renderOutputResults() {
   const openingPharmdReceiptOrders = new Set();
   const openingCombinedPharmdOrders = new Set();
   const publishingFaxOrders = new Set();
+  const publishingEmailOrders = new Set();
   const workflowSavingOrders = new Set();
   const previewLoadingOrders = new Set();
 
@@ -7175,6 +7177,43 @@ function renderOutputResults() {
     };
   }
 
+  function resetPublishModalEmailState() {
+    publishModalEmailState = { orderId: "", loading: false, senderEmail: "", recipientEmail: "", error: "" };
+  }
+
+  async function loadCompletedPublishEmailDetails(orderId) {
+    const normalizedOrderId = String(orderId || "").trim();
+    if (!normalizedOrderId) throw new Error("Order not found.");
+    publishModalEmailState = { orderId: normalizedOrderId, loading: true, senderEmail: "", recipientEmail: "", error: "" };
+    renderCompletedPublishModal();
+    try {
+      const payload = await requestJson(`/api/orders/${encodeURIComponent(normalizedOrderId)}/publish-email-details`, { method: "GET" });
+      if (publishModalOrderId !== normalizedOrderId) return payload;
+      publishModalEmailState = {
+        orderId: normalizedOrderId,
+        loading: false,
+        senderEmail: String(payload?.senderEmail || "").trim(),
+        recipientEmail: String(payload?.recipientEmail || "").trim(),
+        error: "",
+      };
+      renderCompletedPublishModal();
+      return payload;
+    } catch (error) {
+      if (publishModalOrderId === normalizedOrderId) {
+        const message = String(error?.message || "").trim();
+        publishModalEmailState = {
+          orderId: normalizedOrderId,
+          loading: false,
+          senderEmail: "",
+          recipientEmail: "",
+          error: message.startsWith("<") ? "Email details are unavailable. Restart the server and try again." : (message || "Unable to load email details."),
+        };
+        renderCompletedPublishModal();
+      }
+      throw error;
+    }
+  }
+
   async function loadCompletedPublishFaxDetails(orderId) {
     const normalizedOrderId = String(orderId || "").trim();
     if (!normalizedOrderId) throw new Error("Order not found.");
@@ -7225,6 +7264,7 @@ function renderOutputResults() {
     publishModalOrderId = "";
     publishModalView = "menu";
     resetPublishModalFaxState();
+    resetPublishModalEmailState();
     renderCompletedPublishModal();
   }
 
@@ -7241,7 +7281,9 @@ function renderOutputResults() {
     }
 
     const isFaxConfirmView = publishModalView === "fax-confirm";
+    const isEmailConfirmView = publishModalView === "email-confirm";
     const isFaxSending = publishingFaxOrders.has(String(order?.orderId || "").trim());
+    const isEmailSending = publishingEmailOrders.has(String(order?.orderId || "").trim());
     const isPharmdBypassed = isPharmdSkipped(order);
     const hasFaxReport = isPharmdBypassed ? hasSavedFinalReport(order) : canPreviewCombinedPharmdReport(order);
     const faxAttachmentName = isPharmdBypassed
@@ -7278,7 +7320,7 @@ function renderOutputResults() {
           <div>
             <p class="badge">Completed Report</p>
             <h3 id="output-results-publish-title">Publish Report</h3>
-            <p class="subtle output-results-publish-copy">${isFaxConfirmView ? "Review the fax details below and confirm before the report is sent." : "Choose how you want to route this completed report next."}</p>
+            <p class="subtle output-results-publish-copy">${isFaxConfirmView ? "Review the fax details below and confirm before the report is sent." : isEmailConfirmView ? "Review the email notification below and confirm before it is sent." : "Choose how you want to route this completed report next."}</p>
           </div>
           <button type="button" class="preview-close-btn" data-close-output-publish-modal aria-label="Close publish dialog">&times;</button>
         </div>
@@ -7301,7 +7343,34 @@ function renderOutputResults() {
               <strong>${escapeHtml(order?.provider || "-")}</strong>
             </div>
           </div>
-          ${isFaxConfirmView ? `
+          ${isEmailConfirmView ? `
+            <section class="output-results-publish-confirm-card">
+              <div class="output-results-publish-confirm-head">
+                <div>
+                  <p class="badge">Email Confirmation</p>
+                  <h4>Confirm Send Email</h4>
+                </div>
+              </div>
+              <div class="output-results-publish-route">
+                <div>
+                  <span>From</span>
+                  <strong>${escapeHtml(publishModalEmailState.loading ? "Loading..." : (publishModalEmailState.senderEmail || "Unavailable"))}</strong>
+                </div>
+                <div>
+                  <span>To</span>
+                  <strong>${escapeHtml(publishModalEmailState.loading ? "Loading..." : (publishModalEmailState.recipientEmail || "Unavailable"))}</strong>
+                </div>
+              </div>
+              <p class="subtle output-results-publish-note">${escapeHtml(publishModalEmailState.error || `Order #${orderId || "-"} is complete. The recipient will be asked to log in to the portal to review the result.`)}</p>
+            </section>
+            <div class="output-results-publish-actions output-results-publish-actions-split">
+              <button type="button" class="table-action-btn secondary-btn" data-publish-view="menu" ${isEmailSending ? "disabled" : ""}>Back</button>
+              <div class="output-results-publish-action-group">
+                <button type="button" class="table-action-btn secondary-btn" data-close-output-publish-modal ${isEmailSending ? "disabled" : ""}>Cancel</button>
+                <button type="button" class="table-action-btn publish-report-btn" data-confirm-publish-email="${escapeHtml(orderId)}" ${publishModalEmailState.senderEmail && publishModalEmailState.recipientEmail && !publishModalEmailState.loading && !isEmailSending ? "" : "disabled"}>${isEmailSending ? "Sending..." : "Confirm Send Email"}</button>
+              </div>
+            </div>
+          ` : isFaxConfirmView ? `
             <section class="output-results-publish-confirm-card">
               <div class="output-results-publish-confirm-head">
                 <div>
@@ -7387,6 +7456,7 @@ function renderOutputResults() {
     publishModalOrderId = String(orderId || "").trim();
     publishModalView = "menu";
     resetPublishModalFaxState(order);
+    resetPublishModalEmailState();
     renderCompletedPublishModal();
   }
 
@@ -7414,6 +7484,18 @@ function renderOutputResults() {
     renderOutputResultsTable();
     renderCompletedPublishModal();
     return payload;
+  }
+
+  async function sendCompletedReportEmail(orderId) {
+    if (!csrfToken) await fetchCsrfToken();
+    return requestJson(`/api/orders/${encodeURIComponent(orderId)}/publish-email`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({ confirmed: true }),
+    });
   }
 
   function resolvePharmdRemotePath(order) {
@@ -8454,7 +8536,32 @@ function renderOutputResults() {
         loadCompletedPublishFaxDetails(order?.orderId).catch(() => {});
         return;
       }
-      alert(`Email publishing for Order #${order?.orderId || "-"} will be connected next.`);
+      if (channel === "email") {
+        publishModalView = "email-confirm";
+        renderCompletedPublishModal();
+        loadCompletedPublishEmailDetails(order?.orderId).catch(() => {});
+      }
+      return;
+    }
+
+    const confirmEmailBtn = event.target.closest("[data-confirm-publish-email]");
+    if (confirmEmailBtn) {
+      const orderId = String(confirmEmailBtn.getAttribute("data-confirm-publish-email") || "").trim();
+      if (!orderId || publishingEmailOrders.has(orderId)) return;
+      publishingEmailOrders.add(orderId);
+      renderCompletedPublishModal();
+      sendCompletedReportEmail(orderId)
+        .then((payload) => {
+          closeCompletedPublishModal();
+          alert(payload?.message || `Email notification sent for Order #${orderId}.`);
+        })
+        .catch((error) => {
+          alert(error?.message || "Unable to send email notification.");
+        })
+        .finally(() => {
+          publishingEmailOrders.delete(orderId);
+          renderCompletedPublishModal();
+        });
       return;
     }
 

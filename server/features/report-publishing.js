@@ -56,6 +56,38 @@ function resolvePublishFaxSenderEmail(req, senderEmailOverride) {
     || "";
 }
 
+function getPublishEmailConfig(publishEmailConfig) {
+  const config = publishEmailConfig && typeof publishEmailConfig === "object" ? publishEmailConfig : {};
+  return {
+    apiKey: String(config.apiKey || "").trim(),
+    mode: String(config.mode || "disabled").trim().toLowerCase(),
+    recipientEmail: String(config.recipientEmail || "").trim().toLowerCase(),
+    senderEmail: String(config.senderEmail || "").trim().toLowerCase(),
+  };
+}
+
+async function sendSendGridOrderCompleteEmail({ apiKey, senderEmail, recipientEmail, orderId }) {
+  const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email: recipientEmail }] }],
+      from: { email: senderEmail },
+      subject: `Order #${orderId} is complete`,
+      content: [{
+        type: "text/plain",
+        value: `Order #${orderId} is complete. Please log in to the portal to review the result.`,
+      }],
+    }),
+  });
+  if (response.ok) return;
+  const responseText = await response.text();
+  throw createStatusError(`SendGrid could not send the email (${response.status}).${responseText ? " Check the configured sender and API key." : ""}`, 502);
+}
+
 function formatFaxDisplayNumber(value) {
   const digits = String(value || "").replace(/\D+/g, "");
   const normalized = digits.length === 11 && digits.startsWith("1")
@@ -624,10 +656,61 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     canAccessOrderRecord,
     auditLog,
     isLocalGeneratedReportRecord,
+    publishEmailConfig,
     publishFaxMode,
     srfaxConfig,
   } = dependencies;
   const activeReportRenderJobs = new Map();
+
+  app.get("/api/orders/:orderId/publish-email-details", (req, res) => {
+    if (!hasReportPdfAccess(req)) return res.status(401).json({ error: "Authentication required." });
+    const orderId = String(req.params.orderId || "").trim();
+    const existingOrder = orderId ? portalStore.getOrderById(orderId) : null;
+    if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+    const emailConfig = getPublishEmailConfig(publishEmailConfig);
+    if (!isLikelyEmailAddress(emailConfig.senderEmail) || !isLikelyEmailAddress(emailConfig.recipientEmail)) {
+      return res.status(503).json({ error: "Email publishing is not configured. Set PUBLISH_EMAIL_SENDER and PUBLISH_EMAIL_RECIPIENT." });
+    }
+    return res.json({ senderEmail: emailConfig.senderEmail, recipientEmail: emailConfig.recipientEmail });
+  });
+
+  app.post("/api/orders/:orderId/publish-email", async (req, res) => {
+    if (!hasReportPdfAccess(req)) return res.status(401).json({ error: "Authentication required." });
+    const orderId = String(req.params.orderId || "").trim();
+    if (!orderId || !req.body?.confirmed) {
+      return res.status(400).json({ error: "Email send confirmation is required." });
+    }
+    const existingOrder = portalStore.getOrderById(orderId);
+    if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+    const emailConfig = getPublishEmailConfig(publishEmailConfig);
+    if (emailConfig.mode !== "live" || !emailConfig.apiKey) {
+      return res.status(503).json({ error: "Email publishing is disabled. Configure SendGrid and set LABCENTER_PUBLISH_EMAIL_MODE=live." });
+    }
+    if (!isLikelyEmailAddress(emailConfig.senderEmail) || !isLikelyEmailAddress(emailConfig.recipientEmail)) {
+      return res.status(503).json({ error: "Email publishing is not configured. Set PUBLISH_EMAIL_SENDER and PUBLISH_EMAIL_RECIPIENT." });
+    }
+    try {
+      await sendSendGridOrderCompleteEmail({ ...emailConfig, orderId });
+      auditLog(req, "publish_final_report_email", "success", {
+        orderId,
+        deliveryVendor: "SendGrid",
+        recipientEmail: emailConfig.recipientEmail,
+        senderEmail: emailConfig.senderEmail,
+      });
+      return res.json({ ok: true, message: `Email notification sent to ${emailConfig.recipientEmail}.` });
+    } catch (error) {
+      auditLog(req, "publish_final_report_email", "failed", {
+        orderId,
+        deliveryVendor: "SendGrid",
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(Number(error?.statusCode) || 502).json({ error: error?.message || "Unable to send email notification." });
+    }
+  });
 
   app.get("/api/orders/:orderId/generated-report-pdf/:reportType", requireAuthenticatedUser, async (req, res) => {
     try {

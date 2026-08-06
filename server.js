@@ -99,6 +99,9 @@ const PUBLISH_FAX_RECEIVER_DIGITS = "13525654554";
 const PUBLISH_FAX_DISPLAY_NUMBER = "352-565-4554";
 const PUBLISH_FAX_TIMEOUT_MS = Math.max(5000, Math.min(120000, Math.floor(Number(process.env.SRFAX_TIMEOUT_MS || 30000) || 30000)));
 const publishEmailMode = normalizePublishMode(process.env.LABCENTER_PUBLISH_EMAIL_MODE || "disabled");
+const SENDGRID_API_KEY = String(process.env.SENDGRID_API_KEY || "").trim();
+const PUBLISH_EMAIL_SENDER = String(process.env.PUBLISH_EMAIL_SENDER || "vitalbeingauto@gmail.com").trim().toLowerCase();
+const PUBLISH_EMAIL_RECIPIENT = String(process.env.PUBLISH_EMAIL_RECIPIENT || "mrittunjai@innovexlab.com").trim().toLowerCase();
 const publishFaxMode = normalizePublishMode(
   process.env.LABCENTER_PUBLISH_FAX_MODE || (SRFAX_ACCESS_ID && SRFAX_ACCESS_PWD ? "live" : "disabled")
 );
@@ -3295,6 +3298,12 @@ registerReportPublishingRoutes({
     hasReportPdfAccess,
     isLocalGeneratedReportRecord,
     portalStore,
+    publishEmailConfig: {
+      apiKey: SENDGRID_API_KEY,
+      mode: publishEmailMode,
+      recipientEmail: PUBLISH_EMAIL_RECIPIENT,
+      senderEmail: PUBLISH_EMAIL_SENDER,
+    },
     publishFaxMode,
     reportPdfEnabled,
     reportPdfRendererPath,
