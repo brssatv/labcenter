@@ -138,6 +138,15 @@
 .req-export-field-grid input:checked + span::before { border-color: #2f7fd3; background: #2f7fd3; }
 .req-export-field-grid input:checked + span::after { opacity: 1; }
 .req-export-field-grid input:focus-visible + span { box-shadow: var(--focus-ring); }
+.req-export-field-grid .req-export-field-master { grid-column: 1 / -1; }
+.req-export-field-grid .req-export-field-master > span {
+  min-height: 46px;
+  border-color: #a8c5e4;
+  background: #f0f7ff;
+  color: #205a92;
+}
+.req-export-field-grid .req-export-field-master > span::before { border-color: #5487bd; }
+.req-export-field-grid .req-export-field-master:hover > span { background: #e9f3fe; }
 .req-export-status { min-height: 18px; margin: -4px 2px 0; color: var(--warn); font-size: .88rem; font-weight: 600; }
 .req-export-footer {
   display: flex;
