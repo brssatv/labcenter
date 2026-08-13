@@ -394,6 +394,14 @@
       COUNT(...items) {
         return flattenValues(items).filter(Boolean).length;
       },
+      AVG(...items) {
+        const values = flattenValues(items)
+          .filter((item) => item !== null && item !== undefined && item !== "")
+          .map((item) => Number(item))
+          .filter((item) => Number.isFinite(item));
+        if (!values.length) return null;
+        return values.reduce((total, item) => total + item, 0) / values.length;
+      },
       ANY(...items) {
         return flattenValues(items).some(Boolean);
       },

@@ -27,10 +27,22 @@ test("formula playground default preview evaluates the starter SARS-CoV-2 expres
   assert.equal(preview.formulaResult.error, "");
   assert.equal(preview.inputView, "json");
   assert.equal(preview.outputView, "json");
+  assert.equal(preview.selectedPanel.label, "Respiratory Pathogens Panel");
+  assert.equal(preview.formulaEnabled, true);
+  assert.equal(preview.formulaActive, true);
   assert.equal(preview.selectedGene.label, "E Gene");
   assert.equal(preview.selectedOrganism.label, "SARS-CoV-2");
   assert.equal(preview.selectedPathogen.label, "SARS-CoV-2");
   assert.equal(preview.outputObject.evaluated_result, "Positive");
+  assert.equal(preview.outputObject.average_positive_ct, 32);
+  assert.equal(preview.outputObject.formula_enabled, true);
+  assert.equal(preview.outputObject.formula_applied, true);
+  assert.deepEqual(
+    preview.outputRows.filter((row) => row.kind === "gene").map((row) => row.label),
+    []
+  );
+  assert.equal(preview.outputRows[0].label, "SARS-CoV-2");
+  assert.equal(preview.outputRows[0].ct, 32);
   assert.ok(preview.outputObject.output_rows.length >= 4);
 });
 
@@ -49,6 +61,7 @@ test("formula playground lets edited JSON data change the live result", () => {
 
   assert.equal(preview.formulaResult.status, "Negative");
   assert.equal(preview.outputObject.evaluated_result, "Negative");
+  assert.equal(preview.outputObject.average_positive_ct, null);
 });
 
 test("formula playground keeps showing the last run output until Run Formula is requested", () => {
@@ -84,6 +97,7 @@ test("formula playground can switch data input between JSON and table views", ()
 
   assert.equal(preview.inputView, "table");
   assert.deepEqual(preview.inputModel.selections.map((row) => row.label), [
+    "Selected Panel",
     "Selected Gene",
     "Selected Organism",
     "Selected Pathogen",
@@ -93,6 +107,40 @@ test("formula playground can switch data input between JSON and table views", ()
     "Organisms",
     "Pathogens",
   ]);
+});
+
+test("formula playground does not apply the SARS-CoV-2 formula to a non-respiratory panel", () => {
+  const sampleData = createDefaultFormulaPlaygroundData();
+  sampleData.selected_panel = "Urinary Tract Infection Panel";
+
+  const preview = buildFormulaPlaygroundPreview({
+    ...createDefaultFormulaPlaygroundDraft(),
+    dataInput: stringifyFormulaPlaygroundData(sampleData),
+  });
+
+  assert.equal(preview.formulaEnabled, true);
+  assert.equal(preview.formulaActive, false);
+  assert.equal(preview.formulaResult.status, "Formula Not Applied");
+  assert.equal(preview.outputObject.formula_applied, false);
+  assert.ok(preview.outputRows.some((row) => row.kind === "gene" && row.label === "E Gene"));
+});
+
+test("formula playground averages detected positive target values and excludes a not-detected Ct", () => {
+  const sampleData = createDefaultFormulaPlaygroundData();
+  sampleData.genes = [
+    { label: "E Gene", ct: 27, result: "Detected" },
+    { label: "N Gene", ct: 20, result: "Detected" },
+    { label: "Orf1ab", ct: 25, result: "Not Detected" },
+  ];
+
+  const preview = buildFormulaPlaygroundPreview({
+    ...createDefaultFormulaPlaygroundDraft(),
+    dataInput: stringifyFormulaPlaygroundData(sampleData),
+  });
+
+  assert.equal(preview.formulaResult.status, "Positive");
+  assert.equal(preview.formulaResult.ct, 23.5);
+  assert.equal(preview.outputRows[0].ct, 23.5);
 });
 
 test("formula playground can switch processed output between JSON and table views", () => {

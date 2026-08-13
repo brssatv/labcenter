@@ -87,11 +87,17 @@
 
   function buildSarsCov2FinalReportPlaceholder(formula) {
     const normalized = formula || getSarsCov2FinalReportFormulaConfig();
-    const comparisons = normalized.targets.map((target) => `${target.label} Ct <= ${normalized.thresholdCt}`);
+    const panelLabels = normalized.activePanels.map((panel) => panel.label).join(", ");
+    const comparisons = normalized.targets.map(
+      (target) => `${target.label} is Detected AND Ct <= ${normalized.thresholdCt}`
+    );
     return [
+      `WHEN Selected Panel matches ${panelLabels}`,
       `IF COUNT(${comparisons.join(", ")}) >= ${normalized.minimumPositiveTargets}`,
       `THEN ${normalized.pathogenLabel} = Positive`,
-      `ELSE ${normalized.pathogenLabel} = Negative`,
+      `AND ${normalized.pathogenLabel} Ct = AVERAGE(Ct of Detected qualifying targets only)`,
+      `ELSE ${normalized.pathogenLabel} = Negative AND Ct = blank`,
+      `OUTPUT one ${normalized.pathogenLabel} row and omit its component gene rows`,
     ].join("\n");
   }
 
@@ -110,6 +116,15 @@
             label: String(item.label || item.key).trim(),
           }))
       : [];
+    const activePanels = Array.isArray(formula?.activePanels)
+      ? formula.activePanels
+          .filter((item) => item && (item.key || item.label))
+          .map((item) => ({
+            key: String(item.key || "").trim(),
+            label: String(item.label || item.key || "").trim(),
+            aliases: Array.isArray(item.aliases) ? item.aliases.map((alias) => String(alias || "").trim()).filter(Boolean) : [],
+          }))
+      : [];
 
     const normalized = {
       key: String(formula?.key || "sars-cov-2-final-report"),
@@ -122,6 +137,9 @@
       minimumPositiveTargets: Number.isFinite(Number(formula?.minimumPositiveTargets))
         ? Number(formula.minimumPositiveTargets)
         : 2,
+      activePanels: activePanels.length
+        ? activePanels
+        : [{ key: "respiratory-pathogens-panel", label: "Respiratory Pathogens Panel", aliases: [] }],
       targets: targets.length ? targets : defaultTargets,
     };
 
@@ -400,6 +418,15 @@
             <p>Enter sample data, edit the formula, and run the formula to refresh the processed output.</p>
           </div>
           <div class="formula-playground-actions">
+            <span
+              class="mr-stat formula-playground-formula-state ${playgroundPreview.formulaEnabled ? "is-enabled" : "is-disabled"}"
+              data-formula-playground-formula-state
+            >
+              <strong>${playgroundPreview.formulaEnabled ? "Formula Enabled" : "Formula Disabled"}</strong>
+              <span>${playgroundPreview.formulaActive
+                ? `Active for ${escapeHtml(playgroundPreview.selectedPanel?.label || "selected panel")}`
+                : `Not active for ${escapeHtml(playgroundPreview.selectedPanel?.label || "selected panel")}`}</span>
+            </span>
             <button type="button" class="btn-primary" data-formula-playground-run>Run Formula</button>
             <button type="button" class="btn-ghost" data-formula-playground-reset>Reset Draft</button>
           </div>
@@ -577,6 +604,12 @@
     }
     if (Number.isFinite(Number(formula.minimumPositiveTargets))) {
       stats.push({ value: String(Number(formula.minimumPositiveTargets)), label: "Targets Required" });
+    }
+    if (Array.isArray(formula.activePanels) && formula.activePanels.length) {
+      stats.push({
+        value: formula.activePanels.map((panel) => panel.label || panel.key).filter(Boolean).join(", "),
+        label: "Panel Scope",
+      });
     }
     if (Array.isArray(formula.hiddenTargets) && formula.hiddenTargets.length) {
       stats.push({ value: String(formula.hiddenTargets.length), label: "Hidden Targets" });

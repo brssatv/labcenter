@@ -15,6 +15,18 @@
     { key: "finalReport", label: "Final Report" },
   ]);
 
+  const respiratoryPanelScope = Object.freeze([
+    Object.freeze({
+      key: "respiratory-pathogens-panel",
+      label: "Respiratory Pathogens Panel",
+      aliases: Object.freeze([
+        "Respiratory Pathogen Panel",
+        "Respiratory Pathogens Panel",
+        "Respiratory Panel",
+      ]),
+    }),
+  ]);
+
   const sarsCov2FinalReportFormula = Object.freeze({
     key: "sars-cov-2-final-report",
     title: "SARS-CoV-2 Final Report Formula",
@@ -22,6 +34,7 @@
     reportType: "finalReport",
     thresholdCt: 33,
     minimumPositiveTargets: 2,
+    activePanels: respiratoryPanelScope,
     targets: Object.freeze([
       Object.freeze({ key: "e", label: "E Gene" }),
       Object.freeze({ key: "n", label: "N Gene" }),
@@ -57,6 +70,13 @@
     return items.map((item) => ({ ...item }));
   }
 
+  function clonePanelList(items) {
+    return items.map((item) => ({
+      ...item,
+      aliases: Array.isArray(item?.aliases) ? [...item.aliases] : [],
+    }));
+  }
+
   function cloneFormulaSettings(settings) {
     return Object.fromEntries(
       Object.entries(settings || {}).map(([key, value]) => [
@@ -72,13 +92,92 @@
       .replace(/[^a-z0-9]/g, "");
   }
 
+  function normalizePanelRuleKey(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  }
+
+  function getPanelReferenceValues(panelReference) {
+    if (panelReference && typeof panelReference === "object") {
+      return [
+        panelReference.id,
+        panelReference.key,
+        panelReference.name,
+        panelReference.label,
+        panelReference.panelName,
+      ];
+    }
+    return [panelReference];
+  }
+
+  function isPanelInFormulaScope(panelReference, formula = sarsCov2FinalReportFormula) {
+    const panelKeys = getPanelReferenceValues(panelReference)
+      .map((value) => normalizePanelRuleKey(value))
+      .filter(Boolean);
+    if (!panelKeys.length) return false;
+
+    return formula.activePanels.some((panel) => {
+      const configuredKeys = [panel.key, panel.label, ...(panel.aliases || [])]
+        .map((value) => normalizePanelRuleKey(value))
+        .filter(Boolean);
+      return panelKeys.some((key) => configuredKeys.includes(key));
+    });
+  }
+
+  function normalizeSarsCov2TargetKey(value) {
+    const key = normalizePathogenRuleKey(value);
+    if (!key) return "";
+    if (key === "egene" || key.endsWith("egene")) return "e";
+    if (key === "ngene" || key.endsWith("ngene")) return "n";
+    if (key.includes("orf1ab") || key.includes("orflab")) return "orf1ab";
+    return "";
+  }
+
+  function isSarsCov2ComponentTarget(value) {
+    return Boolean(normalizeSarsCov2TargetKey(value));
+  }
+
+  function filterSarsCov2ComponentRows(rows) {
+    return (Array.isArray(rows) ? rows : []).filter(
+      (row) => !isSarsCov2ComponentTarget(row?.pathogen || row?.target || row?.gene)
+    );
+  }
+
+  function parseFormulaCtValue(row) {
+    const candidates = [row?.ctRaw, row?.ctValue, row?.ct];
+    for (const rawValue of candidates) {
+      if (rawValue === null || rawValue === undefined || rawValue === "") continue;
+      const rawText = String(rawValue).trim();
+      if (!rawText || rawText.toLowerCase() === "undetermined") continue;
+      const matched = rawText.match(/-?\d+(?:\.\d+)?/);
+      if (!matched) continue;
+      const parsed = Number(matched[0]);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  }
+
+  function isPositiveFormulaResult(value) {
+    if (typeof value === "boolean") return value;
+    const normalized = normalizePathogenRuleKey(value);
+    if (!normalized || normalized.includes("notdetected") || normalized.includes("negative")) return false;
+    return normalized.includes("detected") || normalized.includes("positive") || normalized === "true";
+  }
+
   function buildCtThresholdPlaceholder(formula) {
     const normalized = formula || sarsCov2FinalReportFormula;
-    const comparisons = normalized.targets.map((target) => `${target.label} Ct <= ${normalized.thresholdCt}`);
+    const panelLabels = normalized.activePanels.map((panel) => panel.label).join(", ");
+    const comparisons = normalized.targets.map(
+      (target) => `${target.label} is Detected AND Ct <= ${normalized.thresholdCt}`
+    );
     return [
+      `WHEN Selected Panel matches ${panelLabels}`,
       `IF COUNT(${comparisons.join(", ")}) >= ${normalized.minimumPositiveTargets}`,
       `THEN ${normalized.pathogenLabel} = Positive`,
-      `ELSE ${normalized.pathogenLabel} = Negative`,
+      `AND ${normalized.pathogenLabel} Ct = AVERAGE(Ct of Detected qualifying targets only)`,
+      `ELSE ${normalized.pathogenLabel} = Negative AND Ct = blank`,
+      `OUTPUT one ${normalized.pathogenLabel} row and omit its component gene rows`,
     ].join("\n");
   }
 
@@ -194,9 +293,107 @@
       ...sarsCov2FinalReportFormula,
       enabled,
       statusLabel: enabled ? "Enabled" : "Disabled",
+      activePanels: clonePanelList(sarsCov2FinalReportFormula.activePanels),
       targets: cloneList(sarsCov2FinalReportFormula.targets),
       placeholder: buildCtThresholdPlaceholder(sarsCov2FinalReportFormula),
     };
+  }
+
+  function isSarsCov2FinalReportFormulaActiveForPanel(panelReference) {
+    return isSarsCov2FinalReportFormulaEnabled()
+      && isPanelInFormulaScope(panelReference, sarsCov2FinalReportFormula);
+  }
+
+  function evaluateSarsCov2FinalReportFormula(rows, panelReference) {
+    const formula = getSarsCov2FinalReportFormula();
+    const formulaActive = formula.enabled !== false && isPanelInFormulaScope(panelReference, formula);
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const targetRows = new Map();
+
+    sourceRows.forEach((row) => {
+      const targetKey = normalizeSarsCov2TargetKey(row?.pathogen || row?.target || row?.gene);
+      if (!targetKey) return;
+      const ctValue = parseFormulaCtValue(row);
+      const detected = isPositiveFormulaResult(row?.result);
+      const qualifies = detected && Number.isFinite(ctValue) && ctValue <= formula.thresholdCt;
+      const candidate = { row, ctValue, detected, qualifies };
+      const existing = targetRows.get(targetKey);
+      if (!existing) {
+        targetRows.set(targetKey, candidate);
+        return;
+      }
+
+      const candidateRank = qualifies ? 3 : detected && Number.isFinite(ctValue) ? 2 : Number.isFinite(ctValue) ? 1 : 0;
+      const existingRank = existing.qualifies
+        ? 3
+        : existing.detected && Number.isFinite(existing.ctValue)
+          ? 2
+          : Number.isFinite(existing.ctValue)
+            ? 1
+            : 0;
+      if (
+        candidateRank > existingRank
+        || (candidateRank === existingRank
+          && Number.isFinite(ctValue)
+          && (!Number.isFinite(existing.ctValue) || ctValue < existing.ctValue))
+      ) {
+        targetRows.set(targetKey, candidate);
+      }
+    });
+
+    const genes = formula.targets.map((target) => {
+      const candidate = targetRows.get(target.key);
+      return {
+        ...target,
+        sourceRow: candidate?.row || null,
+        result: candidate?.row?.result || "",
+        ctValue: candidate?.ctValue ?? null,
+        detected: candidate?.detected === true,
+        metThreshold: candidate?.qualifies === true,
+      };
+    });
+    const positiveGenes = genes.filter((gene) => gene.metThreshold);
+    const positiveGeneCount = positiveGenes.length;
+    const evaluatedStatus = positiveGeneCount >= formula.minimumPositiveTargets ? "Positive" : "Negative";
+    const status = formulaActive ? evaluatedStatus : "Not Applied";
+    const positiveCtAverage = positiveGeneCount
+      ? positiveGenes.reduce((total, gene) => total + gene.ctValue, 0) / positiveGeneCount
+      : null;
+
+    return {
+      formulaEnabled: formula.enabled !== false,
+      formulaActive,
+      panelReference,
+      threshold: formula.thresholdCt,
+      genes,
+      positiveGeneCount,
+      positiveTargetKeys: positiveGenes.map((gene) => gene.key),
+      minimumPositiveTargets: formula.minimumPositiveTargets,
+      status,
+      result: status === "Positive" ? "Detected" : status === "Negative" ? "Not Detected" : "",
+      averageCt: status === "Positive" ? positiveCtAverage : null,
+    };
+  }
+
+  function buildSarsCov2FinalReportDetectedRows(rows, evaluation) {
+    const sourceRows = Array.isArray(rows) ? rows : [];
+    const nonSarsRows = sourceRows.filter((row) => {
+      const label = row?.pathogen || row?.target || row?.gene;
+      return !isSarsCov2ComponentTarget(label) && normalizePathogenRuleKey(label) !== "sarscov2";
+    });
+    if (!evaluation?.formulaActive || evaluation.status !== "Positive") return nonSarsRows;
+
+    const preferredSourceRow = evaluation.genes?.find((gene) => gene.metThreshold)?.sourceRow || null;
+    return [
+      {
+        ...(preferredSourceRow || {}),
+        pathogen: sarsCov2FinalReportFormula.pathogenLabel,
+        result: evaluation.result || "Detected",
+        ctRaw: String(evaluation.averageCt ?? ""),
+        ctValue: evaluation.averageCt,
+      },
+      ...nonSarsRows,
+    ];
   }
 
   function getRnasepFinalReportFormula() {
@@ -260,13 +457,15 @@
         ? "Final Report currently rolls the qualifying SARS-CoV-2 gene targets into one patient-facing SARS-CoV-2 result."
         : "Final Report currently keeps the raw gene-level rows because this SARS-CoV-2 formula is disabled.",
       evaluationSteps: [
-        `Evaluate ${targetLabels} against Ct <= ${formula.thresholdCt}.`,
+        `Apply this formula only when the selected panel matches ${formula.activePanels.map((panel) => panel.label).join(", ")}.`,
+        `Evaluate ${targetLabels} as positive only when the result is Detected and Ct <= ${formula.thresholdCt}.`,
         `Set ${formula.pathogenLabel} to Positive when at least ${formula.minimumPositiveTargets} targets qualify.`,
-        `Set ${formula.pathogenLabel} to Negative when fewer than ${formula.minimumPositiveTargets} targets qualify.`,
+        `Average the Ct values of qualifying positive targets only; set Ct to blank for a Negative result.`,
       ],
       displaySteps: formula.enabled !== false
         ? [
             "Pathogens Detected shows one SARS-CoV-2 row instead of separate E Gene, N Gene, and Orf1ab rows.",
+            "The consolidated SARS-CoV-2 row shows the positive-target Ct average.",
             "List of Pathogens Tested collapses the gene targets into a single SARS-CoV-2 label.",
             "The Final Report rollup follows the Positive or Negative status produced by this formula.",
           ]
@@ -433,6 +632,9 @@
   }
 
   return {
+    buildSarsCov2FinalReportDetectedRows,
+    evaluateSarsCov2FinalReportFormula,
+    filterSarsCov2ComponentRows,
     filterFinalReportRows,
     getFormulaBookSections,
     getInconclusiveFinalReportFormula,
@@ -446,6 +648,7 @@
     getReportFormulaReference,
     isReportFormulaEnabled,
     isRnasepHiddenOnFinalReport,
+    isSarsCov2FinalReportFormulaActiveForPanel,
     isSarsCov2FinalReportFormulaEnabled,
     normalizeFinalReportResult,
     normalizeFinalReportRow,

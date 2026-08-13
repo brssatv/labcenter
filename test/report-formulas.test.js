@@ -2,6 +2,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildSarsCov2FinalReportDetectedRows,
+  evaluateSarsCov2FinalReportFormula,
+  filterSarsCov2ComponentRows,
   filterFinalReportRows,
   getFormulaBookSections,
   getInconclusiveFinalReportFormula,
@@ -14,6 +17,7 @@ const {
   getSarsCov2FinalReportDisplayLogic,
   getReportFormulaReference,
   isRnasepHiddenOnFinalReport,
+  isSarsCov2FinalReportFormulaActiveForPanel,
   isSarsCov2FinalReportFormulaEnabled,
   normalizeFinalReportResult,
   normalizeFinalReportRow,
@@ -45,14 +49,95 @@ test("SARS-CoV-2 final report formula exposes the live threshold rule", () => {
   assert.equal(formula.reportType, "finalReport");
   assert.equal(formula.thresholdCt, 33);
   assert.equal(formula.minimumPositiveTargets, 2);
+  assert.deepEqual(formula.activePanels, [
+    {
+      key: "respiratory-pathogens-panel",
+      label: "Respiratory Pathogens Panel",
+      aliases: ["Respiratory Pathogen Panel", "Respiratory Pathogens Panel", "Respiratory Panel"],
+    },
+  ]);
   assert.deepEqual(formula.targets, [
     { key: "e", label: "E Gene" },
     { key: "n", label: "N Gene" },
     { key: "orf1ab", label: "Orf1ab" },
   ]);
-  assert.match(formula.placeholder, /IF COUNT\(E Gene Ct <= 33, N Gene Ct <= 33, Orf1ab Ct <= 33\) >= 2/);
+  assert.match(formula.placeholder, /WHEN Selected Panel matches Respiratory Pathogens Panel/);
+  assert.match(formula.placeholder, /IF COUNT\(E Gene is Detected AND Ct <= 33, N Gene is Detected AND Ct <= 33, Orf1ab is Detected AND Ct <= 33\) >= 2/);
   assert.match(formula.placeholder, /THEN SARS-CoV-2 = Positive/);
+  assert.match(formula.placeholder, /AVERAGE\(Ct of Detected qualifying targets only\)/);
   assert.match(formula.placeholder, /ELSE SARS-CoV-2 = Negative/);
+});
+
+test("SARS-CoV-2 final report formula is active only for the configured respiratory panel", () => {
+  assert.equal(isSarsCov2FinalReportFormulaActiveForPanel("Respiratory Pathogens Panel"), true);
+  assert.equal(isSarsCov2FinalReportFormulaActiveForPanel({ id: "respiratory-pathogens-panel" }), true);
+  assert.equal(isSarsCov2FinalReportFormulaActiveForPanel("Urinary Tract Infection Panel"), false);
+
+  setSarsCov2FinalReportFormulaEnabled(false);
+  assert.equal(isSarsCov2FinalReportFormulaActiveForPanel("Respiratory Panel"), false);
+});
+
+test("SARS-CoV-2 formula averages only detected qualifying target Ct values", () => {
+  const rows = [
+    { pathogen: "E GENE", result: "Detected", ctRaw: "", ctValue: 27 },
+    { pathogen: "N GENE", result: "Positive", ctValue: 20 },
+    { pathogen: "ORF1AB", result: "Not Detected", ctValue: 25 },
+  ];
+
+  const result = evaluateSarsCov2FinalReportFormula(rows, "Respiratory Pathogens Panel");
+
+  assert.equal(result.formulaActive, true);
+  assert.equal(result.status, "Positive");
+  assert.equal(result.result, "Detected");
+  assert.equal(result.positiveGeneCount, 2);
+  assert.deepEqual(result.positiveTargetKeys, ["e", "n"]);
+  assert.equal(result.averageCt, 23.5);
+  assert.equal(result.genes.find((gene) => gene.key === "orf1ab").metThreshold, false);
+
+  const displayRows = buildSarsCov2FinalReportDetectedRows([
+    ...rows,
+    { pathogen: "SARS-CoV-2", result: "Detected", ctValue: 27 },
+    { pathogen: "Haemophilus influenzae B", result: "Detected", ctValue: 25 },
+  ], result);
+  assert.deepEqual(displayRows.map((row) => row.pathogen), [
+    "SARS-CoV-2",
+    "Haemophilus influenzae B",
+  ]);
+  assert.equal(displayRows[0].ctValue, 23.5);
+  assert.equal(displayRows[0].ctRaw, "23.5");
+});
+
+test("SARS-CoV-2 component genes are removed without affecting genuine resistance genes", () => {
+  const rows = [
+    { pathogen: "E Gene", result: "Detected" },
+    { pathogen: "N Gene", result: "Detected" },
+    { pathogen: "Orf1ab", result: "Not Detected" },
+    { pathogen: "mecA", result: "Detected" },
+  ];
+
+  assert.deepEqual(filterSarsCov2ComponentRows(rows), [
+    { pathogen: "mecA", result: "Detected" },
+  ]);
+});
+
+test("SARS-CoV-2 formula excludes detected targets above the Ct threshold and does not run on another panel", () => {
+  const rows = [
+    { pathogen: "E Gene", result: "Detected", ctValue: 31 },
+    { pathogen: "N Gene", result: "Detected", ctValue: 35 },
+    { pathogen: "Orf1ab", result: "Not Detected", ctValue: 20 },
+  ];
+
+  const respiratoryResult = evaluateSarsCov2FinalReportFormula(rows, "Respiratory Panel");
+  assert.equal(respiratoryResult.status, "Negative");
+  assert.equal(respiratoryResult.result, "Not Detected");
+  assert.equal(respiratoryResult.positiveGeneCount, 1);
+  assert.equal(respiratoryResult.averageCt, null);
+
+  const otherPanelResult = evaluateSarsCov2FinalReportFormula(rows, "Wound Infection Panel");
+  assert.equal(otherPanelResult.formulaActive, false);
+  assert.equal(otherPanelResult.status, "Not Applied");
+  assert.equal(otherPanelResult.result, "");
+  assert.equal(otherPanelResult.averageCt, null);
 });
 
 test("RNaseP final report formula exposes the hide-row display rule", () => {
@@ -130,7 +215,9 @@ test("display logic describes the live SARS-CoV-2 final report rollup while enab
   assert.equal(isSarsCov2FinalReportFormulaEnabled(), true);
   assert.equal(displayLogic.enabled, true);
   assert.match(displayLogic.summary, /rolls the qualifying SARS-CoV-2 gene targets into one patient-facing SARS-CoV-2 result/i);
-  assert.match(displayLogic.evaluationSteps[0], /E Gene, N Gene, Orf1ab/i);
+  assert.match(displayLogic.evaluationSteps[0], /Respiratory Pathogens Panel/i);
+  assert.match(displayLogic.evaluationSteps[1], /E Gene, N Gene, Orf1ab/i);
+  assert.match(displayLogic.evaluationSteps[3], /Average the Ct values/i);
   assert.match(displayLogic.displaySteps[0], /one SARS-CoV-2 row/i);
 });
 

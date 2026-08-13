@@ -6927,6 +6927,16 @@ function isSarsCov2FinalReportFormulaEnabled() {
   return enabled !== false;
 }
 
+function isSarsCov2FinalReportFormulaActiveForPanel(panelReference) {
+  const isActive = getReportFormulasApi()?.isSarsCov2FinalReportFormulaActiveForPanel?.(panelReference);
+  if (typeof isActive === "boolean") return isActive;
+  return isSarsCov2FinalReportFormulaEnabled() && isRespiratoryPathogensPanel(
+    typeof panelReference === "object"
+      ? panelReference?.name || panelReference?.label || panelReference?.panelName || panelReference?.id
+      : panelReference
+  );
+}
+
 function getSarsCov2FinalReportFormulaConfig() {
   const formula = getFormulaBookApi()?.getSarsCov2FinalReportFormulaConfig?.()
     || getReportFormulasApi()?.getSarsCov2FinalReportFormula?.();
@@ -6941,15 +6951,25 @@ function getSarsCov2FinalReportFormulaConfig() {
     statusLabel: "Enabled",
     thresholdCt: 33,
     minimumPositiveTargets: 2,
+    activePanels: [
+      {
+        key: "respiratory-pathogens-panel",
+        label: "Respiratory Pathogens Panel",
+        aliases: ["Respiratory Pathogen Panel", "Respiratory Pathogens Panel", "Respiratory Panel"],
+      },
+    ],
     targets: [
       { key: "e", label: "E Gene" },
       { key: "n", label: "N Gene" },
       { key: "orf1ab", label: "Orf1ab" },
     ],
     placeholder: [
-      "IF COUNT(E Gene Ct <= 33, N Gene Ct <= 33, Orf1ab Ct <= 33) >= 2",
+      "WHEN Selected Panel matches Respiratory Pathogens Panel",
+      "IF COUNT(Detected E Gene Ct <= 33, Detected N Gene Ct <= 33, Detected Orf1ab Ct <= 33) >= 2",
       "THEN SARS-CoV-2 = Positive",
-      "ELSE SARS-CoV-2 = Negative",
+      "AND SARS-CoV-2 Ct = AVERAGE(Ct of Detected qualifying targets only)",
+      "ELSE SARS-CoV-2 = Negative AND Ct = blank",
+      "OUTPUT one SARS-CoV-2 row and omit its component gene rows",
     ].join("\n"),
   };
 }
@@ -9382,7 +9402,12 @@ function renderOrderHistory(initialTab = "all-orders") {
     return key === "respiratorypathogenspanel" || (key.includes("respiratory") && key.includes("pathogen"));
   }
 
-  function buildFinalSarsCov2RuleResult(rows) {
+  function buildFinalSarsCov2RuleResult(rows, panelReference) {
+    const evaluateFormula = getReportFormulasApi()?.evaluateSarsCov2FinalReportFormula;
+    if (typeof evaluateFormula === "function") {
+      return evaluateFormula(rows, panelReference);
+    }
+
     const sourceRows = dedupeReportRows(Array.isArray(rows) ? rows : []);
     const markerRows = new Map();
 
@@ -9408,40 +9433,66 @@ function renderOrderHistory(initialTab = "all-orders") {
       const ctDisplay = row ? (formatReportCtValue(row) || "-") : "-";
       return {
         ...target,
+        sourceRow: row || null,
+        result: row?.result || "",
         ctValue,
         ctDisplay,
-        metThreshold: Number.isFinite(ctValue) && ctValue <= formula.thresholdCt,
+        detected: isDetectedResult(row?.result),
+        metThreshold: isDetectedResult(row?.result)
+          && Number.isFinite(ctValue)
+          && ctValue <= formula.thresholdCt,
       };
     });
 
-    const positiveGeneCount = genes.filter((gene) => gene.metThreshold).length;
+    const positiveGenes = genes.filter((gene) => gene.metThreshold);
+    const positiveGeneCount = positiveGenes.length;
+    const status = positiveGeneCount >= formula.minimumPositiveTargets ? "Positive" : "Negative";
+    const positiveCtAverage = positiveGeneCount
+      ? positiveGenes.reduce((total, gene) => total + gene.ctValue, 0) / positiveGeneCount
+      : null;
     return {
+      formulaEnabled: formula.enabled !== false,
+      formulaActive: formula.enabled !== false && isSarsCov2FinalReportFormulaActiveForPanel(panelReference),
       threshold: formula.thresholdCt,
       genes,
       positiveGeneCount,
+      positiveTargetKeys: positiveGenes.map((gene) => gene.key),
       minimumPositiveTargets: formula.minimumPositiveTargets,
-      status: positiveGeneCount >= formula.minimumPositiveTargets ? "Positive" : "Negative",
+      status,
+      result: status === "Positive" ? "Detected" : "Not Detected",
+      averageCt: status === "Positive" ? positiveCtAverage : null,
     };
   }
 
   function buildFinalSarsCov2DetectedPathogens(rows, ruleResult) {
+    const buildDetectedRows = getReportFormulasApi()?.buildSarsCov2FinalReportDetectedRows;
+    if (typeof buildDetectedRows === "function") {
+      return buildDetectedRows(rows, ruleResult);
+    }
+
     const sourceRows = Array.isArray(rows) ? rows : [];
-    const nonTargetRows = sourceRows.filter((row) => !resolveSarsCov2TargetKey(row?.pathogen));
+    const nonTargetRows = sourceRows.filter((row) => {
+      const label = row?.pathogen;
+      return !resolveSarsCov2TargetKey(label) && normalizeReportKey(label) !== "sarscov2";
+    });
     if (!ruleResult || ruleResult.status !== "Positive") return nonTargetRows;
 
-    const geneRows = sourceRows.filter((row) => resolveSarsCov2TargetKey(row?.pathogen));
-    const preferredGeneRow = geneRows.reduce((best, row) => {
-      if (!best) return row;
-      const bestCt = parseReportCtNumericValue(best);
-      const nextCt = parseReportCtNumericValue(row);
-      if (Number.isFinite(nextCt) && (!Number.isFinite(bestCt) || nextCt < bestCt)) return row;
-      return best;
-    }, null);
-
-    const detectedValue = geneRows.find((row) => isDetectedResult(row?.result))?.result || "Detected";
+    const preferredGeneRow = ruleResult.genes.find((gene) => gene.metThreshold)?.sourceRow || null;
+    const detectedValue = ruleResult.result || "Detected";
     const syntheticRow = preferredGeneRow
-      ? { ...preferredGeneRow, pathogen: "SARS-CoV-2", result: detectedValue }
-      : { pathogen: "SARS-CoV-2", result: detectedValue };
+      ? {
+          ...preferredGeneRow,
+          pathogen: "SARS-CoV-2",
+          result: detectedValue,
+          ctRaw: String(ruleResult.averageCt ?? ""),
+          ctValue: ruleResult.averageCt,
+        }
+      : {
+          pathogen: "SARS-CoV-2",
+          result: detectedValue,
+          ctRaw: String(ruleResult.averageCt ?? ""),
+          ctValue: ruleResult.averageCt,
+        };
 
     return [syntheticRow, ...nonTargetRows];
   }
@@ -9656,6 +9707,7 @@ function renderOrderHistory(initialTab = "all-orders") {
     return {
       order,
       report,
+      panelId: String(report?.panelId || order?.panelId || order?.services?.[0]?.id || "").trim(),
       panelName: String(report?.panelName || getOrderPanelName(order) || "Lab Panel").trim() || "Lab Panel",
       patientInfo: [
         { label: "Patient Name", value: buildPatientDisplayName({ ...patientRecord, patientName: order?.patientName }) },
@@ -10273,15 +10325,27 @@ function renderOrderHistory(initialTab = "all-orders") {
     const reportTitle = variant === "final" ? "Final Report" : "Summary Report";
     const reportSectionTitle = variant === "final" ? "Final Lab Report" : "Summary Lab Report";
     const headerVariant = variant === "final" ? "final-summary" : "default";
+    const selectedPanelReference = { id: context.panelId, name: context.panelName };
     const applyRespiratorySarsRule = variant === "final"
-      && isRespiratoryPathogensPanel(context.panelName)
-      && isSarsCov2FinalReportFormulaEnabled();
-    const finalRuleResult = applyRespiratorySarsRule ? buildFinalSarsCov2RuleResult(context.report?.detailed) : null;
+      && isSarsCov2FinalReportFormulaActiveForPanel(selectedPanelReference);
+    const finalRuleResult = applyRespiratorySarsRule
+      ? buildFinalSarsCov2RuleResult(context.report?.detailed, selectedPanelReference)
+      : null;
     const detectedPathogens = applyRespiratorySarsRule
       ? buildFinalSarsCov2DetectedPathogens(context.detectedPathogens, finalRuleResult)
       : context.detectedPathogens;
+    const filterComponentRows = getReportFormulasApi()?.filterSarsCov2ComponentRows;
+    const detectedGenes = applyRespiratorySarsRule
+      ? (typeof filterComponentRows === "function"
+          ? filterComponentRows(context.detectedGenes)
+          : context.detectedGenes.filter((row) => !resolveSarsCov2TargetKey(row?.pathogen)))
+      : context.detectedGenes;
+    const hasSarsCov2Targets = Boolean(finalRuleResult?.genes?.some((gene) => gene.sourceRow));
     const testedPathogenNames = applyRespiratorySarsRule
-      ? collapseSarsCov2PathogenNames(context.testedPathogenNames)
+      ? collapseSarsCov2PathogenNames([
+          ...context.testedPathogenNames,
+          ...(hasSarsCov2Targets ? ["SARS-CoV-2"] : []),
+        ])
       : context.testedPathogenNames;
     if (!detectedPathogens.length) {
       return `
@@ -10961,7 +11025,7 @@ function renderOrderHistory(initialTab = "all-orders") {
           <div class="summary-report-blue-bar">RESISTANCE GENES DETECTED</div>
           <table class="summary-report-table">
             <tbody>
-              ${buildSummaryRowsMarkup(context.detectedGenes, {
+              ${buildSummaryRowsMarkup(detectedGenes, {
                 withAsterisk: false,
                 fallbackLabel: "No resistance gene detected",
                 limit: 6,

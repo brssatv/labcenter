@@ -5,8 +5,8 @@
   }
   root.LabCenterFormulaPlayground = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, (root) => {
-  const formulaPlaygroundStorageKey = "labcenter.formula-playground.v1";
-  const formulaPlaygroundRunStorageKey = "labcenter.formula-playground-run.v1";
+  const formulaPlaygroundStorageKey = "labcenter.formula-playground.v2";
+  const formulaPlaygroundRunStorageKey = "labcenter.formula-playground-run.v2";
   const formulaPlaygroundInputViewStorageKey = "labcenter.formula-playground-input-view.v1";
   const formulaPlaygroundOutputViewStorageKey = "labcenter.formula-playground-output-view.v1";
 
@@ -24,11 +24,35 @@
     return null;
   }
 
+  function getReportFormulasApi() {
+    if (root?.LabCenterReportFormulas) {
+      return root.LabCenterReportFormulas;
+    }
+    if (typeof module === "object" && module.exports && typeof require === "function") {
+      try {
+        return require("./report-formulas.js");
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   function createDefaultFormulaPlaygroundData() {
     return {
+      selected_panel: "Respiratory Pathogens Panel",
       selected_gene: "E Gene",
       selected_organism: "SARS-CoV-2",
       selected_pathogen: "SARS-CoV-2",
+      panels: [
+        { key: "respiratory-pathogens-panel", label: "Respiratory Pathogens Panel" },
+        { key: "uti-pcr-panel", label: "Urinary Tract Infection Panel" },
+        { key: "sti-panel", label: "Sexually Transmitted Infection Panel" },
+        { key: "eye-panel", label: "Eye Infection Panel" },
+        { key: "wound-panel", label: "Wound Infection Panel" },
+        { key: "womens-health-panel", label: "Women's Health Panel" },
+        { key: "gastrointestinal-panel", label: "Gastrointestinal Infection Panel" },
+      ],
       genes: [
         { label: "E Gene", ct: 31.2, result: "Detected" },
         { label: "N Gene", ct: 32.8, result: "Detected" },
@@ -53,13 +77,25 @@
     dataInput: stringifyFormulaPlaygroundData(createDefaultFormulaPlaygroundData()),
     formulaExpression: [
       "IF(",
-      "  COUNT(",
-      '    @Gene("E Gene").ct <= 33,',
-      '    @Gene("N Gene").ct <= 33,',
-      '    @Gene("Orf1ab").ct <= 33',
-      "  ) >= 2,",
-      '  "Positive",',
-      '  "Negative"',
+      "  @Panel(selected_panel).formula_enabled AND",
+      '  @Panel(selected_panel).key = "respiratory-pathogens-panel",',
+      "  IF(",
+      "    COUNT(",
+      '      @Gene("E Gene").detected AND @Gene("E Gene").ct <= 33,',
+      '      @Gene("N Gene").detected AND @Gene("N Gene").ct <= 33,',
+      '      @Gene("Orf1ab").detected AND @Gene("Orf1ab").ct <= 33',
+      "    ) >= 2,",
+      "    RESULT(",
+      '      "Positive",',
+      "      ROUND(AVG(",
+      '        IF(@Gene("E Gene").detected AND @Gene("E Gene").ct <= 33, @Gene("E Gene").ct, null),',
+      '        IF(@Gene("N Gene").detected AND @Gene("N Gene").ct <= 33, @Gene("N Gene").ct, null),',
+      '        IF(@Gene("Orf1ab").detected AND @Gene("Orf1ab").ct <= 33, @Gene("Orf1ab").ct, null)',
+      "      ), 1)",
+      "    ),",
+      '    RESULT("Negative", null)',
+      "  ),",
+      '  RESULT("Formula Not Applied", null)',
       ")",
     ].join("\n"),
   });
@@ -136,6 +172,13 @@
     };
   }
 
+  function normalizePanelItem(item, fallback = {}) {
+    return {
+      key: normalizeEntityKey(item?.key || item?.label || fallback.key || fallback.label || "panel"),
+      label: normalizeDisplayText(item?.label, fallback.label || "Panel"),
+    };
+  }
+
   function normalizeOrganismItem(item, fallback = {}) {
     return {
       key: normalizeEntityKey(item?.key || item?.label || fallback.key || fallback.label || "organism"),
@@ -156,6 +199,9 @@
 
   function buildLegacyDataInput(rawDraft) {
     const fallback = createDefaultFormulaPlaygroundData();
+    const panels = Array.isArray(rawDraft?.panels)
+      ? rawDraft.panels.map((item, index) => normalizePanelItem(item, fallback.panels[index] || {}))
+      : fallback.panels;
     const genes = Array.isArray(rawDraft?.genes)
       ? rawDraft.genes.map((item, index) => normalizeGeneItem(item, fallback.genes[index] || {}))
       : fallback.genes;
@@ -179,11 +225,18 @@
       rawDraft?.selectedPathogenKey || rawDraft?.selectedOrganismKey,
       pathogens[0]?.label || fallback.selected_pathogen
     );
+    const selectedPanel = resolveEntityBySelector(
+      panels,
+      rawDraft?.selectedPanelKey,
+      panels[0]?.label || fallback.selected_panel
+    );
 
     return stringifyFormulaPlaygroundData({
+      selected_panel: selectedPanel?.label || fallback.selected_panel,
       selected_gene: selectedGene?.label || fallback.selected_gene,
       selected_organism: selectedOrganism?.label || fallback.selected_organism,
       selected_pathogen: selectedPathogen?.label || fallback.selected_pathogen,
+      panels,
       genes,
       organisms,
       pathogens,
@@ -378,6 +431,9 @@
     }
 
     const fallback = createDefaultFormulaPlaygroundData();
+    const panels = Array.isArray(parsed?.panels)
+      ? parsed.panels.map((item, index) => normalizePanelItem(item, fallback.panels[index] || {}))
+      : fallback.panels.map((item) => normalizePanelItem(item, item));
     const genes = Array.isArray(parsed?.genes)
       ? parsed.genes.map((item, index) => normalizeGeneItem(item, fallback.genes[index] || {}))
       : fallback.genes.map((item) => normalizeGeneItem(item, item));
@@ -391,11 +447,14 @@
     const selectedGeneLabel = normalizeDisplayText(parsed?.selected_gene, genes[0]?.label || fallback.selected_gene);
     const selectedOrganismLabel = normalizeDisplayText(parsed?.selected_organism, organisms[0]?.label || fallback.selected_organism);
     const selectedPathogenLabel = normalizeDisplayText(parsed?.selected_pathogen, pathogens[0]?.label || fallback.selected_pathogen);
+    const selectedPanelLabel = normalizeDisplayText(parsed?.selected_panel, panels[0]?.label || fallback.selected_panel);
 
     return {
+      selected_panel: selectedPanelLabel,
       selected_gene: selectedGeneLabel,
       selected_organism: selectedOrganismLabel,
       selected_pathogen: selectedPathogenLabel,
+      panels,
       genes,
       organisms,
       pathogens,
@@ -416,12 +475,22 @@
   }
 
   function createFormulaHelpers(parsedData) {
+    const reportFormulasApi = getReportFormulasApi();
     return {
       IF(condition, truthyValue, falsyValue) {
         return condition ? truthyValue : falsyValue;
       },
       COUNT(...items) {
         return items.flat().filter(Boolean).length;
+      },
+      AVG(...items) {
+        const values = items
+          .flat()
+          .filter((item) => item !== null && item !== undefined && item !== "")
+          .map((item) => Number(item))
+          .filter((item) => Number.isFinite(item));
+        if (!values.length) return null;
+        return values.reduce((total, item) => total + item, 0) / values.length;
       },
       ANY(...items) {
         return items.flat().some(Boolean);
@@ -444,9 +513,27 @@
       UPPER(value) {
         return String(value === null || value === undefined ? "" : value).toUpperCase();
       },
+      RESULT(status, ct = null) {
+        const numericCt = ct === null || ct === undefined || ct === "" ? null : Number(ct);
+        return {
+          status: String(status || "").trim(),
+          ct: Number.isFinite(numericCt) ? numericCt : null,
+        };
+      },
+      panel(selectorValue) {
+        const entity = resolveEntityBySelector(parsedData.panels, selectorValue, parsedData.selected_panel);
+        const formulaEnabled = entity && typeof reportFormulasApi?.isSarsCov2FinalReportFormulaActiveForPanel === "function"
+          ? reportFormulasApi.isSarsCov2FinalReportFormulaActiveForPanel(entity)
+          : entity?.key === "respiratory-pathogens-panel";
+        return entity
+          ? { ...entity, formula_enabled: formulaEnabled }
+          : { key: "", label: "", formula_enabled: false };
+      },
       gene(selectorValue) {
         const entity = resolveEntityBySelector(parsedData.genes, selectorValue, parsedData.selected_gene);
-        return entity ? { ...entity } : { key: "", label: "", ct: null, result: "", detected: false };
+        return entity
+          ? { ...entity, detected: isDetectedResult(entity.result) }
+          : { key: "", label: "", ct: null, result: "", detected: false };
       },
       organism(selectorValue) {
         const entity = resolveEntityBySelector(parsedData.organisms, selectorValue, parsedData.selected_organism);
@@ -462,6 +549,7 @@
   function createFormulaRuntime(parsedData, formulaContext) {
     const helpers = createFormulaHelpers(parsedData);
     const formulaState = {
+      selected_panel: String(formulaContext?.selected_panel ?? parsedData?.selected_panel ?? ""),
       selected_gene: String(formulaContext?.selected_gene ?? parsedData?.selected_gene ?? ""),
       selected_organism: String(formulaContext?.selected_organism ?? parsedData?.selected_organism ?? ""),
       selected_pathogen: String(formulaContext?.selected_pathogen ?? parsedData?.selected_pathogen ?? ""),
@@ -471,6 +559,7 @@
 
     return {
       variables: {
+        selected_panel: formulaState.selected_panel,
         selected_gene: formulaState.selected_gene,
         selected_organism: formulaState.selected_organism,
         selected_pathogen: formulaState.selected_pathogen,
@@ -479,6 +568,7 @@
       },
       functions: {
         ...helpers,
+        "@Panel": (selectorValue) => helpers.panel(selectorValue),
         "@Gene": (selectorValue) => helpers.gene(selectorValue),
         "@Organism": (selectorValue) => helpers.organism(selectorValue),
         "@Pathogen": (selectorValue) => helpers.pathogen(selectorValue),
@@ -496,6 +586,20 @@
   }
 
   function normalizeFormulaPreviewValue(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const status = String(value.status ?? value.result ?? "").trim() || "Empty";
+      const numericCt = value.ct === null || value.ct === undefined || value.ct === "" ? null : Number(value.ct);
+      const normalized = normalizeLookupToken(status);
+      const truthy = normalized === "positive" || normalized === "detected" || normalized === "true" || normalized === "yes";
+      return {
+        rawValue: { ...value, ct: Number.isFinite(numericCt) ? numericCt : null },
+        status,
+        truthy,
+        ct: Number.isFinite(numericCt) ? numericCt : null,
+        displayValue: Number.isFinite(numericCt) ? `${status} (average Ct ${numericCt})` : status,
+      };
+    }
+
     if (typeof value === "boolean") {
       return {
         rawValue: value,
@@ -565,10 +669,51 @@
     return [...pathogenRows, ...organismRows, ...geneRows];
   }
 
+  function buildFormulaAwareOutputRows(parsedData, formulaResult, formulaActive) {
+    const sourceRows = buildOutputRows(parsedData, formulaResult);
+    if (!formulaActive) return sourceRows;
+
+    const reportFormula = getReportFormulasApi()?.getSarsCov2FinalReportFormula?.();
+    const targetKeys = new Set(
+      (Array.isArray(reportFormula?.targets) && reportFormula.targets.length
+        ? reportFormula.targets
+        : [
+            { label: "E Gene" },
+            { label: "N Gene" },
+            { label: "Orf1ab" },
+          ])
+        .map((target) => normalizeLookupToken(target.label))
+    );
+    const filteredRows = sourceRows.filter((row) => {
+      if (row.kind === "gene" && targetKeys.has(normalizeLookupToken(row.label))) return false;
+      if (row.kind === "pathogen" && normalizeLookupToken(row.label) === "sarscov2") return false;
+      return true;
+    });
+    const isPositive = normalizeLookupToken(formulaResult.status) === "positive";
+    const averageCt = isPositive && Number.isFinite(formulaResult.ct) ? formulaResult.ct : null;
+    return [
+      {
+        kind: "pathogen",
+        label: "SARS-CoV-2",
+        ct: averageCt,
+        result: isPositive ? "Detected" : "Not Detected",
+        detected: isPositive,
+        selected: true,
+        formula_status: formulaResult.status,
+      },
+      ...filteredRows,
+    ];
+  }
+
   function buildFormulaPlaygroundOutput(preview) {
     return {
       formula: preview.executedDraft.formulaExpression,
-      evaluated_result: preview.formulaResult.displayValue || "",
+      evaluated_result: preview.formulaResult.status || "",
+      evaluated_display: preview.formulaResult.displayValue || "",
+      formula_enabled: preview.formulaEnabled,
+      formula_applied: preview.formulaActive,
+      selected_panel: preview.selectedPanel,
+      average_positive_ct: Number.isFinite(preview.formulaResult.ct) ? preview.formulaResult.ct : null,
       selected_gene: preview.selectedGene,
       selected_organism: preview.selectedOrganism,
       selected_pathogen: preview.selectedPathogen,
@@ -577,12 +722,19 @@
   }
 
   function buildFormulaPlaygroundInputModel(parsedDraftData) {
+    const panels = Array.isArray(parsedDraftData?.panels) ? parsedDraftData.panels : [];
     const genes = Array.isArray(parsedDraftData?.genes) ? parsedDraftData.genes : [];
     const organisms = Array.isArray(parsedDraftData?.organisms) ? parsedDraftData.organisms : [];
     const pathogens = Array.isArray(parsedDraftData?.pathogens) ? parsedDraftData.pathogens : [];
 
     return {
       selections: [
+        {
+          field: "selected_panel",
+          label: "Selected Panel",
+          value: String(parsedDraftData?.selected_panel || ""),
+          options: panels.map((item) => item.label),
+        },
         {
           field: "selected_gene",
           label: "Selected Gene",
@@ -668,7 +820,7 @@
   function updateFormulaPlaygroundDraftSelection(field, value, inputDraft) {
     const draft = normalizeFormulaPlaygroundDraft(inputDraft || readFormulaPlaygroundDraft());
     const parsedDraftData = parseFormulaPlaygroundDataInput(draft.dataInput);
-    if (!["selected_gene", "selected_organism", "selected_pathogen"].includes(field)) {
+    if (!["selected_panel", "selected_gene", "selected_organism", "selected_pathogen"].includes(field)) {
       return cloneFormulaPlaygroundDraft(draft);
     }
 
@@ -771,12 +923,22 @@
     const selectedGene = parsedData
       ? resolveEntityBySelector(parsedData.genes, "selected_gene", parsedData.selected_gene)
       : null;
+    const selectedPanel = parsedData
+      ? resolveEntityBySelector(parsedData.panels, "selected_panel", parsedData.selected_panel)
+      : null;
     const selectedOrganism = parsedData
       ? resolveEntityBySelector(parsedData.organisms, "selected_organism", parsedData.selected_organism)
       : null;
     const selectedPathogen = parsedData
       ? resolveEntityBySelector(parsedData.pathogens, "selected_pathogen", parsedData.selected_pathogen)
       : null;
+    const reportFormulasApi = getReportFormulasApi();
+    const formulaEnabled = reportFormulasApi?.isSarsCov2FinalReportFormulaEnabled?.() !== false;
+    const formulaActive = formulaEnabled && Boolean(
+      typeof reportFormulasApi?.isSarsCov2FinalReportFormulaActiveForPanel === "function"
+        ? reportFormulasApi.isSarsCov2FinalReportFormulaActiveForPanel(selectedPanel)
+        : selectedPanel?.key === "respiratory-pathogens-panel"
+    );
 
     let formulaResult = {
       rawValue: null,
@@ -790,6 +952,7 @@
     if (parsedData && !dataError) {
       try {
         const rawValue = evaluatePlaygroundExpression(executedDraft.formulaExpression, parsedData, {
+          selected_panel: parsedData.selected_panel,
           selected_gene: parsedData.selected_gene,
           selected_organism: parsedData.selected_organism,
           selected_pathogen: parsedData.selected_pathogen,
@@ -806,11 +969,14 @@
       }
     }
 
-    const outputRows = parsedData ? buildOutputRows(parsedData, formulaResult) : [];
+    const outputRows = parsedData ? buildFormulaAwareOutputRows(parsedData, formulaResult, formulaActive) : [];
     const outputObject = buildFormulaPlaygroundOutput({
       draft,
       executedDraft,
       formulaResult,
+      formulaEnabled,
+      formulaActive,
+      selectedPanel,
       selectedGene,
       selectedOrganism,
       selectedPathogen,
@@ -828,6 +994,9 @@
       inputModel: draftData ? buildFormulaPlaygroundInputModel(draftData) : null,
       parsedData,
       dataError,
+      formulaEnabled,
+      formulaActive,
+      selectedPanel,
       selectedGene,
       selectedOrganism,
       selectedPathogen,
@@ -837,6 +1006,7 @@
       outputObject,
       outputText: JSON.stringify(outputObject, null, 2),
       helperTokens: [
+        "@Panel(selected_panel).formula_enabled",
         "@Gene(selected_gene).ct",
         '@Gene("E Gene").result',
         "@Organism(selected_organism).detected",

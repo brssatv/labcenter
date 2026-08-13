@@ -107,6 +107,12 @@ test("formula engine parses nested function expressions", () => {
   assert.equal(ast.callee.name, "ROUND");
 });
 
+test("formula engine averages numeric non-null values", () => {
+  const result = evaluateFormulaExpression("ROUND(AVG(27, 20, null), 1)");
+
+  assert.equal(result, 23.5);
+});
+
 test("formula engine rejects unsupported syntax with a parser error", () => {
   assert.throws(
     () => evaluateFormulaExpression('IF(@Gene("E Gene").ct <= 33; "Positive"; "Negative")', createFormulaContext()),

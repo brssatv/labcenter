@@ -6083,6 +6083,18 @@ body.modal-open {
   flex-wrap: wrap;
 }
 
+.formula-playground-formula-state {
+  min-width: 150px;
+}
+
+.formula-playground-formula-state.is-enabled strong {
+  color: #147332;
+}
+
+.formula-playground-formula-state.is-disabled strong {
+  color: #9c2f2f;
+}
+
 .formula-playground-stack {
   display: grid;
   gap: 14px;
