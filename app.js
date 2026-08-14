@@ -15,6 +15,11 @@ const views = [
     subtitle: "Manage facility information and provider context.",
   },
   {
+    key: "billing",
+    title: "Billing",
+    subtitle: "Manage biller access to the dedicated billing portal.",
+  },
+  {
     key: "patient-search",
     title: "Patient Search",
     subtitle: "Find patients by name, contact, and date of birth.",
@@ -120,14 +125,18 @@ const authLoginShell = document.getElementById("auth-login-shell");
 const appShell = document.getElementById("app-shell");
 const authLaunchBtn = document.getElementById("auth-launch-btn");
 const authBackBtn = document.getElementById("auth-back-btn");
+const authTitle = document.getElementById("auth-title");
+const authDescription = document.getElementById("auth-description");
 const loginForm = document.getElementById("login-form");
 const loginError = document.getElementById("login-error");
 const authModeButtons = Array.from(document.querySelectorAll("[data-auth-mode]"));
+const authModeSwitch = document.getElementById("auth-mode-switch");
 const authModeHelper = document.getElementById("auth-mode-helper");
 const doctorSsoWrap = document.getElementById("doctor-sso-wrap");
 const doctorSsoBtn = document.getElementById("doctor-sso-btn");
 const doctorEmailWrap = document.getElementById("doctor-email-wrap");
 const clientUsernameWrap = document.getElementById("client-username-wrap");
+const billingUsernameWrap = document.getElementById("billing-username-wrap");
 const passwordWrap = document.getElementById("password-wrap");
 const authActions = document.getElementById("auth-actions");
 const logoutBtn = document.getElementById("logout-btn");
@@ -147,6 +156,7 @@ let csrfToken = "";
 let pendingAuth = false;
 let authStage = "gateway";
 let authMode = "doctor";
+const isDedicatedBillingPortal = /^\/billing\/?$/.test(window.location.pathname);
 const defaultAppTimeZone = "UTC";
 const shortMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 let authConfig = {
@@ -197,6 +207,11 @@ let facilityData = {
   accounts: [],
   providers: [],
 };
+let billersState = [];
+let billingReportsState = [];
+let billingDataLoaded = false;
+let billingDataLoading = false;
+let billingDataError = "";
 const adminTimeZoneSuggestions = [
   "America/Vancouver",
   "America/Los_Angeles",
@@ -632,6 +647,8 @@ function createDefaultActiveSession() {
     displayName: "",
     email: "",
     entityType: "doctor",
+    company: "",
+    facilityIds: [],
   };
 }
 
@@ -645,6 +662,7 @@ function escapeHtml(value) {
 
 function getSessionPlanLabel() {
   if (activeSession.type === "doctor") return "Full Access";
+  if (activeSession.type === "billing") return "Billing Access";
 
   switch (activeSession.accessType) {
     case "report_view_order":
@@ -668,6 +686,15 @@ function getSessionSummary() {
     };
   }
 
+  if (activeSession.type === "billing") {
+    return {
+      loginType: "Billing Portal",
+      displayName: activeSession.displayName || activeSession.accountName || activeSession.username || "Billing User",
+      detail: activeSession.company || activeSession.email || activeSession.username || "Billing workspace",
+      plan: getSessionPlanLabel(),
+    };
+  }
+
   const detailParts = [];
   if (activeSession.accountId) detailParts.push(`#${activeSession.accountId}`);
   if (activeSession.username) detailParts.push(activeSession.username);
@@ -685,9 +712,9 @@ function getPrimaryAuthInput() {
     return doctorSsoBtn;
   }
 
-  return authMode === "client"
-    ? document.getElementById("client-username")
-    : document.getElementById("doctor-email");
+  if (authMode === "client") return document.getElementById("client-username");
+  if (authMode === "billing") return document.getElementById("billing-username");
+  return document.getElementById("doctor-email");
 }
 
 function setAuthStage(nextStage) {
@@ -1934,13 +1961,16 @@ function renderNav() {
 }
 
 function getVisibleViews() {
+  if (activeSession.type === "billing") {
+    return views.filter((item) => item.key === "billing");
+  }
   if (activeSession.type !== "client") return views;
   const allowedKeys = clientAccessViews[activeSession.accessType] || [];
   return views.filter((item) => allowedKeys.includes(item.key));
 }
 
 function setAuthMode(nextMode) {
-  authMode = nextMode === "client" ? "client" : "doctor";
+  authMode = nextMode === "billing" ? "billing" : nextMode === "client" ? "client" : "doctor";
   const adminUsesOidc = authMode === "doctor" && getAdminAuthMode() === "oidc";
 
   authModeButtons.forEach((button) => {
@@ -1951,12 +1981,27 @@ function setAuthMode(nextMode) {
   doctorSsoWrap?.classList.toggle("hidden", !adminUsesOidc);
   doctorEmailWrap?.classList.toggle("hidden", authMode !== "doctor" || adminUsesOidc);
   clientUsernameWrap?.classList.toggle("hidden", authMode !== "client");
+  billingUsernameWrap?.classList.toggle("hidden", authMode !== "billing");
   passwordWrap?.classList.toggle("hidden", adminUsesOidc);
   authActions?.classList.toggle("hidden", adminUsesOidc);
+  authModeSwitch?.classList.toggle("hidden", authMode === "billing");
+  authBackBtn?.classList.toggle("hidden", authMode === "billing");
+
+  if (authTitle) {
+    authTitle.textContent = authMode === "billing" ? "Sign in to Billing" : "Sign in to LabCenter";
+  }
+  if (authDescription) {
+    authDescription.textContent =
+      authMode === "billing"
+        ? "Continue with the billing credentials assigned by your LabCenter administrator."
+        : "Choose your workspace and continue with your assigned credentials.";
+  }
 
   if (authModeHelper) {
     authModeHelper.textContent =
-      authMode === "doctor"
+      authMode === "billing"
+        ? "Billing access is isolated from the clinical and administrative workspace."
+        : authMode === "doctor"
         ? adminUsesOidc
           ? "Admins sign in through LabCenter Cloud ID to keep authentication centralized and secure."
           : "Use your assigned LabCenter admin username and password to access the full workspace."
@@ -7943,6 +7988,14 @@ function renderOutputResults() {
                   ${showCompletedActions ? `
                     <td class="output-results-publish-cell">
                       <div class="output-results-message-actions">
+                        <a
+                          class="table-action-btn table-action-link"
+                          href="/orders/${encodeURIComponent(orderId)}/requisition-print"
+                          target="_blank"
+                          rel="noopener"
+                        >
+                          Print Requisition
+                        </a>
                         <button
                           type="button"
                           class="table-action-btn publish-report-btn"
@@ -15419,6 +15472,403 @@ function renderAdminSettings(options = {}) {
   });
 }
 
+function closeBillingModal() {
+  document.getElementById("billing-biller-modal")?.remove();
+  syncBodyModalOpenState();
+}
+
+function normalizeBillerFacilityIds(value) {
+  const source = Array.isArray(value) ? value : String(value || "").split(",");
+  return Array.from(new Set(source.map((item) => String(item || "").trim()).filter(Boolean)));
+}
+
+async function ensureBillingDataLoaded(force = false) {
+  if (billingDataLoaded && !force) return;
+  if (billingDataLoading) return;
+
+  billingDataLoading = true;
+  billingDataError = "";
+  try {
+    if (activeSession.type === "billing") {
+      const [profilePayload, reportsPayload] = await Promise.all([
+        requestJson("/api/billing/profile"),
+        requestJson("/api/billing/reports"),
+      ]);
+      billersState = profilePayload?.biller ? [profilePayload.biller] : [];
+      billingReportsState = Array.isArray(reportsPayload?.reports) ? reportsPayload.reports : [];
+    } else {
+      const payload = await requestJson("/api/billers");
+      billersState = Array.isArray(payload?.billers) ? payload.billers : [];
+      billingReportsState = [];
+    }
+    billingDataLoaded = true;
+  } catch (error) {
+    billingDataError = error?.message || "Unable to load billing access.";
+  } finally {
+    billingDataLoading = false;
+  }
+}
+
+function getBillingPortalUrl() {
+  return `${window.location.origin}/billing`;
+}
+
+function renderBillingProfile() {
+  const biller = billersState[0] || {};
+  const facilityIds = normalizeBillerFacilityIds(biller.facilityIds);
+  const facilityAccessLabel = biller.allFacilities
+    ? "All facilities"
+    : facilityIds.length
+    ? facilityIds.join(", ")
+    : "None assigned";
+  const reportRows = billingReportsState
+    .map((report) => `
+      <tr>
+        <td><strong>${escapeHtml(report.orderId || "-")}</strong><span class="billing-cell-meta">${escapeHtml(report.accessionNo || "No accession")}</span></td>
+        <td>${escapeHtml(report.patientName || "-")}</td>
+        <td>${escapeHtml(report.facilityName || report.facilityId || "-")}<span class="billing-cell-meta">${escapeHtml(report.facilityId || "")}</span></td>
+        <td>${escapeHtml(report.provider || "-")}</td>
+        <td>${escapeHtml(formatAppDateTime(report.reportGeneratedAt, {}, "-"))}</td>
+        <td>
+          <div class="billing-report-actions">
+            <a class="btn-primary mini billing-report-link" href="/api/orders/${encodeURIComponent(report.orderId)}/final-report-pdf" target="_blank" rel="noopener">View Final Report</a>
+            ${report.requisitionAvailable ? `<a class="btn-ghost mini billing-report-link" href="/orders/${encodeURIComponent(report.orderId)}/requisition-print" target="_blank" rel="noopener">Print Requisition</a>` : ""}
+          </div>
+        </td>
+      </tr>
+    `)
+    .join("");
+
+  panelBody.innerHTML = `
+    <section class="billing-page billing-portal-page">
+      <article class="billing-portal-hero">
+        <div>
+          <p class="badge">Billing Portal</p>
+          <h3>Welcome, ${escapeHtml(biller.fullName || activeSession.displayName || "Billing User")}</h3>
+          <p>Your account is active and isolated from LabCenter's clinical and administrative workspace.</p>
+        </div>
+        <span class="billing-status active">Active</span>
+      </article>
+
+      <div class="billing-profile-grid">
+        <article class="billing-profile-card">
+          <span>Organization</span>
+          <strong>${escapeHtml(biller.company || activeSession.company || "Not assigned")}</strong>
+        </article>
+        <article class="billing-profile-card">
+          <span>Email</span>
+          <strong>${escapeHtml(biller.email || activeSession.email || "Not provided")}</strong>
+        </article>
+        <article class="billing-profile-card">
+          <span>Phone</span>
+          <strong>${escapeHtml(biller.phone || "Not provided")}</strong>
+        </article>
+        <article class="billing-profile-card">
+          <span>Assigned facilities</span>
+          <strong>${escapeHtml(facilityAccessLabel)}</strong>
+        </article>
+      </div>
+
+      <article class="billing-reports-card">
+        <header>
+          <div>
+            <p class="badge">Read-only Access</p>
+            <h3>Final Reports</h3>
+            <p>Reports are limited to the facilities assigned to this billing account.</p>
+          </div>
+          <strong>${billingReportsState.length} report${billingReportsState.length === 1 ? "" : "s"}</strong>
+        </header>
+        <div class="billing-table-wrap">
+          <table class="billing-table billing-reports-table">
+            <thead><tr><th>Order</th><th>Patient</th><th>Facility</th><th>Provider</th><th>Finalized</th><th>Documents</th></tr></thead>
+            <tbody>
+              ${reportRows || '<tr><td colspan="6"><div class="billing-empty"><strong>No final reports available</strong><span>Final reports from assigned facilities will appear here.</span></div></td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="billing-boundary-card">
+        <div>
+          <p class="badge">Access Boundary</p>
+          <h3>Billing-only access</h3>
+        </div>
+        <p>This login grants read-only access to final reports for assigned facilities. It does not grant order entry, order editing, facility administration, or audit-log access.</p>
+      </article>
+    </section>
+  `;
+}
+
+async function openBillerModal(biller = null) {
+  closeBillingModal();
+  await loadFacilityData();
+  const isEditing = Boolean(biller?.id);
+  const selectedFacilityIds = new Set(normalizeBillerFacilityIds(biller?.facilityIds));
+  const allFacilities = Boolean(biller?.allFacilities);
+  const facilityOptions = (Array.isArray(facilityData?.accounts) ? facilityData.accounts : [])
+    .map((account) => {
+      const id = String(account?.id || account?.account_code || "").trim();
+      const name = String(account?.name || account?.basic_information?.accountName || "Unnamed facility").trim();
+      const rawCode = String(account?.account_code || "").trim();
+      const code = /^(null|undefined)$/i.test(rawCode) ? "" : rawCode;
+      return { id, name, code };
+    })
+    .filter((account) => account.id)
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((account) => {
+      const isSelected = selectedFacilityIds.has(account.id)
+        || selectedFacilityIds.has(account.code)
+        || selectedFacilityIds.has(account.name);
+      return `
+      <label class="billing-facility-option">
+        <input type="checkbox" name="facilityIds" value="${escapeHtml(account.id)}"${allFacilities || isSelected ? " checked" : ""}${allFacilities ? " disabled" : ""}>
+        <span><strong>${escapeHtml(account.name)}</strong><small>ID ${escapeHtml(account.id)}${account.code && account.code !== account.id ? ` · Code ${escapeHtml(account.code)}` : ""}</small></span>
+      </label>
+    `;
+    })
+    .join("");
+  const modal = document.createElement("div");
+  modal.id = "billing-biller-modal";
+  modal.className = "facility-modal-backdrop";
+  modal.innerHTML = `
+    <section class="facility-modal-shell billing-modal-shell" role="dialog" aria-modal="true" aria-labelledby="billing-modal-title">
+      <header class="facility-modal-head">
+        <h3 id="billing-modal-title">${isEditing ? "Edit Biller" : "Add New Biller"}</h3>
+        <button type="button" class="facility-modal-close" data-billing-close aria-label="Close">×</button>
+      </header>
+      <form id="billing-biller-form" class="billing-modal-form">
+        <div class="billing-modal-intro">
+          <p class="badge">Dedicated Portal Access</p>
+          <p>Creates a billing-only login at <strong>${escapeHtml(getBillingPortalUrl())}</strong> with read-only final-report access for the selected facilities.</p>
+        </div>
+        <div class="facility-modal-grid two">
+          <label>
+            <span class="field-label">Full Name *</span>
+            <input name="fullName" value="${escapeHtml(biller?.fullName || "")}" required autocomplete="name">
+          </label>
+          <label>
+            <span class="field-label">Company</span>
+            <input name="company" value="${escapeHtml(biller?.company || "")}" autocomplete="organization">
+          </label>
+          <label>
+            <span class="field-label">Email</span>
+            <input name="email" type="email" value="${escapeHtml(biller?.email || "")}" autocomplete="email">
+          </label>
+          <label>
+            <span class="field-label">Phone</span>
+            <input name="phone" type="tel" value="${escapeHtml(biller?.phone || "")}" autocomplete="tel">
+          </label>
+          <label>
+            <span class="field-label">Billing Username *</span>
+            <input name="username" value="${escapeHtml(biller?.username || "")}" minlength="3" maxlength="80" required autocomplete="off">
+          </label>
+          <label>
+            <span class="field-label">${isEditing ? "New Password" : "Temporary Password *"}</span>
+            <input name="password" type="password" minlength="10" ${isEditing ? "" : "required"} autocomplete="new-password" placeholder="${isEditing ? "Leave blank to keep current password" : "At least 10 characters"}">
+          </label>
+          <label>
+            <span class="field-label">Status</span>
+            <select name="status">
+              <option value="active"${String(biller?.status || "active") === "active" ? " selected" : ""}>Active</option>
+              <option value="inactive"${String(biller?.status || "") === "inactive" ? " selected" : ""}>Inactive</option>
+            </select>
+          </label>
+          <div class="full billing-facility-field">
+            <span class="field-label">Facility Access</span>
+            <div class="billing-facility-selector">
+              <label class="billing-facility-select-all">
+                <input type="checkbox" name="allFacilities" value="true"${allFacilities ? " checked" : ""}>
+                <span><strong>Select all facilities</strong><small>Includes facilities added in the future.</small></span>
+              </label>
+              <div class="billing-facility-options" data-billing-facility-options>
+                ${facilityOptions || '<p class="billing-facility-empty">No facilities are available.</p>'}
+              </div>
+            </div>
+          </div>
+          <label class="full">
+            <span class="field-label">Internal Notes</span>
+            <textarea name="notes" rows="3" placeholder="Visible to administrators only">${escapeHtml(biller?.notes || "")}</textarea>
+          </label>
+        </div>
+        <p class="billing-form-status" data-billing-form-status aria-live="polite"></p>
+        <footer class="facility-modal-footer">
+          <button type="button" class="btn-ghost" data-billing-close>Cancel</button>
+          <button type="submit" class="btn-primary" data-billing-save>${isEditing ? "Save Changes" : "Create Biller"}</button>
+        </footer>
+      </form>
+    </section>
+  `;
+  document.body.appendChild(modal);
+  syncBodyModalOpenState();
+
+  modal.querySelectorAll("[data-billing-close]").forEach((button) => {
+    button.addEventListener("click", closeBillingModal);
+  });
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) closeBillingModal();
+  });
+
+  const form = modal.querySelector("#billing-biller-form");
+  const statusNode = modal.querySelector("[data-billing-form-status]");
+  const saveButton = modal.querySelector("[data-billing-save]");
+  const selectAllInput = form?.querySelector('[name="allFacilities"]');
+  const facilityInputs = Array.from(form?.querySelectorAll('[name="facilityIds"]') || []);
+  selectAllInput?.addEventListener("change", () => {
+    facilityInputs.forEach((input) => {
+      input.disabled = selectAllInput.checked;
+      input.checked = selectAllInput.checked;
+    });
+  });
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    const payload = {
+      fullName: String(formData.get("fullName") || "").trim(),
+      company: String(formData.get("company") || "").trim(),
+      email: String(formData.get("email") || "").trim(),
+      phone: String(formData.get("phone") || "").trim(),
+      username: String(formData.get("username") || "").trim(),
+      password: String(formData.get("password") || ""),
+      status: String(formData.get("status") || "active"),
+      allFacilities: formData.get("allFacilities") === "true",
+      facilityIds: normalizeBillerFacilityIds(formData.getAll("facilityIds")),
+      notes: String(formData.get("notes") || "").trim(),
+    };
+
+    if (payload.fullName === "" || payload.username === "" || (!isEditing && payload.password.length < 10)) {
+      if (statusNode) statusNode.textContent = "Complete the required fields and use a password with at least 10 characters.";
+      return;
+    }
+
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = "Saving...";
+    }
+    if (statusNode) statusNode.textContent = "Saving billing access...";
+
+    try {
+      await requestJson(isEditing ? `/api/billers/${encodeURIComponent(biller.id)}` : "/api/billers", {
+        method: isEditing ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      await ensureBillingDataLoaded(true);
+      closeBillingModal();
+      renderBilling();
+    } catch (error) {
+      if (statusNode) statusNode.textContent = error?.message || "Unable to save this biller.";
+      if (saveButton) {
+        saveButton.disabled = false;
+        saveButton.textContent = isEditing ? "Save Changes" : "Create Biller";
+      }
+    }
+  });
+
+  window.requestAnimationFrame(() => form?.querySelector('[name="fullName"]')?.focus());
+}
+
+function renderBillingAdmin() {
+  const activeCount = billersState.filter((item) => item?.status === "active").length;
+  const rows = billersState
+    .map((biller) => {
+      const facilities = normalizeBillerFacilityIds(biller?.facilityIds);
+      const facilityLabel = biller?.allFacilities ? "All facilities" : facilities.length ? facilities.join(", ") : "Not assigned";
+      return `
+        <tr>
+          <td><strong>${escapeHtml(biller.fullName || "-")}</strong><span class="billing-cell-meta">${escapeHtml(biller.company || "Independent")}</span></td>
+          <td>${escapeHtml(biller.email || "-")}<span class="billing-cell-meta">${escapeHtml(biller.phone || "")}</span></td>
+          <td><code>${escapeHtml(biller.username || "-")}</code></td>
+          <td>${escapeHtml(facilityLabel)}</td>
+          <td><span class="billing-status ${biller.status === "active" ? "active" : "inactive"}">${escapeHtml(biller.status === "active" ? "Active" : "Inactive")}</span></td>
+          <td><button type="button" class="btn-ghost mini" data-edit-biller="${escapeHtml(biller.id)}">Edit</button></td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  panelBody.innerHTML = `
+    <section class="billing-page">
+      <div class="billing-toolbar">
+        <div>
+          <p class="badge">Access Management</p>
+          <h3>Biller Accounts</h3>
+          <p>Invite and manage users who sign in through the isolated billing portal.</p>
+        </div>
+        <button type="button" class="btn-primary" data-add-biller>Add New Biller</button>
+      </div>
+
+      <div class="billing-summary-grid">
+        <article><span>Total billers</span><strong>${billersState.length}</strong></article>
+        <article><span>Active access</span><strong>${activeCount}</strong></article>
+        <article class="billing-portal-link"><span>Portal URL</span><strong>${escapeHtml(getBillingPortalUrl())}</strong></article>
+      </div>
+
+      <div class="billing-table-wrap">
+        <table class="billing-table">
+          <thead>
+            <tr><th>Biller</th><th>Contact</th><th>Username</th><th>Facilities</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="6"><div class="billing-empty"><strong>No billers yet</strong><span>Add a biller to create secure billing portal access.</span></div></td></tr>'}
+          </tbody>
+        </table>
+      </div>
+
+      <aside class="billing-security-note">
+        <strong>Least-privilege by design</strong>
+        <span>Billing users receive only read-only final-report access for assigned facilities; client, order-management, and administrator permissions remain blocked.</span>
+      </aside>
+    </section>
+  `;
+
+  panelBody.querySelector("[data-add-biller]")?.addEventListener("click", () => openBillerModal());
+  panelBody.querySelectorAll("[data-edit-biller]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.getAttribute("data-edit-biller");
+      openBillerModal(billersState.find((item) => String(item?.id || "") === id) || null);
+    });
+  });
+}
+
+function renderBilling() {
+  if (!billingDataLoaded && !billingDataLoading && !billingDataError) {
+    ensureBillingDataLoaded().then(() => {
+      if (currentView === "billing") renderBilling();
+    });
+  }
+
+  if (billingDataLoading || (!billingDataLoaded && !billingDataError)) {
+    panelBody.innerHTML = `
+      <section class="billing-page billing-loading">
+        <p class="badge">Loading</p>
+        <h3>Loading billing access...</h3>
+      </section>
+    `;
+    return;
+  }
+
+  if (billingDataError) {
+    panelBody.innerHTML = `
+      <section class="billing-page billing-loading">
+        <p class="badge">Unable to Load</p>
+        <h3>${escapeHtml(billingDataError)}</h3>
+        <button type="button" class="btn-ghost" data-billing-retry>Try Again</button>
+      </section>
+    `;
+    panelBody.querySelector("[data-billing-retry]")?.addEventListener("click", () => {
+      billingDataError = "";
+      ensureBillingDataLoaded(true).then(renderBilling);
+    });
+    return;
+  }
+
+  if (activeSession.type === "billing") {
+    renderBillingProfile();
+  } else {
+    renderBillingAdmin();
+  }
+}
+
 function renderView() {
   function animatePanelTransition() {
     panelBody.classList.remove("view-transition");
@@ -15428,6 +15878,7 @@ function renderView() {
   }
 
   closeFacilityModals();
+  closeBillingModal();
   const visibleViews = getVisibleViews();
   if (!visibleViews.length) {
     panelHeader.classList.remove("hidden");
@@ -15496,6 +15947,10 @@ function renderView() {
         panelBody.classList.add("full-bleed");
         renderFacility();
         break;
+      case "billing":
+        panelBody.classList.add("full-bleed");
+        renderBilling();
+        break;
       case "admin-settings":
         renderAdminSettings();
         break;
@@ -15536,7 +15991,9 @@ async function mountApp() {
       <h3>Syncing portal data...</h3>
     </section>
   `;
-  await ensurePortalDataLoaded();
+  if (activeSession.type !== "billing") {
+    await ensurePortalDataLoaded();
+  }
   renderNav();
   renderView();
   if (getVisibleViews().some((item) => item.key === "facility")) {
@@ -15551,6 +16008,11 @@ function mountAuth() {
   portalDataPromise = null;
   adminSettingsReady = false;
   adminSettingsPromise = null;
+  billingDataLoaded = false;
+  billingDataLoading = false;
+  billingDataError = "";
+  billersState = [];
+  billingReportsState = [];
   auditLogState = {
     entries: [],
     loading: false,
@@ -15573,9 +16035,10 @@ function mountAuth() {
   appShell.classList.add("hidden");
   authScreen.classList.remove("hidden");
   closeFacilityModals();
+  closeBillingModal();
   loginForm.reset();
-  setAuthMode("doctor");
-  setAuthStage("gateway");
+  setAuthMode(isDedicatedBillingPortal ? "billing" : "doctor");
+  setAuthStage(isDedicatedBillingPortal ? "login" : "gateway");
   loginError.textContent = "";
 }
 
@@ -15589,7 +16052,12 @@ async function performLogoutFlow({ postMessage = "" } = {}) {
 
   try {
     if (!csrfToken) await fetchCsrfToken();
-    const endpoint = activeSession.type === "client" ? "/api/client-auth/logout" : "/api/auth/logout";
+    const endpoint =
+      activeSession.type === "billing"
+        ? "/api/billing-auth/logout"
+        : activeSession.type === "client"
+        ? "/api/client-auth/logout"
+        : "/api/auth/logout";
     const logoutResult = await requestJson(endpoint, {
       method: "POST",
       headers: {
@@ -15665,6 +16133,7 @@ loginForm.addEventListener("submit", (event) => {
 
   const adminIdentifier = document.getElementById("doctor-email").value.trim().toLowerCase();
   const clientUsername = document.getElementById("client-username").value.trim().toLowerCase();
+  const billingUsername = document.getElementById("billing-username").value.trim().toLowerCase();
   const password = document.getElementById("doctor-password").value;
   const adminUsesOidc = authMode === "doctor" && getAdminAuthMode() === "oidc";
 
@@ -15681,6 +16150,10 @@ loginForm.addEventListener("submit", (event) => {
     loginError.textContent = "Enter a portal username and password with at least 8 characters.";
     return;
   }
+  if (authMode === "billing" && (!billingUsername || password.length < 10)) {
+    loginError.textContent = "Enter your billing username and password with at least 10 characters.";
+    return;
+  }
 
   pendingAuth = true;
   loginError.textContent = "Signing in...";
@@ -15688,10 +16161,17 @@ loginForm.addEventListener("submit", (event) => {
   (async () => {
     try {
       if (!csrfToken) await fetchCsrfToken();
-      const endpoint = authMode === "doctor" ? "/api/auth/login" : "/api/client-auth/login";
+      const endpoint =
+        authMode === "doctor"
+          ? "/api/auth/login"
+          : authMode === "billing"
+          ? "/api/billing-auth/login"
+          : "/api/client-auth/login";
       const body =
         authMode === "doctor"
           ? { identifier: adminIdentifier, username: adminIdentifier, email: adminIdentifier, password }
+          : authMode === "billing"
+          ? { username: billingUsername, password }
           : {
               username: clientUsername,
               password,
@@ -15718,6 +16198,21 @@ loginForm.addEventListener("submit", (event) => {
           displayName: doctorUser.displayName || "",
           email: doctorUser.email || "",
           entityType: "doctor",
+        };
+      } else if (authMode === "billing") {
+        const billerUser = loginResult?.billerUser || {};
+        activeSession = {
+          type: "billing",
+          accessType: "billing",
+          accountId: billerUser.id || "",
+          accountName: billerUser.displayName || "",
+          username: billerUser.username || billingUsername,
+          displayName: billerUser.displayName || "",
+          email: billerUser.email || "",
+          entityType: "biller",
+          company: billerUser.company || "",
+          allFacilities: Boolean(billerUser.allFacilities),
+          facilityIds: Array.isArray(billerUser.facilityIds) ? billerUser.facilityIds : [],
         };
       } else {
         activeSession = {
@@ -15748,6 +16243,37 @@ logoutBtn.addEventListener("click", () => {
 
 (async () => {
   await ensureAuthConfigLoaded().catch(() => {});
+
+  if (isDedicatedBillingPortal) {
+    try {
+      await fetchCsrfToken();
+      const billingState = await requestJson("/api/billing-auth/me");
+      if (billingState.authenticated) {
+        const billerUser = billingState?.billerUser || {};
+        applySessionState(billingState?.session);
+        activeSession = {
+          type: "billing",
+          accessType: "billing",
+          accountId: billerUser.id || "",
+          accountName: billerUser.displayName || "",
+          username: billerUser.username || "",
+          displayName: billerUser.displayName || "",
+          email: billerUser.email || "",
+          entityType: "biller",
+          company: billerUser.company || "",
+          allFacilities: Boolean(billerUser.allFacilities),
+          facilityIds: Array.isArray(billerUser.facilityIds) ? billerUser.facilityIds : [],
+        };
+        await mountApp();
+        return;
+      }
+    } catch {
+      // Continue to the dedicated billing sign-in screen.
+    }
+
+    mountAuth();
+    return;
+  }
 
   try {
     await fetchCsrfToken();

@@ -13,6 +13,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { registerAdminSettingsRoutes } = require("./server/features/admin-settings");
 const { registerAuthRoutes } = require("./server/features/authentication");
+const { normalizeAllFacilities, registerBillingManagementRoutes } = require("./server/features/billing-management");
 const { registerFacilityRoutes } = require("./server/features/facility-management");
 const {
   applyReceiptMatch,
@@ -57,6 +58,7 @@ const defaultSessionDir = isProd
   : path.join(process.env.LOCALAPPDATA || os.tmpdir(), "LabCenter", "sessions");
 const sessionDir = resolveRuntimePath(process.env.SESSION_DIR, defaultSessionDir);
 const usersPath = path.join(dataDir, "users.json");
+const billersPath = path.join(dataDir, "billers.json");
 const facilityPath = path.join(dataDir, "facility.json");
 const auditPath = path.join(dataDir, "audit.log");
 const zipCodesPath = path.join(sourceDataDir, "us-zips.json");
@@ -239,6 +241,11 @@ function ensureRuntimeData() {
   );
   syncSeedUsers(usersPath, path.join(sourceDataDir, "users.json"));
   seedFileIfMissing(
+    billersPath,
+    path.join(sourceDataDir, "billers.json"),
+    `${JSON.stringify({ billers: [] }, null, 2)}\n`
+  );
+  seedFileIfMissing(
     facilityPath,
     path.join(sourceDataDir, "facility.json"),
     JSON.stringify(
@@ -363,6 +370,19 @@ const FAIL_LIMIT = 5;
 
 function loadUsers() {
   return loadUsersFromPath(usersPath);
+}
+
+function loadBillers() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(billersPath, "utf8"));
+    return Array.isArray(parsed?.billers) ? parsed.billers : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBillers(billers) {
+  fs.writeFileSync(billersPath, `${JSON.stringify({ billers }, null, 2)}\n`, "utf8");
 }
 
 function loadFacilityData() {
@@ -779,7 +799,7 @@ function destroySessionAsync(req) {
 }
 
 function hasAuthenticatedSession(req) {
-  return Boolean(req?.session?.user || req?.session?.clientUser);
+  return Boolean(req?.session?.user || req?.session?.clientUser || req?.session?.billerUser);
 }
 
 function resolveSessionExpiresAt(req) {
@@ -899,6 +919,31 @@ function requireDoctorAuth(req, res, next) {
   next();
 }
 
+function requireBillingAuth(req, res, next) {
+  if (!req.session.billerUser) {
+    return res.status(401).json({ error: "Billing authentication required." });
+  }
+  const billerId = String(req.session.billerUser.id || "");
+  const biller = loadBillers().find((item) => String(item?.id || "") === billerId);
+  if (!biller || String(biller.status || "active").trim().toLowerCase() !== "active") {
+    delete req.session.billerUser;
+    return res.status(401).json({ error: "Billing access is inactive." });
+  }
+  req.session.billerUser.allFacilities = normalizeAllFacilities(biller.allFacilities);
+  req.session.billerUser.facilityIds = Array.isArray(biller.facilityIds) ? biller.facilityIds.map(String) : [];
+  next();
+}
+
+function requireReportViewerAuth(req, res, next) {
+  if (req.session.user || req.session.clientUser) return next();
+  return requireBillingAuth(req, res, next);
+}
+
+function requireRequisitionPrintAuth(req, res, next) {
+  if (req.session.user) return next();
+  return requireBillingAuth(req, res, next);
+}
+
 function hasRequisitionAccess(req) {
   if (req?.session?.user) return true;
   return req?.session?.clientUser?.accessType === "report_view_order";
@@ -948,6 +993,42 @@ function getFacilityDataForSession(req) {
     return {
       accounts: facilityData.accounts.map(sanitizeFacilityRecord),
       providers: facilityData.providers.map(sanitizeFacilityRecord),
+    };
+  }
+
+  const billerUser = req?.session?.billerUser;
+  if (billerUser) {
+    const biller = loadBillers().find((item) => String(item?.id || "") === String(billerUser.id || ""));
+    if (!biller || String(biller.status || "active").trim().toLowerCase() !== "active") {
+      return { accounts: [], providers: [] };
+    }
+
+    const allFacilities = normalizeAllFacilities(biller.allFacilities);
+    const assignedKeys = new Set(
+      (Array.isArray(biller.facilityIds) ? biller.facilityIds : [])
+        .map(normalizeMatchKey)
+        .filter(Boolean)
+    );
+    const matchingAccounts = allFacilities
+      ? facilityData.accounts
+      : facilityData.accounts.filter((row) =>
+          [row?.id, row?.account_code, row?.name].some((value) => assignedKeys.has(normalizeMatchKey(value)))
+        );
+    const accountKeys = new Set(
+      matchingAccounts
+        .flatMap((row) => [row?.id, row?.name, row?.account_code])
+        .map(normalizeMatchKey)
+        .filter(Boolean)
+    );
+    const matchingProviders = facilityData.providers.filter((row) =>
+      [row?.account, row?.accounts, row?.provider_configuration?.accounts]
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .some((value) => accountKeys.has(normalizeMatchKey(value)))
+    );
+
+    return {
+      accounts: matchingAccounts.map(sanitizeFacilityRecord),
+      providers: matchingProviders.map(sanitizeFacilityRecord),
     };
   }
 
@@ -1038,19 +1119,22 @@ function getPortalAccessScope(req) {
     const normalized = normalizeMatchKey(value);
     return normalized && keys.has(normalized);
   });
+  const isBillingScope = Boolean(req?.session?.billerUser);
 
   return {
     matchesOrder(order) {
       if (!order) return false;
-      return (
-        matchAny([order?.facilityName, order?.accountId, order?.accountName], accountKeys)
-        || matchAny([order?.provider, order?.providerId], providerKeys)
+      const accountMatch = matchAny(
+        [order?.facilityId, order?.facilityName, order?.accountId, order?.accountName],
+        accountKeys
       );
+      if (isBillingScope) return accountMatch;
+      return accountMatch || matchAny([order?.provider, order?.providerId], providerKeys);
     },
     matchesRegistration(registration) {
       if (!registration) return false;
       return (
-        matchAny([registration?.facilityName, registration?.accountId, registration?.accountName], accountKeys)
+        matchAny([registration?.facilityId, registration?.facilityName, registration?.accountId, registration?.accountName], accountKeys)
         || matchAny([registration?.provider, registration?.providerId], providerKeys)
       );
     },
@@ -3016,11 +3100,13 @@ registerAuthRoutes({
     hasAuthenticatedSession,
     isPortalAccessEnabled,
     isProd,
+    loadBillers,
     loadFacilityData,
     loadUsers,
     lockKey,
     loginLimiter,
     normalizePortalUsername,
+    normalizeAllFacilities,
     randomBase64Url,
     randomToken,
     regenerateSessionAsync,
@@ -3030,6 +3116,23 @@ registerAuthRoutes({
     toCodeChallenge,
     validateOidcIdToken,
     verifyPassword,
+  },
+});
+
+registerBillingManagementRoutes({
+  app,
+  dependencies: {
+    auditLog,
+    canAccessOrderRecord,
+    createId: () => crypto.randomUUID(),
+    getAppTimeZone: () => appSettingsStore.getTimeZone(),
+    hashPassword,
+    loadBillers,
+    portalStore,
+    requireBillingAuth,
+    requireDoctorAuth,
+    requireRequisitionPrintAuth,
+    saveBillers,
   },
 });
 
@@ -3308,6 +3411,7 @@ registerReportPublishingRoutes({
     reportPdfEnabled,
     reportPdfRendererPath,
     requireAuthenticatedUser,
+    requireReportViewerAuth,
     resolveProviderForOrderPublish,
     resolveFacilityFaxForOrderPublish,
     resolveLocalReportStoragePath,
@@ -3482,7 +3586,7 @@ function sendClientFile(res, filePath) {
   return res.sendFile(filePath);
 }
 
-app.get(["/", "/index.html"], (_req, res) => {
+app.get(["/", "/index.html", "/billing", "/billing/"], (_req, res) => {
   return sendClientFile(res, path.join(__dirname, "index.html"));
 });
 

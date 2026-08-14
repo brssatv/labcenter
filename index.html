@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/vendor/ag-grid/styles/ag-grid.min.css">
   <link rel="stylesheet" href="/vendor/ag-grid/styles/ag-theme-quartz.min.css">
-  <link rel="stylesheet" href="styles.css?v=20260813-1">
+  <link rel="stylesheet" href="/styles.css?v=20260814-1">
   <link rel="stylesheet" href="/assets/manual-transcription.css?v=20260611-1">
   <link rel="stylesheet" href="/assets/requisition-export.css?v=20260805-1">
 </head>
@@ -58,7 +58,7 @@
           <p id="auth-description" class="subtle auth-intro">Choose your workspace and continue with your assigned credentials.</p>
         </div>
         <form id="login-form" class="form-grid auth-form">
-          <div class="auth-mode-switch" role="group" aria-label="Authentication mode">
+          <div id="auth-mode-switch" class="auth-mode-switch" role="group" aria-label="Authentication mode">
             <button
               type="button"
               class="auth-mode-btn active"
@@ -94,6 +94,10 @@
           <label id="client-username-wrap" class="auth-field hidden">
             <span class="field-label">Portal Username</span>
             <input type="text" id="client-username" placeholder="Enter portal username" autocomplete="username">
+          </label>
+          <label id="billing-username-wrap" class="auth-field hidden">
+            <span class="field-label">Billing Username</span>
+            <input type="text" id="billing-username" placeholder="Enter billing username" autocomplete="username">
           </label>
           <label id="password-wrap" class="auth-field">
             <span class="field-label">Password</span>
@@ -176,6 +180,6 @@
   <script src="/assets/formula-book.js?v=20260813-1"></script>
   <script src="/assets/icd-code-utils.js?v=20260626-1"></script>
   <script src="/assets/icd-code-data.js?v=20260626-1"></script>
-  <script src="app.js?v=20260813-1"></script>
+  <script src="/app.js?v=20260814-1"></script>
 </body>
 </html>

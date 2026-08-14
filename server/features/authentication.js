@@ -25,10 +25,12 @@ function registerAuthRoutes({ app, dependencies }) {
     hasAuthenticatedSession,
     isPortalAccessEnabled,
     isProd,
+    loadBillers,
     loadFacilityData,
     loadUsers,
     lockKey,
     loginLimiter,
+    normalizeAllFacilities,
     normalizePortalUsername,
     randomBase64Url,
     randomToken,
@@ -102,7 +104,7 @@ function registerAuthRoutes({ app, dependencies }) {
       await saveSessionAsync(req);
 
       auditLog(req, "session_refresh", "success", {
-        sessionType: req.session.user ? "doctor" : "client",
+        sessionType: req.session.user ? "doctor" : req.session.clientUser ? "client" : "billing",
       });
 
       return res.json({
@@ -496,6 +498,107 @@ function registerAuthRoutes({ app, dependencies }) {
       username: clientUser.username,
       accountId: clientUser.accountId,
       accessType: clientUser.accessType,
+    });
+
+    req.session.destroy((err) => {
+      if (err) return res.status(500).json({ error: "Unable to logout cleanly." });
+      res.clearCookie("labcenter.sid");
+      return res.status(204).end();
+    });
+  });
+
+  app.get("/api/billing-auth/me", (req, res) => {
+    if (!req.session.billerUser) {
+      return res.status(401).json({ authenticated: false });
+    }
+    const biller = loadBillers().find(
+      (item) => String(item?.id || "") === String(req.session.billerUser.id || "")
+    );
+    if (!biller || String(biller.status || "active").trim().toLowerCase() !== "active") {
+      delete req.session.billerUser;
+      return res.status(401).json({ authenticated: false });
+    }
+    req.session.billerUser.allFacilities = normalizeAllFacilities(biller.allFacilities);
+    req.session.billerUser.facilityIds = Array.isArray(biller.facilityIds) ? biller.facilityIds.map(String) : [];
+    return res.json({
+      authenticated: true,
+      billerUser: req.session.billerUser,
+      session: buildSessionStatePayload(req),
+    });
+  });
+
+  app.post("/api/billing-auth/login", loginLimiter, (req, res) => {
+    const username = normalizePortalUsername(req.body?.username);
+    const password = String(req.body?.password || "");
+    const ip = getClientIp(req);
+
+    if (!username || !password) {
+      auditLog(req, "billing_login", "failed", { reason: "missing_fields", username });
+      return res.status(400).json({ error: "Username and password are required." });
+    }
+
+    const key = lockKey(`billing:${username}`, ip);
+    const lockoutMs = getLockoutRemaining(key);
+    if (lockoutMs > 0) {
+      auditLog(req, "billing_login", "blocked", { reason: "lockout", username });
+      return res.status(429).json({
+        error: `Account temporarily locked. Try again in ${Math.ceil(lockoutMs / 60000)} minutes.`,
+      });
+    }
+
+    const biller = loadBillers().find(
+      (item) => normalizePortalUsername(item?.username) === username
+    );
+    const isActive = String(biller?.status || "active").trim().toLowerCase() === "active";
+    const validPassword = biller && isActive ? verifyPassword(password, biller.passwordHash) : false;
+
+    if (!biller || !isActive || !validPassword) {
+      registerFailure(key);
+      auditLog(req, "billing_login", "failed", { reason: "invalid_credentials", username });
+      return res.status(401).json({ error: "Invalid billing portal credentials." });
+    }
+
+    req.session.regenerate((err) => {
+      if (err) {
+        auditLog(req, "billing_login", "failed", { reason: "session_regenerate_error", username });
+        return res.status(500).json({ error: "Unable to create session." });
+      }
+
+      req.session.billerUser = {
+        id: String(biller.id || ""),
+        username,
+        displayName: String(biller.fullName || ""),
+        email: String(biller.email || ""),
+        company: String(biller.company || ""),
+        allFacilities: normalizeAllFacilities(biller.allFacilities),
+        facilityIds: Array.isArray(biller.facilityIds) ? biller.facilityIds.map(String) : [],
+        role: "biller",
+      };
+      req.session.csrfToken = randomToken();
+      clearFailures(key);
+
+      auditLog(req, "billing_login", "success", {
+        username,
+        billerId: String(biller.id || ""),
+      });
+      return res.json({
+        authenticated: true,
+        billerUser: req.session.billerUser,
+        csrfToken: req.session.csrfToken,
+        session: buildSessionStatePayload(req),
+      });
+    });
+  });
+
+  app.post("/api/billing-auth/logout", (req, res) => {
+    if (!req.session.billerUser) {
+      return res.status(204).end();
+    }
+
+    const { billerUser } = req.session;
+    auditLog(req, "billing_logout", "success", {
+      username: billerUser.username,
+      billerId: billerUser.id,
     });
 
     req.session.destroy((err) => {

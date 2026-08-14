@@ -136,6 +136,14 @@ Run:
 
 Then update the user's `passwordHash` in `/Users/greyhouse/Documents/LabCenter/data/users.json`.
 
+## Billing portal
+
+Administrators can create and manage biller accounts from the **Billing** tab. Billing users sign in at:
+
+- `https://portal.mindbodyheal.co/billing`
+
+Biller credentials are stored separately in `DATA_DIR/billers.json`, passwords are scrypt-hashed, and billing sessions do not receive client, clinical, facility, or administrator access. Set a biller to **Inactive** to block future access. New billing permissions should be added explicitly rather than reusing the client or administrator roles.
+
 ## Important HIPAA note
 
 This scaffold helps with key technical controls for authentication, but **it is not complete HIPAA compliance by itself**. You still need operational safeguards, BAAs, risk analysis, workforce training, incident response procedures, and production-grade infrastructure controls.

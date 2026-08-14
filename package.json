@@ -57,6 +57,7 @@
       "index.html",
       "styles.css",
       "server.js",
+      "server/**/*",
       "lib/**/*",
       "assets/**/*",
       "data/**/*",

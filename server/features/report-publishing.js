@@ -651,6 +651,7 @@ async function queueSrfaxFax({
 function registerReportPublishingRoutes({ app, dependencies }) {
   const {
     requireAuthenticatedUser,
+    requireReportViewerAuth,
     hasReportPdfAccess,
     portalStore,
     canAccessOrderRecord,
@@ -767,7 +768,7 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     }
   });
 
-  app.get("/api/orders/:orderId/final-report-pdf", requireAuthenticatedUser, async (req, res) => {
+  app.get("/api/orders/:orderId/final-report-pdf", requireReportViewerAuth, async (req, res) => {
     try {
       const orderId = String(req.params.orderId || "").trim();
       if (!orderId) {
