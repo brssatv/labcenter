@@ -696,14 +696,48 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     }
     try {
       await sendSendGridOrderCompleteEmail({ ...emailConfig, orderId });
+      const sentAt = new Date().toISOString();
+      const savedOrder = portalStore.upsertOrders([{
+        ...existingOrder,
+        updatedAt: sentAt,
+        publishedReports: {
+          ...(existingOrder?.publishedReports && typeof existingOrder.publishedReports === "object" ? existingOrder.publishedReports : {}),
+          email: {
+            ...(existingOrder?.publishedReports?.email && typeof existingOrder.publishedReports.email === "object" ? existingOrder.publishedReports.email : {}),
+            channel: "email",
+            status: "sent",
+            sentAt,
+            attemptedAt: sentAt,
+            senderEmail: emailConfig.senderEmail,
+            recipientEmail: emailConfig.recipientEmail,
+          },
+        },
+      }])[0];
       auditLog(req, "publish_final_report_email", "success", {
         orderId,
         deliveryVendor: "SendGrid",
         recipientEmail: emailConfig.recipientEmail,
         senderEmail: emailConfig.senderEmail,
       });
-      return res.json({ ok: true, message: `Email notification sent to ${emailConfig.recipientEmail}.` });
+      return res.json({ ok: true, message: `Email notification sent to ${emailConfig.recipientEmail}.`, order: savedOrder });
     } catch (error) {
+      const attemptedAt = new Date().toISOString();
+      portalStore.upsertOrders([{
+        ...existingOrder,
+        updatedAt: attemptedAt,
+        publishedReports: {
+          ...(existingOrder?.publishedReports && typeof existingOrder.publishedReports === "object" ? existingOrder.publishedReports : {}),
+          email: {
+            ...(existingOrder?.publishedReports?.email && typeof existingOrder.publishedReports.email === "object" ? existingOrder.publishedReports.email : {}),
+            channel: "email",
+            status: "failed",
+            attemptedAt,
+            senderEmail: emailConfig.senderEmail,
+            recipientEmail: emailConfig.recipientEmail,
+            error: String(error?.message || "Unable to send email notification."),
+          },
+        },
+      }]);
       auditLog(req, "publish_final_report_email", "failed", {
         orderId,
         deliveryVendor: "SendGrid",

@@ -757,7 +757,7 @@ function formatSessionCountdown(remainingMs) {
 function syncBodyModalOpenState() {
   const hasVisibleModal = Boolean(
     document.querySelector(
-      ".facility-modal-backdrop:not(.hidden), .custom-icd-modal:not(.hidden), .history-preview-modal:not(.hidden), .session-expiry-backdrop:not(.hidden), .output-results-publish-modal:not(.hidden)"
+      ".facility-modal-backdrop:not(.hidden), .custom-icd-modal:not(.hidden), .history-preview-modal:not(.hidden), .session-expiry-backdrop:not(.hidden), .output-results-publish-modal:not(.hidden), .output-previous-records-drawer.is-open"
     )
   );
   document.body.classList.toggle("modal-open", hasVisibleModal);
@@ -7111,6 +7111,11 @@ function renderOutputResults() {
   const publishingEmailOrders = new Set();
   const workflowSavingOrders = new Set();
   const previewLoadingOrders = new Set();
+  let expandedCompletedOrderId = "";
+  let previousRecordsOrderId = "";
+  let previousRecordsTrigger = null;
+  const outputStatusHistoryCache = new Map();
+  const outputStatusHistoryLoading = new Set();
 
   function formatOutputDate(iso) {
     return formatAppDateTime(iso, {
@@ -7244,6 +7249,112 @@ function renderOutputResults() {
 
   function resetPublishModalEmailState() {
     publishModalEmailState = { orderId: "", loading: false, senderEmail: "", recipientEmail: "", error: "" };
+  }
+
+  function resolveOutputEventLabel(event) {
+    const labels = {
+      order_created: "Report requested and submitted",
+      results_processed: "Processing completed",
+      order_completed: "Report completed",
+      order_updated: "Report information updated",
+      order_rejected: "Report rejected",
+      order_rejection_undone: "Report restored",
+      requisition_modified: "Requisition updated",
+    };
+    return labels[String(event?.eventType || "").trim()] || String(event?.eventType || "Status updated").replace(/_/g, " ").replace(/^\w/, (value) => value.toUpperCase());
+  }
+
+  function getOutputStatusEvents(order) {
+    const orderId = String(order?.orderId || "").trim();
+    const cached = outputStatusHistoryCache.get(orderId);
+    return Array.isArray(cached) ? cached : [];
+  }
+
+  async function loadOutputStatusHistory(orderId) {
+    const normalizedOrderId = String(orderId || "").trim();
+    if (!normalizedOrderId || outputStatusHistoryCache.has(normalizedOrderId) || outputStatusHistoryLoading.has(normalizedOrderId)) return;
+    outputStatusHistoryLoading.add(normalizedOrderId);
+    renderOutputResultsTable();
+    try {
+      const payload = await requestJson(`/api/portal/orders/${encodeURIComponent(normalizedOrderId)}/audit-events`, { method: "GET" });
+      outputStatusHistoryCache.set(normalizedOrderId, Array.isArray(payload?.events) ? payload.events : []);
+    } catch (error) {
+      outputStatusHistoryCache.set(normalizedOrderId, []);
+      console.error("Unable to load report status history", error);
+    } finally {
+      outputStatusHistoryLoading.delete(normalizedOrderId);
+      renderOutputResultsTable();
+    }
+  }
+
+  function buildCompletedProgressMarkup(order) {
+    const events = getOutputStatusEvents(order);
+    const eventTime = (type) => events.find((event) => event?.eventType === type)?.eventAt || "";
+    const steps = [
+      { label: "Sample Collection", at: order?.sampleCollectTime || order?.sampleCollectedAt || "" },
+      { label: "Sample Received", at: order?.sampleReceivedAt || order?.accessionAssignedAt || "" },
+      { label: "Testing In Progress", at: eventTime("results_processed") || order?.processedResult?.processedAt || order?.processedAt || "" },
+      { label: "Review", at: order?.pharmd?.validationReadyAt || order?.pharmd?.reportReceivedAt || order?.pharmd?.receivedAt || "" },
+      { label: "Published", at: order?.publishedReports?.final?.publishedAt || order?.publishedReports?.email?.sentAt || "" },
+    ];
+    let lastReached = -1;
+    steps.forEach((step, index) => { if (step.at) lastReached = index; });
+    return `<ol class="output-progress-tracker" aria-label="Report progress">
+      ${steps.map((step, index) => {
+        const state = step.at ? "is-complete" : index === lastReached + 1 ? "is-current" : "is-upcoming";
+        return `<li class="${state}"><span class="output-progress-marker" aria-hidden="true">${step.at ? "&#10003;" : ""}</span><strong>${escapeHtml(step.label)}</strong><small>${step.at ? escapeHtml(formatOutputDate(step.at)) : "Not reached"}</small></li>`;
+      }).join("")}
+    </ol>`;
+  }
+
+  function getCompletedPublishButtonState(order) {
+    const fax = order?.publishedReports?.final?.channel === "fax" ? order.publishedReports.final : null;
+    const email = order?.publishedReports?.email || null;
+    const isSuccessful = (status) => /sent|delivered|queued|accepted|simulated|logged|success/.test(String(status || "").trim().toLowerCase());
+    const faxed = Boolean(fax?.publishedAt && isSuccessful(fax?.status));
+    const emailed = Boolean((email?.sentAt || email?.attemptedAt) && isSuccessful(email?.status));
+    if (faxed && emailed) return { className: "is-fully-published", label: "Published", description: "Fax and email sent" };
+    if (faxed) return { className: "is-fax-published", label: "Published", description: "Fax sent" };
+    return { className: "", label: "Publish", description: "Choose a publishing channel" };
+  }
+
+  function buildCommunicationSummaryMarkup(order) {
+    const fax = order?.publishedReports?.final?.channel === "fax" ? order.publishedReports.final : null;
+    const email = order?.publishedReports?.email || null;
+    const channel = (label, record, icon) => {
+      const status = String(record?.status || "pending").trim().toLowerCase();
+      const tone = /sent|delivered|queued|accepted|simulated|logged|success/.test(status) ? "is-success" : /fail|error/.test(status) ? "is-failed" : "is-pending";
+      const latestAt = record?.sentAt || record?.publishedAt || record?.attemptedAt || "";
+      return `<div class="output-communication-row">
+        <span class="output-communication-icon ${record ? tone : "is-muted"}" aria-hidden="true">${icon}</span>
+        <div><strong>${label}</strong><small>${record ? escapeHtml(status.replace(/^\w/, (value) => value.toUpperCase())) : "No activity"}</small></div>
+        <time>${latestAt ? escapeHtml(formatOutputDate(latestAt)) : "-"}</time>
+      </div>`;
+    };
+    return `${channel("Fax", fax, "F")}${channel("Email", email, "E")}`;
+  }
+
+  function buildCompletedDetailMarkup(order) {
+    const orderId = String(order?.orderId || "").trim();
+    const events = getOutputStatusEvents(order).slice().sort((a, b) => new Date(a?.eventAt || 0) - new Date(b?.eventAt || 0));
+    const isLoading = outputStatusHistoryLoading.has(orderId);
+    return `<tr class="output-results-detail-row"><td colspan="11">
+      <section class="output-results-detail-panel" aria-label="Details for report ${escapeHtml(orderId)}">
+        <div class="output-results-detail-head"><div><p class="badge">Report progress</p><h4>Order #${escapeHtml(orderId)}</h4></div><button type="button" class="output-detail-collapse" data-toggle-completed-detail="${escapeHtml(orderId)}">Collapse <span aria-hidden="true">&#8963;</span></button></div>
+        ${buildCompletedProgressMarkup(order)}
+        <div class="output-results-detail-grid">
+          <section><h5>Status History</h5>${isLoading ? '<p class="subtle">Loading status history...</p>' : events.length ? `<ol class="output-status-history">${events.slice(-5).map((event) => `<li><span aria-hidden="true"></span><div><strong>${escapeHtml(resolveOutputEventLabel(event))}</strong><small>${escapeHtml(formatOutputDate(event?.eventAt))}</small></div></li>`).join("")}</ol>` : '<p class="subtle">No persisted status events are available.</p>'}</section>
+          <section><h5>Report Details</h5><dl class="output-report-details"><div><dt>Report ID</dt><dd>${escapeHtml(orderId || "-")}</dd></div><div><dt>Patient</dt><dd>${escapeHtml(order?.patientName || "-")}</dd></div><div><dt>Panel</dt><dd>${escapeHtml(order?.services?.[0]?.serviceName || "Lab Panel")}</dd></div><div><dt>Provider</dt><dd>${escapeHtml(order?.provider || "-")}</dd></div><div><dt>Lab</dt><dd>${escapeHtml(order?.facilityName || "-")}</dd></div><div><dt>Accession</dt><dd>${escapeHtml(resolveOrderAccession(order))}</dd></div></dl><button type="button" class="table-action-btn output-previous-records-btn" data-open-previous-records="${escapeHtml(orderId)}">Previous Records</button></section>
+          <section><h5>Communication Summary</h5><div class="output-communication-list">${buildCommunicationSummaryMarkup(order)}</div></section>
+        </div>
+      </section>
+    </td></tr>`;
+  }
+
+  function getPreviousPatientOrders(order) {
+    const patientId = String(order?.patientId || "").trim();
+    if (!patientId) return [];
+    return readOrders().filter((item) => String(item?.patientId || "").trim() === patientId && String(item?.orderId || "").trim() !== String(order?.orderId || "").trim()).sort((a, b) => getOrderSortTimestamp(b, "activity-desc") - getOrderSortTimestamp(a, "activity-desc"));
   }
 
   async function loadCompletedPublishEmailDetails(orderId) {
@@ -7553,7 +7664,7 @@ function renderOutputResults() {
 
   async function sendCompletedReportEmail(orderId) {
     if (!csrfToken) await fetchCsrfToken();
-    return requestJson(`/api/orders/${encodeURIComponent(orderId)}/publish-email`, {
+    const payload = await requestJson(`/api/orders/${encodeURIComponent(orderId)}/publish-email`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -7561,6 +7672,9 @@ function renderOutputResults() {
       },
       body: JSON.stringify({ confirmed: true }),
     });
+    if (payload?.order) replaceOrderInState(payload.order);
+    renderOutputResultsTable();
+    return payload;
   }
 
   function resolvePharmdRemotePath(order) {
@@ -7929,6 +8043,7 @@ function renderOutputResults() {
       <table class="order-history-table">
         <thead>
           <tr>
+            ${showCompletedActions ? '<th class="output-results-expand-col"><span class="sr-only">Expand details</span></th>' : ""}
             <th>Order #</th>
             <th>Accession #</th>
             <th>Patient</th>
@@ -7955,8 +8070,11 @@ function renderOutputResults() {
               const isOpeningReport = isPharmdBypassed ? isOpeningFinal : isOpeningCombined;
               const isWorkflowSaving = workflowSavingOrders.has(orderId);
               const isPublished = Boolean(row?.publishedReports?.final?.publishedAt);
+              const publishButtonState = getCompletedPublishButtonState(row);
+              const isExpanded = showCompletedActions && expandedCompletedOrderId === orderId;
               return `
-                <tr>
+                <tr class="${isExpanded ? "output-results-row-expanded" : ""}">
+                  ${showCompletedActions ? `<td class="output-results-expand-cell"><button type="button" class="output-results-expand-button" data-toggle-completed-detail="${escapeHtml(orderId)}" aria-expanded="${isExpanded ? "true" : "false"}" aria-label="${isExpanded ? "Collapse" : "Expand"} details for Order ${escapeHtml(orderId)}"><span aria-hidden="true">&#8250;</span></button></td>` : ""}
                   <td>${escapeHtml(row?.orderId || "-")}</td>
                   <td>${escapeHtml(resolveOrderAccession(row))}</td>
                   <td>
@@ -7998,11 +8116,12 @@ function renderOutputResults() {
                         </a>
                         <button
                           type="button"
-                          class="table-action-btn publish-report-btn"
+                          class="table-action-btn publish-report-btn ${publishButtonState.className}"
                           data-open-completed-publish="${escapeHtml(orderId)}"
+                          aria-label="${escapeHtml(`${publishButtonState.label}: ${publishButtonState.description}`)}"
                           ${isWorkflowSaving ? "disabled" : ""}
                         >
-                          Publish
+                          ${escapeHtml(publishButtonState.label)}
                         </button>
                         <button
                           type="button"
@@ -8027,6 +8146,7 @@ function renderOutputResults() {
                     </td>
                   ` : ""}
                 </tr>
+                ${isExpanded ? buildCompletedDetailMarkup(row) : ""}
               `;
             })
             .join("")}
@@ -8283,6 +8403,44 @@ function renderOutputResults() {
       : buildGenericQueueTableMarkup(rows);
   }
 
+  function closePreviousRecordsDrawer({ restoreFocus = true } = {}) {
+    previousRecordsOrderId = "";
+    const drawer = document.getElementById("output-previous-records-drawer");
+    const backdrop = document.getElementById("output-previous-records-backdrop");
+    drawer?.classList.remove("is-open");
+    drawer?.setAttribute("aria-hidden", "true");
+    backdrop?.classList.remove("is-open");
+    syncBodyModalOpenState();
+    if (restoreFocus && previousRecordsTrigger?.isConnected) previousRecordsTrigger.focus();
+    previousRecordsTrigger = null;
+  }
+
+  function renderPreviousRecordsDrawer() {
+    const drawer = document.getElementById("output-previous-records-drawer");
+    const backdrop = document.getElementById("output-previous-records-backdrop");
+    if (!drawer || !backdrop || !previousRecordsOrderId) return;
+    const order = findOrderById(previousRecordsOrderId);
+    if (!order) return closePreviousRecordsDrawer({ restoreFocus: false });
+    const previousOrders = getPreviousPatientOrders(order);
+    const initials = String(order?.patientName || "P").split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+    drawer.innerHTML = `<div class="output-previous-records-head"><div><p class="badge">Patient history</p><h3 id="output-previous-records-title">Previous Records</h3></div><button type="button" class="preview-close-btn" data-close-previous-records aria-label="Close previous records">&times;</button></div>
+      <div class="output-previous-patient"><span class="output-previous-avatar" aria-hidden="true">${escapeHtml(initials || "P")}</span><div><strong>${escapeHtml(order?.patientName || "-")}</strong><small>Patient ID: ${escapeHtml(order?.patientId || "-")}</small></div></div>
+      <div class="output-previous-records-body"><h4>Reports for this patient (${previousOrders.length})</h4>${previousOrders.length ? `<div class="output-previous-records-list">${previousOrders.map((item) => `<button type="button" class="output-previous-record" data-open-previous-report="${escapeHtml(item?.orderId || "")}"><span><strong>${escapeHtml(item?.orderId || "-")}</strong><small>${escapeHtml(item?.services?.[0]?.serviceName || "Lab Panel")}</small><small>${escapeHtml(formatOutputDate(resolveOutputLastActivityAt(item)))}</small></span><span class="history-status ${resolveOutputBadgeClass(item)}">${escapeHtml(resolveOutputStageLabel(item))}</span><b aria-hidden="true">&#8250;</b></button>`).join("")}</div>` : '<p class="output-previous-empty">No previous reports found for this patient.</p>'}</div>`;
+    drawer.classList.add("is-open");
+    drawer.setAttribute("aria-hidden", "false");
+    backdrop.classList.add("is-open");
+    syncBodyModalOpenState();
+    requestAnimationFrame(() => drawer.querySelector("[data-close-previous-records]")?.focus());
+  }
+
+  function openPreviousRecordsDrawer(orderId, trigger) {
+    const order = findOrderById(orderId);
+    if (!order) return;
+    previousRecordsOrderId = String(orderId || "").trim();
+    previousRecordsTrigger = trigger || document.activeElement;
+    renderPreviousRecordsDrawer();
+  }
+
   panelBody.innerHTML = `
     <section class="output-results-page">
       <div class="output-results-hero">
@@ -8327,6 +8485,8 @@ function renderOutputResults() {
 
       <div id="output-results-table"></div>
       <div id="output-results-publish-modal" class="output-results-publish-modal hidden" aria-hidden="true"></div>
+      <div id="output-previous-records-backdrop" class="output-previous-records-backdrop" aria-hidden="true"></div>
+      <aside id="output-previous-records-drawer" class="output-previous-records-drawer" role="dialog" aria-modal="true" aria-labelledby="output-previous-records-title" aria-hidden="true"></aside>
     </section>
   `;
 
@@ -8342,6 +8502,8 @@ function renderOutputResults() {
     const nextTab = String(tabBtn.getAttribute("data-output-tab") || "").trim();
     if (!nextTab || nextTab === activeTab) return;
     activeTab = nextTab;
+    expandedCompletedOrderId = "";
+    closePreviousRecordsDrawer({ restoreFocus: false });
     closeCompletedPublishModal();
     tabsNode.querySelectorAll("[data-output-tab]").forEach((node) => {
       const selected = node.getAttribute("data-output-tab") === activeTab;
@@ -8364,6 +8526,22 @@ function renderOutputResults() {
   });
 
   outputTableNode?.addEventListener("click", (event) => {
+    const detailToggle = event.target.closest("[data-toggle-completed-detail]");
+    if (detailToggle) {
+      const orderId = String(detailToggle.getAttribute("data-toggle-completed-detail") || "").trim();
+      expandedCompletedOrderId = expandedCompletedOrderId === orderId ? "" : orderId;
+      closePreviousRecordsDrawer({ restoreFocus: false });
+      renderOutputResultsTable();
+      if (expandedCompletedOrderId) loadOutputStatusHistory(orderId);
+      return;
+    }
+
+    const previousRecordsBtn = event.target.closest("[data-open-previous-records]");
+    if (previousRecordsBtn) {
+      openPreviousRecordsDrawer(previousRecordsBtn.getAttribute("data-open-previous-records"), previousRecordsBtn);
+      return;
+    }
+
     const publishBtn = event.target.closest("[data-open-completed-publish]");
     if (publishBtn) {
       const orderId = String(publishBtn.getAttribute("data-open-completed-publish") || "").trim();
@@ -8578,6 +8756,49 @@ function renderOutputResults() {
           workflowSavingOrders.delete(orderId);
           renderOutputResultsTable();
         });
+    }
+  });
+
+  const previousRecordsDrawerNode = document.getElementById("output-previous-records-drawer");
+  const previousRecordsBackdropNode = document.getElementById("output-previous-records-backdrop");
+  previousRecordsBackdropNode?.addEventListener("click", () => closePreviousRecordsDrawer());
+  previousRecordsDrawerNode?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-close-previous-records]")) {
+      closePreviousRecordsDrawer();
+      return;
+    }
+    const reportBtn = event.target.closest("[data-open-previous-report]");
+    if (!reportBtn) return;
+    const orderId = String(reportBtn.getAttribute("data-open-previous-report") || "").trim();
+    const order = findOrderById(orderId);
+    if (!order) return;
+    closePreviousRecordsDrawer({ restoreFocus: false });
+    if (isPharmdSkipped(order)) {
+      openSavedFinalReportPreview(orderId).catch((error) => alert(error?.message || "Unable to open this report."));
+    } else {
+      openCombinedPharmdPreview(orderId).catch((error) => alert(error?.message || "Unable to open this report."));
+    }
+  });
+
+  panelBody.addEventListener("keydown", (event) => {
+    if (!previousRecordsOrderId) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePreviousRecordsDrawer();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const drawer = document.getElementById("output-previous-records-drawer");
+    const focusable = Array.from(drawer?.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || []);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
 
