@@ -67,9 +67,22 @@
     return [fields.map((field) => csvCell(field.label)).join(","), ...rows.map((row) => fields.map((field) => csvCell(field.value(row))).join(","))].join("\r\n");
   }
 
-  function filterRowsByDate(rows, fromDate, toDate) {
+  function getSampleReceivedDateKey(row) {
+    const value = String(row?.raw?.receivedDate || "").trim();
+    if (!value) return "";
+    const isoDate = value.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (isoDate) return isoDate[1];
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function filterRowsByReceivedDate(rows, fromDate, toDate) {
     return rows.filter((row) => {
-      const date = String(row.collectionDateKey || "");
+      const date = getSampleReceivedDateKey(row);
       if (!date) return !fromDate && !toDate;
       return (!fromDate || date >= fromDate) && (!toDate || date <= toDate);
     });
@@ -85,9 +98,9 @@
       backdrop.className = "req-export-backdrop";
       backdrop.innerHTML = `
         <section class="req-export-dialog" role="dialog" aria-modal="true" aria-labelledby="req-export-title" tabindex="-1">
-          <header class="req-export-head"><div class="req-export-title-group"><span class="req-export-title-icon" aria-hidden="true">&#8595;</span><div><h3 id="req-export-title">Download requisition data</h3><p>Create a custom CSV export for your selected collection period.</p></div></div><button type="button" class="req-export-close" aria-label="Close">&times;</button></header>
+          <header class="req-export-head"><div class="req-export-title-group"><span class="req-export-title-icon" aria-hidden="true">&#8595;</span><div><h3 id="req-export-title">Download requisition data</h3><p>Create a custom CSV export for your selected sample received period.</p></div></div><button type="button" class="req-export-close" aria-label="Close">&times;</button></header>
           <div class="req-export-body">
-            <section class="req-export-section"><div class="req-export-section-head"><div><h4>Collection period</h4><p>Leave both dates empty to include all requisitions.</p></div></div><div class="req-export-dates"><label><span>From date</span><input type="date" data-export-from></label><label><span>To date</span><input type="date" data-export-to></label></div></section>
+            <section class="req-export-section"><div class="req-export-section-head"><div><h4>Sample received period</h4><p>Filter by Sample Received Date, or leave both dates empty to include all requisitions.</p></div></div><div class="req-export-dates"><label><span>From date</span><input type="date" data-export-from></label><label><span>To date</span><input type="date" data-export-to></label></div></section>
             <fieldset class="req-export-fields req-export-section"><div class="req-export-section-head"><div><legend>Attributes to download</legend><p>Choose which columns should appear in the CSV file.</p></div><span class="req-export-recommended">4 recommended selected</span></div><div class="req-export-field-grid">
               ${EXPORT_FIELDS.map((field) => `<label class="${field.selectionOnly ? "req-export-field-master" : ""}"><input type="checkbox" value="${field.key}" ${field.selectionOnly ? `data-export-selects="${field.selects.join(",")}"` : ""} ${DEFAULT_FIELD_KEYS.includes(field.key) ? "checked" : ""}><span>${field.label}</span></label>`).join("")}
             </div></fieldset>
@@ -109,12 +122,12 @@
         ));
         if (fromDate && toDate && fromDate > toDate) { status.textContent = "From date must be on or before To date."; fromInput.focus(); return; }
         if (!fields.length) { status.textContent = "Select at least one attribute to download."; return; }
-        const rows = filterRowsByDate(getRows(), fromDate, toDate);
-        if (!rows.length) { status.textContent = "No requisitions were found in this date range."; return; }
+        const rows = filterRowsByReceivedDate(getRows(), fromDate, toDate);
+        if (!rows.length) { status.textContent = "No requisitions were received in this date range."; return; }
         const url = URL.createObjectURL(new Blob(["\uFEFF", buildCsv(rows, fields)], { type: "text/csv;charset=utf-8" }));
         const link = document.createElement("a");
         link.href = url;
-        link.download = `requisitions-${[fromDate, toDate].filter(Boolean).join("_to_") || "all-dates"}.csv`;
+        link.download = `requisitions-received-${[fromDate, toDate].filter(Boolean).join("_to_") || "all-dates"}.csv`;
         document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); close();
       };
       backdrop.querySelector(".req-export-close").addEventListener("click", close);
@@ -143,7 +156,7 @@
     return () => trigger.removeEventListener("click", open);
   }
 
-  const api = { init, buildCsv, filterRowsByDate, formatExportDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS };
+  const api = { init, buildCsv, filterRowsByReceivedDate, formatExportDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS };
   globalScope.RequisitionExport = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

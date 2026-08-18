@@ -1,14 +1,28 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildCsv, filterRowsByDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS } = require("../assets/requisition-export.js");
+const { buildCsv, filterRowsByReceivedDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS } = require("../assets/requisition-export.js");
 
 test("requisition export starts with the four requested fields", () => {
   assert.deepEqual(DEFAULT_FIELD_KEYS, ["accession", "collectionDate", "patientId", "patientName"]);
 });
 
-test("requisition export filters collection dates inclusively", () => {
-  const rows = [{ collectionDateKey: "2026-06-01" }, { collectionDateKey: "2026-06-15" }, { collectionDateKey: "2026-07-01" }];
-  assert.deepEqual(filterRowsByDate(rows, "2026-06-01", "2026-06-15"), rows.slice(0, 2));
+test("requisition export filters sample received dates inclusively", () => {
+  const rows = [
+    { raw: { receivedDate: "2026-06-01T08:15:00.000Z" } },
+    { raw: { receivedDate: "2026-06-15T17:45:00.000Z" } },
+    { raw: { receivedDate: "2026-07-01T09:00:00.000Z" } },
+  ];
+  assert.deepEqual(filterRowsByReceivedDate(rows, "2026-06-01", "2026-06-15"), rows.slice(0, 2));
+});
+
+test("requisition export excludes missing received dates only when a date filter is used", () => {
+  const rows = [
+    { raw: { receivedDate: "2026-06-10" } },
+    { raw: { receivedDate: "" } },
+    { raw: {} },
+  ];
+  assert.deepEqual(filterRowsByReceivedDate(rows, "2026-06-01", "2026-06-30"), rows.slice(0, 1));
+  assert.deepEqual(filterRowsByReceivedDate(rows, "", ""), rows);
 });
 
 test("requisition export creates escaped CSV with selected attributes", () => {
