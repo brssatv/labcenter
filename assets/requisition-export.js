@@ -1,7 +1,7 @@
 (function requisitionExportModule(globalScope) {
   "use strict";
 
-  const DEFAULT_FIELD_KEYS = ["accession", "collectionDate", "patientId", "patientName"];
+  const DEFAULT_FIELD_KEYS = ["accession", "orderCreatedDate", "collectionDate", "patientId", "patientName"];
   const INSURANCE_FIELD_KEYS = [
     "billingType", "primaryInsurance", "primaryPolicy", "primaryGroup", "insurancePhone",
     "secondaryInsurance", "secondaryPolicy", "secondaryGroup", "tertiaryInsurance", "tertiaryPolicy",
@@ -13,10 +13,14 @@
     if (!text) return "";
     if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
       const [year, month, day] = text.split("-");
-      return `${Number(month)}/${Number(day)}/${year}`;
+      return `${month}/${day}/${year}`;
     }
     const date = new Date(text);
-    return Number.isNaN(date.getTime()) ? text : date.toLocaleDateString();
+    return Number.isNaN(date.getTime()) ? text : date.toLocaleDateString("en-US", {
+      month: "2-digit",
+      day: "2-digit",
+      year: "numeric",
+    });
   }
 
   function parseUsDate(value) {
@@ -36,6 +40,7 @@
 
   const EXPORT_FIELDS = [
     { key: "accession", label: "Accession #", value: (row) => row.accession },
+    { key: "orderCreatedDate", label: "Order Creation Date", value: (row) => formatExportDate(row.order?.createdAt) },
     { key: "collectionDate", label: "Sample Collection Date", value: (row) => row.collectionDate },
     { key: "patientId", label: "Patient ID", value: (row) => row.raw?.patientId },
     { key: "patientName", label: "Patient Name", value: (row) => [row.firstName, row.lastName].filter((part) => part && part !== "-").join(" ") },
@@ -82,8 +87,8 @@
     return [fields.map((field) => csvCell(field.label)).join(","), ...rows.map((row) => fields.map((field) => csvCell(field.value(row))).join(","))].join("\r\n");
   }
 
-  function getSampleReceivedDateKey(row) {
-    const value = String(row?.raw?.receivedDate || "").trim();
+  function getOrderCreatedDateKey(row) {
+    const value = String(row?.order?.createdAt || "").trim();
     if (!value) return "";
     const isoDate = value.match(/^(\d{4}-\d{2}-\d{2})/);
     if (isoDate) return isoDate[1];
@@ -95,9 +100,9 @@
     return `${year}-${month}-${day}`;
   }
 
-  function filterRowsByReceivedDate(rows, fromDate, toDate) {
+  function filterRowsByOrderCreatedDate(rows, fromDate, toDate) {
     return rows.filter((row) => {
-      const date = getSampleReceivedDateKey(row);
+      const date = getOrderCreatedDateKey(row);
       if (!date) return !fromDate && !toDate;
       return (!fromDate || date >= fromDate) && (!toDate || date <= toDate);
     });
@@ -113,10 +118,10 @@
       backdrop.className = "req-export-backdrop";
       backdrop.innerHTML = `
         <section class="req-export-dialog" role="dialog" aria-modal="true" aria-labelledby="req-export-title" tabindex="-1">
-          <header class="req-export-head"><div class="req-export-title-group"><span class="req-export-title-icon" aria-hidden="true">&#8595;</span><div><h3 id="req-export-title">Download requisition data</h3><p>Create a custom CSV export for your selected sample received period.</p></div></div><button type="button" class="req-export-close" aria-label="Close">&times;</button></header>
+          <header class="req-export-head"><div class="req-export-title-group"><span class="req-export-title-icon" aria-hidden="true">&#8595;</span><div><h3 id="req-export-title">Download requisition data</h3><p>Create a custom CSV export for your selected order creation period.</p></div></div><button type="button" class="req-export-close" aria-label="Close">&times;</button></header>
           <div class="req-export-body">
-            <section class="req-export-section"><div class="req-export-section-head"><div><h4>Sample received period</h4><p>Filter by Sample Received Date, or leave both dates empty to include all requisitions.</p></div></div><div class="req-export-dates"><label><span>From date (MM/DD/YYYY)</span><input type="text" inputmode="numeric" maxlength="10" placeholder="MM/DD/YYYY" aria-label="From date in MM/DD/YYYY format" data-export-from></label><label><span>To date (MM/DD/YYYY)</span><input type="text" inputmode="numeric" maxlength="10" placeholder="MM/DD/YYYY" aria-label="To date in MM/DD/YYYY format" data-export-to></label></div></section>
-            <fieldset class="req-export-fields req-export-section"><div class="req-export-section-head"><div><legend>Attributes to download</legend><p>Choose which columns should appear in the CSV file.</p></div><span class="req-export-recommended">4 recommended selected</span></div><div class="req-export-field-grid">
+            <section class="req-export-section"><div class="req-export-section-head"><div><h4>Order creation period</h4><p>Filter by Order Creation Date, or leave both dates empty to include all requisitions.</p></div></div><div class="req-export-dates"><label><span>From date (MM/DD/YYYY)</span><input type="text" inputmode="numeric" maxlength="10" placeholder="MM/DD/YYYY" aria-label="From date in MM/DD/YYYY format" data-export-from></label><label><span>To date (MM/DD/YYYY)</span><input type="text" inputmode="numeric" maxlength="10" placeholder="MM/DD/YYYY" aria-label="To date in MM/DD/YYYY format" data-export-to></label></div></section>
+            <fieldset class="req-export-fields req-export-section"><div class="req-export-section-head"><div><legend>Attributes to download</legend><p>Choose which columns should appear in the CSV file.</p></div><span class="req-export-recommended">5 recommended selected</span></div><div class="req-export-field-grid">
               ${EXPORT_FIELDS.map((field) => `<label class="${field.selectionOnly ? "req-export-field-master" : ""}"><input type="checkbox" value="${field.key}" ${field.selectionOnly ? `data-export-selects="${field.selects.join(",")}"` : ""} ${DEFAULT_FIELD_KEYS.includes(field.key) ? "checked" : ""}><span>${field.label}</span></label>`).join("")}
             </div></fieldset>
             <p class="req-export-status" aria-live="polite"></p>
@@ -139,12 +144,12 @@
         if (toDate === null) { status.textContent = "Enter To date as MM/DD/YYYY."; toInput.focus(); return; }
         if (fromDate && toDate && fromDate > toDate) { status.textContent = "From date must be on or before To date."; fromInput.focus(); return; }
         if (!fields.length) { status.textContent = "Select at least one attribute to download."; return; }
-        const rows = filterRowsByReceivedDate(getRows(), fromDate, toDate);
-        if (!rows.length) { status.textContent = "No requisitions were received in this date range."; return; }
+        const rows = filterRowsByOrderCreatedDate(getRows(), fromDate, toDate);
+        if (!rows.length) { status.textContent = "No requisitions were created in this date range."; return; }
         const url = URL.createObjectURL(new Blob(["\uFEFF", buildCsv(rows, fields)], { type: "text/csv;charset=utf-8" }));
         const link = document.createElement("a");
         link.href = url;
-        link.download = `requisitions-received-${[fromDate, toDate].filter(Boolean).join("_to_") || "all-dates"}.csv`;
+        link.download = `requisitions-created-${[fromDate, toDate].filter(Boolean).join("_to_") || "all-dates"}.csv`;
         document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); close();
       };
       backdrop.querySelector(".req-export-close").addEventListener("click", close);
@@ -173,7 +178,7 @@
     return () => trigger.removeEventListener("click", open);
   }
 
-  const api = { init, buildCsv, filterRowsByReceivedDate, formatExportDate, parseUsDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS };
+  const api = { init, buildCsv, filterRowsByOrderCreatedDate, formatExportDate, parseUsDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS };
   globalScope.RequisitionExport = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
