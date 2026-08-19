@@ -9019,7 +9019,6 @@ function createOrderHistoryReviewMenuModel(options = {}) {
 function renderOrderHistory(initialTab = "all-orders") {
   const allHistoryTabs = [
     { key: "all-orders", label: "All Orders" },
-    { key: "order-settlements", label: "Order Settlements" },
     { key: "add-service", label: "Add Service To Order" },
     { key: "upload-results", label: "Upload Test Results" },
   ];
@@ -12127,7 +12126,6 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const toDate = String(toDateInput.value || "").trim();
 
     return items.filter((row) => {
-      if (activeTab === "order-settlements" && row.status === "Pending") return false;
       if (activeTab === "add-service" && row.status !== "Pending") return false;
       if (orderIdNeedle && !String(row.orderId || "").toLowerCase().includes(orderIdNeedle)) return false;
       if (fromDate) {

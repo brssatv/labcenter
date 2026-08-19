@@ -617,7 +617,7 @@ function renderRegistration(prefillData = null, options = {}) {
           ${isViewedRequisition ? `<button type="button" id="requisition-reject-order" class="btn-primary btn-danger" ${canRejectViewedOrder ? "" : "disabled"}>Reject Order</button>` : ""}
         </div>
         <div class="action-right">
-          <button type="submit" class="btn-primary dark-submit">${isViewedRequisition ? "Save Changes" : "Save Requisition"}</button>
+          ${isViewedRequisition ? `<button type="submit" class="btn-primary dark-submit">Save Changes</button>` : ""}
           <button type="button" id="register-and-order" class="btn-primary dark-submit ghost-submit">Register And Order</button>
         </div>
       </div>
