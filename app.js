@@ -12898,6 +12898,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               const isGeneratingSummary = generatingSummaryReports.has(Number(row.orderId));
               const isGeneratingFinal = generatingFinalReports.has(Number(row.orderId));
               const isPublishingFinal = publishingFinalReports.has(Number(row.orderId));
+              const isPrePublished = Boolean(row?.pharmd?.prePublishedAt);
               const isOpeningResultPreview = openingResultPreviews.has(String(row.orderId));
               const isPharmdBypassed = isPharmdSkipped(row);
               const canPreviewResult = isPharmdBypassed ? hasSavedFinalReport(row) : canPreviewCombinedPharmdReport(row);
@@ -12969,7 +12970,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                         <td class="report-action-cell">
                           ${
                             row.processedResult?.report
-                              ? `<button type="button" class="table-action-btn publish-report-btn" data-publish-final-report-order="${row.orderId}" ${isPublishingFinal ? "disabled" : ""}>${isPublishingFinal ? "PrePublishing..." : "PrePublish"}</button>`
+                              ? `<button type="button" class="table-action-btn publish-report-btn ${isPrePublished ? "is-prepublished" : ""}" data-publish-final-report-order="${row.orderId}" ${isPublishingFinal ? "disabled" : ""}>${isPublishingFinal ? "PrePublishing..." : (isPrePublished ? "PrePublished" : "PrePublish")}</button>`
                               : `<span class="subtle">-</span>`
                           }
                         </td>

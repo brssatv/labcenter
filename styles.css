@@ -7468,6 +7468,24 @@ body.modal-open {
   border-color: #1c8247;
 }
 
+.publish-report-btn.is-prepublished {
+  background: #93c572;
+  border-color: #93c572;
+  color: #18311f;
+}
+
+.publish-report-btn.is-prepublished:hover,
+.publish-report-btn.is-prepublished:focus-visible {
+  background: #a7d488;
+  border-color: #a7d488;
+  color: #18311f;
+}
+
+.publish-report-btn.is-prepublished:active {
+  background: #7eaf60;
+  border-color: #7eaf60;
+}
+
 .publish-report-btn.is-fully-published {
   background: #126a3a;
   border-color: #126a3a;
