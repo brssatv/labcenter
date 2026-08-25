@@ -10620,6 +10620,39 @@ function renderOrderHistory(initialTab = "all-orders") {
           ...(hasSarsCov2Targets ? ["SARS-CoV-2"] : []),
         ])
       : context.testedPathogenNames;
+    const buildAbrSectionState = getReportFormulasApi()?.buildFinalReportAbrSectionState;
+    const finalAbrSectionState = typeof buildAbrSectionState === "function"
+      ? buildAbrSectionState(context.testedGeneNames)
+      : {
+          hasAbrRecords: context.testedGeneNames.length > 0,
+          testedGeneNames: context.testedGeneNames,
+        };
+    const abrTestedGeneNames = variant === "final"
+      ? finalAbrSectionState.testedGeneNames
+      : summaryReportTestedGenes;
+    const shouldShowAbrSections = variant !== "final" || finalAbrSectionState.hasAbrRecords;
+    const abrDetectedSectionMarkup = shouldShowAbrSections
+      ? `
+          <div class="summary-report-blue-bar">RESISTANCE GENES DETECTED</div>
+          <table class="summary-report-table">
+            <tbody>
+              ${buildSummaryRowsMarkup(detectedGenes, {
+                withAsterisk: false,
+                fallbackLabel: "No resistance gene detected",
+                limit: 6,
+                ctDecimals: variant === "final" ? 1 : null,
+                ctForceFixed: variant === "final",
+              })}
+            </tbody>
+          </table>
+        `
+      : "";
+    const abrTestedSectionMarkup = shouldShowAbrSections
+      ? `
+          <div class="summary-report-blue-bar">LIST OF ANTIBIOTIC RESISTANT GENES TESTED</div>
+          ${buildSummaryTestedListMarkup(abrTestedGeneNames, "No resistance gene rows available.")}
+        `
+      : "";
     if (!detectedPathogens.length) {
       return `
         <!doctype html>
@@ -10681,6 +10714,28 @@ function renderOrderHistory(initialTab = "all-orders") {
               font-size: 12px;
               padding: 4px 6px;
               letter-spacing: 0.02em;
+            }
+            .summary-report-table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 12px;
+            }
+            .summary-report-table td {
+              border-bottom: 1px solid #dddddd;
+              padding: 4px 4px;
+              font-family: Georgia, "Times New Roman", serif;
+              color: #1f1f1f;
+              font-weight: 700;
+            }
+            .summary-report-table td.summary-pathogen {
+              font-style: italic;
+            }
+            .summary-report-table td.detected {
+              color: #be1f24;
+            }
+            .summary-report-table td:last-child {
+              text-align: right;
+              width: 90px;
             }
             .summary-not-detected-wrap {
               display: grid;
@@ -10943,10 +10998,12 @@ function renderOrderHistory(initialTab = "all-orders") {
               &gt;33: Negative
             </aside>
           </div>
+          ${abrDetectedSectionMarkup}
           <div class="summary-report-blue-bar">LIST OF PATHOGENS TESTED</div>
           ${buildSummaryTestedListMarkup(testedPathogenNames, "No pathogen rows available.", {
             extraClass: variant === "final" ? "final-pathogen-list" : "",
             })}
+            ${abrTestedSectionMarkup}
             <div class="summary-report-copy">
               <h4>Methodology</h4>
               <p>DNA/RNA extractions followed by Reverse Transcriptase Polymerase Chain Reaction (RT-PCR) and TaqMan qPCR assays are employed to detect clinically significant pathogens, offering analytical sensitivity and specificity greater than 99%.</p>
@@ -11295,24 +11352,12 @@ function renderOrderHistory(initialTab = "all-orders") {
               &gt;33: Negative
             </aside>
           </div>
-          <div class="summary-report-blue-bar">RESISTANCE GENES DETECTED</div>
-          <table class="summary-report-table">
-            <tbody>
-              ${buildSummaryRowsMarkup(detectedGenes, {
-                withAsterisk: false,
-                fallbackLabel: "No resistance gene detected",
-                limit: 6,
-                ctDecimals: variant === "final" ? 1 : null,
-                ctForceFixed: variant === "final",
-              })}
-            </tbody>
-          </table>
+          ${abrDetectedSectionMarkup}
           <div class="summary-report-blue-bar">LIST OF PATHOGENS TESTED</div>
           ${buildSummaryTestedListMarkup(testedPathogenNames, "No pathogen rows available.", {
             extraClass: variant === "final" ? "final-pathogen-list" : "",
           })}
-          <div class="summary-report-blue-bar">LIST OF ANTIBIOTIC RESISTANT GENES TESTED</div>
-          ${buildSummaryTestedListMarkup(summaryReportTestedGenes, "No resistance gene rows available.")}
+          ${abrTestedSectionMarkup}
           <div class="summary-report-copy">
             <h4>Methodology</h4>
             <p>DNA/RNA extractions followed by Reverse Transcriptase Polymerase Chain Reaction (RT-PCR) and TaqMan qPCR assays are employed to detect clinically significant pathogens, offering analytical sensitivity and specificity greater than 99%.</p>

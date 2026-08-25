@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildFinalReportAbrSectionState,
   buildSarsCov2FinalReportDetectedRows,
   evaluateSarsCov2FinalReportFormula,
   filterSarsCov2ComponentRows,
@@ -293,4 +294,22 @@ test("final report row filter removes RNaseP rows and normalizes inconclusive pa
     { pathogen: "SARS-CoV-2", result: "Not Detected" },
   ]);
   assert.deepEqual(rows[3], { pathogen: "Influenza A", result: "Inconclusive" });
+});
+
+test("final report ABR sections are hidden when no saved gene names are available", () => {
+  assert.deepEqual(buildFinalReportAbrSectionState([]), {
+    hasAbrRecords: false,
+    testedGeneNames: [],
+  });
+  assert.deepEqual(buildFinalReportAbrSectionState(["", "   ", null]), {
+    hasAbrRecords: false,
+    testedGeneNames: [],
+  });
+});
+
+test("final report ABR sections use only normalized saved gene names", () => {
+  assert.deepEqual(buildFinalReportAbrSectionState(["mecA", " mecA ", "NDM", "ndm", "vanB"]), {
+    hasAbrRecords: true,
+    testedGeneNames: ["mecA", "NDM", "vanB"],
+  });
 });

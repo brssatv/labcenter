@@ -444,6 +444,22 @@
       .map((row) => normalizeFinalReportRow(row));
   }
 
+  function buildFinalReportAbrSectionState(testedGeneNames) {
+    const seen = new Set();
+    const names = [];
+    (Array.isArray(testedGeneNames) ? testedGeneNames : []).forEach((value) => {
+      const name = String(value || "").trim();
+      const key = normalizePathogenRuleKey(name);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      names.push(name);
+    });
+    return {
+      hasAbrRecords: names.length > 0,
+      testedGeneNames: names,
+    };
+  }
+
   function getSarsCov2FinalReportDisplayLogic() {
     const formula = getSarsCov2FinalReportFormula();
     const targetLabels = formula.targets.map((item) => item.label).join(", ");
@@ -632,6 +648,7 @@
   }
 
   return {
+    buildFinalReportAbrSectionState,
     buildSarsCov2FinalReportDetectedRows,
     evaluateSarsCov2FinalReportFormula,
     filterSarsCov2ComponentRows,
