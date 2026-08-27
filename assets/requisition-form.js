@@ -1021,6 +1021,9 @@ function renderRegistration(prefillData = null, options = {}) {
     const icdText = plan.icdChanged
       ? `${plan.originalIcdCodes.map(formatIcdCode).join(", ") || "None"} -> ${plan.draftIcdCodes.map(formatIcdCode).join(", ") || "None"}`
       : "No ICD code changes.";
+    const pathogenText = plan.pathogenChanged
+      ? `${plan.originalPathogens.join(", ") || "None"} -> ${plan.draftPathogens.join(", ") || "None"}`
+      : "No pathogen selection changes.";
     const orderImpact = plan.orderAction === "replace"
       ? `
         <li>Dismiss existing Order #${escapeHtml(sourceOrder?.orderId || "-")} with accession ${escapeHtml(plan.originalAccession || "-")}.</li>
@@ -1039,6 +1042,10 @@ function renderRegistration(prefillData = null, options = {}) {
       <section class="requisition-change-card">
         <h4>ICD Codes</h4>
         <p>${escapeHtml(icdText)}</p>
+      </section>
+      <section class="requisition-change-card">
+        <h4>Pathogens to Test</h4>
+        <p>${escapeHtml(pathogenText)}</p>
       </section>
       <section class="requisition-change-card">
         <h4>Downstream Order Impact</h4>

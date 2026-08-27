@@ -3731,6 +3731,7 @@ function renderOrderPatient(patient) {
     const row = {
       id,
       panels: new Set(),
+      pathogens: new Set(),
       icds: new Set(),
       panelQuery: "",
       icdQuery: "",
@@ -3738,6 +3739,27 @@ function renderOrderPatient(patient) {
       concession: 0,
     };
     return row;
+  }
+
+  function getAvailablePathogensForRow(row) {
+    const panelIds = Array.from(row?.panels || []);
+    return window.LabCenterPanelPathogens?.mergePanelPathogens(panelIds) || [];
+  }
+
+  function getAvailablePathogenGroupsForRow(row) {
+    const panelIds = Array.from(row?.panels || []);
+    return window.LabCenterPanelPathogens?.mergePanelPathogenGroups(panelIds) || [];
+  }
+
+  function selectAllPathogensForRow(row) {
+    row.pathogens = new Set(getAvailablePathogensForRow(row));
+  }
+
+  function prunePathogenSelectionForRow(row) {
+    const available = new Set(getAvailablePathogensForRow(row));
+    Array.from(row.pathogens || []).forEach((pathogen) => {
+      if (!available.has(pathogen)) row.pathogens.delete(pathogen);
+    });
   }
 
   function getPanelMappedIcdCodesForRow(row) {
@@ -3866,6 +3888,66 @@ function renderOrderPatient(patient) {
           `
           : ""
       }`;
+  }
+
+  function renderPathogenChecklist(row) {
+    const pathogenGroups = getAvailablePathogenGroupsForRow(row);
+    const pathogens = pathogenGroups.flatMap((group) => group.pathogens);
+    if (!pathogens.length) return "";
+    if (!(row.pathogens instanceof Set)) row.pathogens = new Set(pathogens);
+    prunePathogenSelectionForRow(row);
+
+    const selectedCount = pathogens.filter((pathogen) => row.pathogens.has(pathogen)).length;
+    return `
+      <div class="order-pathogen-panel">
+        <div class="order-pathogen-head">
+          <div>
+            <strong>Pathogens to test</strong>
+            <span>${selectedCount} of ${pathogens.length} selected</span>
+          </div>
+          <div class="order-pathogen-actions">
+            <button type="button" class="btn-ghost" data-row-id="${row.id}" data-pathogen-select-all>Select all</button>
+            <button type="button" class="btn-ghost" data-row-id="${row.id}" data-pathogen-clear-all>Clear all</button>
+          </div>
+        </div>
+        <div class="order-pathogen-list">
+          ${pathogenGroups
+            .map((group) => {
+              const groupSelectedCount = group.pathogens.filter((pathogen) => row.pathogens.has(pathogen)).length;
+              return `
+                <section class="order-pathogen-group">
+                  <div class="order-pathogen-group-title">
+                    <div>
+                      <strong>${escapeHtml(group.type)}</strong>
+                      <span>${groupSelectedCount} of ${group.pathogens.length} selected</span>
+                    </div>
+                    <div class="order-pathogen-group-actions">
+                      <button type="button" data-row-id="${row.id}" data-pathogen-select-group="${escapeHtml(group.type)}">All</button>
+                      <button type="button" data-row-id="${row.id}" data-pathogen-clear-group="${escapeHtml(group.type)}">None</button>
+                    </div>
+                  </div>
+                  <div class="order-pathogen-group-items">
+                    ${group.pathogens
+                      .map((pathogen) => `
+                        <label class="order-pathogen-option">
+                          <input
+                            type="checkbox"
+                            data-row-id="${row.id}"
+                            data-pathogen-index="${pathogens.indexOf(pathogen)}"
+                            ${row.pathogens.has(pathogen) ? "checked" : ""}
+                          >
+                          <span>${escapeHtml(pathogen)}</span>
+                        </label>
+                      `)
+                      .join("")}
+                  </div>
+                </section>
+              `;
+            })
+            .join("")}
+        </div>
+      </div>
+    `;
   }
 
   function focusPickerSearchInput(rowId, type) {
@@ -4057,6 +4139,7 @@ function renderOrderPatient(patient) {
             </div>
             <input data-row-id="${row.id}" data-price-input value="${row.price}">
             <input data-row-id="${row.id}" data-concession-input value="${row.concession}">
+            ${renderPathogenChecklist(row)}
           </div>
         `;
       })
@@ -4078,12 +4161,14 @@ function renderOrderPatient(patient) {
         const panelItems = orderPanelCatalog.filter((panel) => row.panels.has(panel.id));
         const serviceName = panelItems.map((panel) => panel.name).join(", ");
         const icdCodes = Array.from(row.icds).sort(compareIcdCodes);
+        const selectedPathogens = getAvailablePathogensForRow(row).filter((pathogen) => row.pathogens.has(pathogen));
         const price = Number(row.price) || 0;
         const concession = Number(row.concession) || 0;
         return {
           lineNo: index + 1,
           serviceName,
           panelIds: panelItems.map((panel) => panel.id),
+          selectedPathogens,
           icdCodes,
           price,
           concession,
@@ -4185,8 +4270,73 @@ function renderOrderPatient(patient) {
       if (!row || !panelId) return;
       row.panels.clear();
       if (panelCheck.checked) row.panels.add(panelId);
+      if (orderState.openPicker?.rowId === rowId && orderState.openPicker?.type === "panel") {
+        orderState.openPicker = null;
+      }
+      selectAllPathogensForRow(row);
       pruneIcdSelectionForRow(row);
       updateRowComputedValues(row);
+      renderServiceRows();
+      return;
+    }
+
+    const pathogenCheck = event.target.closest("input[data-pathogen-index]");
+    if (pathogenCheck) {
+      const rowId = Number(pathogenCheck.getAttribute("data-row-id"));
+      const row = orderState.rows.find((item) => item.id === rowId);
+      const pathogenIndex = Number(pathogenCheck.getAttribute("data-pathogen-index"));
+      const pathogen = getAvailablePathogensForRow(row)[pathogenIndex];
+      if (!row || !pathogen) return;
+      if (pathogenCheck.checked) row.pathogens.add(pathogen);
+      else row.pathogens.delete(pathogen);
+      renderServiceRows();
+      return;
+    }
+
+    const selectAllPathogensBtn = event.target.closest("[data-pathogen-select-all]");
+    if (selectAllPathogensBtn) {
+      const rowId = Number(selectAllPathogensBtn.getAttribute("data-row-id"));
+      const row = orderState.rows.find((item) => item.id === rowId);
+      if (!row) return;
+      selectAllPathogensForRow(row);
+      renderServiceRows();
+      return;
+    }
+
+    const clearAllPathogensBtn = event.target.closest("[data-pathogen-clear-all]");
+    if (clearAllPathogensBtn) {
+      const rowId = Number(clearAllPathogensBtn.getAttribute("data-row-id"));
+      const row = orderState.rows.find((item) => item.id === rowId);
+      if (!row) return;
+      row.pathogens.clear();
+      renderServiceRows();
+      return;
+    }
+
+    const selectGroupPathogensBtn = event.target.closest("[data-pathogen-select-group]");
+    if (selectGroupPathogensBtn) {
+      const rowId = Number(selectGroupPathogensBtn.getAttribute("data-row-id"));
+      const type = String(selectGroupPathogensBtn.getAttribute("data-pathogen-select-group") || "").trim();
+      const row = orderState.rows.find((item) => item.id === rowId);
+      if (!row || !type) return;
+      getAvailablePathogenGroupsForRow(row)
+        .filter((group) => group.type === type)
+        .flatMap((group) => group.pathogens)
+        .forEach((pathogen) => row.pathogens.add(pathogen));
+      renderServiceRows();
+      return;
+    }
+
+    const clearGroupPathogensBtn = event.target.closest("[data-pathogen-clear-group]");
+    if (clearGroupPathogensBtn) {
+      const rowId = Number(clearGroupPathogensBtn.getAttribute("data-row-id"));
+      const type = String(clearGroupPathogensBtn.getAttribute("data-pathogen-clear-group") || "").trim();
+      const row = orderState.rows.find((item) => item.id === rowId);
+      if (!row || !type) return;
+      getAvailablePathogenGroupsForRow(row)
+        .filter((group) => group.type === type)
+        .flatMap((group) => group.pathogens)
+        .forEach((pathogen) => row.pathogens.delete(pathogen));
       renderServiceRows();
       return;
     }

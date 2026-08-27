@@ -72,6 +72,22 @@ function getServiceLineIcdItems(serviceLine = {}) {
   });
 }
 
+function getPanelPathogenLabelsForIds(panelIds = []) {
+  return normalizeRequisitionSummaryItems(
+    window.LabCenterPanelPathogens?.mergePanelPathogens(panelIds) || []
+  );
+}
+
+function getServiceLinePathogenLabels(serviceLine = {}) {
+  if (Array.isArray(serviceLine?.selectedPathogens)) {
+    return normalizeRequisitionSummaryItems(serviceLine.selectedPathogens);
+  }
+  if (Array.isArray(serviceLine?.panelIds) && serviceLine.panelIds.length) {
+    return getPanelPathogenLabelsForIds(serviceLine.panelIds);
+  }
+  return [];
+}
+
 function getAllIcdCatalogRecords() {
   return (Array.isArray(icdCatalogSearchRows) ? icdCatalogSearchRows : [])
     .map((item) => getIcdCatalogRecord(item?.code || item))
@@ -106,6 +122,9 @@ function buildRequisitionOrderSummary(record = {}, order = null) {
       seenIcdCodes.add(item.code);
       icdItems.push(item);
     });
+  const pathogenLabels = normalizeRequisitionSummaryItems(
+    serviceLines.flatMap((line) => getServiceLinePathogenLabels(line))
+  );
 
   return {
     orderId: String(order?.orderId || "").trim(),
@@ -113,6 +132,7 @@ function buildRequisitionOrderSummary(record = {}, order = null) {
     patientId: String(record?.patientId || order?.patientId || "").trim(),
     panelLabels,
     icdItems,
+    pathogenLabels,
   };
 }
 
@@ -296,6 +316,7 @@ function buildOrderWithPanels(order, panelIds) {
     lineNo: 1,
     serviceName: panelItems.map((panel) => panel.name).join(", "),
     panelIds: panelItems.map((panel) => panel.id),
+    selectedPathogens: getPanelPathogenLabelsForIds(panelItems.map((panel) => panel.id)),
     price,
     concession,
     due: Math.max(price - concession, 0),
@@ -359,6 +380,11 @@ function getOrderIcdCodes(order) {
     .flatMap((line) => Array.isArray(line?.icdCodes) ? line.icdCodes : []));
 }
 
+function getOrderSelectedPathogens(order) {
+  return normalizeRequisitionSummaryItems((Array.isArray(order?.services) ? order.services : [])
+    .flatMap((line) => getServiceLinePathogenLabels(line)));
+}
+
 function areStringListsEqual(left = [], right = []) {
   const a = Array.from(new Set(left.map((value) => String(value || "").trim()).filter(Boolean))).sort();
   const b = Array.from(new Set(right.map((value) => String(value || "").trim()).filter(Boolean))).sort();
@@ -402,16 +428,20 @@ function getRequisitionChangePlan(originalRecord, updatedRecord, originalOrder, 
   const draftPanelIds = getOrderPanelIds(draftOrder);
   const originalIcdCodes = getOrderIcdCodes(originalOrder);
   const draftIcdCodes = getOrderIcdCodes(draftOrder);
+  const originalPathogens = getOrderSelectedPathogens(originalOrder);
+  const draftPathogens = getOrderSelectedPathogens(draftOrder);
   const originalAccession = getOrderAccessionPreview(originalOrder);
   const draftAccessionSameOrder = getOrderComputedAccession(draftOrder, originalOrder?.orderId || draftOrder?.orderId || "");
   const panelChanged = !areStringListsEqual(originalPanelIds, draftPanelIds);
   const icdChanged = !areStringListsEqual(originalIcdCodes, draftIcdCodes);
+  const pathogenChanged = !areStringListsEqual(originalPathogens, draftPathogens);
   const accessionWouldChange = panelChanged && originalAccession && draftAccessionSameOrder && originalAccession !== draftAccessionSameOrder;
 
   return {
     registrationChanges,
     panelChanged,
     icdChanged,
+    pathogenChanged,
     accessionWouldChange,
     orderAction: accessionWouldChange ? "replace" : "update",
     originalAccession,
@@ -420,6 +450,8 @@ function getRequisitionChangePlan(originalRecord, updatedRecord, originalOrder, 
     draftPanelLabels: getServiceLinePanelLabels(Array.isArray(draftOrder?.services) ? draftOrder.services[0] : {}),
     originalIcdCodes,
     draftIcdCodes,
+    originalPathogens,
+    draftPathogens,
   };
 }
 
@@ -458,6 +490,12 @@ function renderRequisitionOrderSummary(record = {}, order = null, options = {}) 
           </div>
           ${renderRequisitionIcdSummary(summary.icdItems)}
           ${summary.orderId && editable ? renderRequisitionIcdEditor(summary) : ""}
+        </section>
+        <section class="req-selected-group req-selected-group-wide">
+          <div class="req-selected-group-head">
+            <h4>Pathogens to Test</h4>
+          </div>
+          ${renderSummaryChips(summary.pathogenLabels, "No pathogen checklist is saved for this order.")}
         </section>
       </div>
     </section>
