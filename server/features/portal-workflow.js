@@ -1,5 +1,23 @@
 const { prepareOrdersForBulkSave } = require("./portal-order-accessions");
 
+const SUBMISSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/;
+
+function readSubmissionId(req) {
+  const value = String(req.body?.submissionId || req.get("Idempotency-Key") || "").trim();
+  return SUBMISSION_ID_PATTERN.test(value) ? value : "";
+}
+
+function buildSubmissionScope(req, operation) {
+  const identity = String(
+    req?.session?.user?.email
+      || req?.session?.user?.id
+      || req?.session?.clientUser?.username
+      || req?.sessionID
+      || "authenticated"
+  ).trim().toLowerCase();
+  return `${operation}:${identity}`;
+}
+
 function registerPortalWorkflowRoutes({ app, dependencies }) {
   const {
     auditLog,
@@ -75,23 +93,38 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
       return res.status(401).json({ error: "Registration access is not enabled for this account." });
     }
 
+    const submissionId = readSubmissionId(req);
+    if (!submissionId) {
+      return res.status(400).json({ error: "A valid submission ID is required." });
+    }
+
     try {
       const registration = req.body?.registration && typeof req.body.registration === "object" ? req.body.registration : null;
       if (!registration) {
         return res.status(400).json({ error: "Registration payload is required." });
       }
 
-      const saved = portalStore.upsertRegistration({
-        ...registration,
-        createdAt: registration.createdAt || new Date().toISOString(),
+      const outcome = portalStore.runIdempotentSubmission({
+        scope: buildSubmissionScope(req, "registration_create"),
+        submissionId,
+      }, () => {
+        const saved = portalStore.upsertRegistration({
+          ...registration,
+          createdAt: registration.createdAt || new Date().toISOString(),
+        });
+        return {
+          registration: saved,
+          totalCount: portalStore.countRegistrations(),
+        };
       });
 
       auditLog(req, "registration_save", "success", {
-        patientId: saved.patientId || "",
+        patientId: outcome.result?.registration?.patientId || "",
+        replayed: outcome.replayed,
       });
       return res.json({
-        registration: saved,
-        totalCount: portalStore.countRegistrations(),
+        ...outcome.result,
+        replayed: outcome.replayed,
       });
     } catch (error) {
       auditLog(req, "registration_save", "failed", {
@@ -153,33 +186,48 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
       return res.status(401).json({ error: "Order creation access is not enabled for this account." });
     }
 
+    const submissionId = readSubmissionId(req);
+    if (!submissionId) {
+      return res.status(400).json({ error: "A valid submission ID is required." });
+    }
+
     try {
       const orders = Array.isArray(req.body?.orders) ? req.body.orders : [];
       if (!orders.length) {
         return res.status(400).json({ error: "One or more orders are required." });
       }
       const nowIso = new Date().toISOString();
-      const preparedOrders = prepareOrdersForBulkSave({
-        orders,
-        portalStore,
-        requestReceivedAt: nowIso,
-        timeZone: getAppTimeZone(),
-      });
-      const savedOrders = portalStore.upsertOrders(preparedOrders);
       const actor = String(req?.session?.user?.email || req?.session?.user?.displayName || req?.session?.clientUser?.username || "system").trim();
-      savedOrders.forEach((order) => {
-        portalStore.appendOrderAuditEvent({
-          orderId: order.orderId,
-          eventType: "order_created",
-          eventAt: order.createdAt || nowIso,
-          actor,
-          details: { accessionNo: order.accessionNo || "" },
+      const outcome = portalStore.runIdempotentSubmission({
+        scope: buildSubmissionScope(req, "orders_bulk_create"),
+        submissionId,
+      }, () => {
+        const preparedOrders = prepareOrdersForBulkSave({
+          orders,
+          portalStore,
+          requestReceivedAt: nowIso,
+          timeZone: getAppTimeZone(),
         });
+        const savedOrders = portalStore.upsertOrders(preparedOrders);
+        savedOrders.forEach((order) => {
+          portalStore.appendOrderAuditEvent({
+            orderId: order.orderId,
+            eventType: "order_created",
+            eventAt: order.createdAt || nowIso,
+            actor,
+            details: { accessionNo: order.accessionNo || "" },
+          });
+        });
+        return { orders: savedOrders };
       });
       auditLog(req, "orders_bulk_save", "success", {
-        count: savedOrders.length,
+        count: outcome.result?.orders?.length || 0,
+        replayed: outcome.replayed,
       });
-      return res.json({ orders: savedOrders });
+      return res.json({
+        ...outcome.result,
+        replayed: outcome.replayed,
+      });
     } catch (error) {
       auditLog(req, "orders_bulk_save", "failed", {
         reason: error?.message || "unexpected_error",

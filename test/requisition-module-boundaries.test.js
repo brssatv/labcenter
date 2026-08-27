@@ -28,3 +28,15 @@ test("requisition page implementations no longer live in the app bootstrap file"
   assert.match(listSource, /function renderRequisitionList\s*\(/);
   assert.match(formSource, /function renderRegistration\s*\(/);
 });
+
+test("requisition creation uses stable submission IDs and single-flight click guards", () => {
+  const appSource = fs.readFileSync(path.join(root, "app.js"), "utf8");
+  const formSource = fs.readFileSync(path.join(root, "assets", "requisition-form.js"), "utf8");
+
+  assert.match(appSource, /function createSubmissionId\s*\(/);
+  assert.match(appSource, /submissionId, orders: nextRecords/);
+  assert.match(appSource, /if \(orderSubmitInFlight\) return;/);
+  assert.match(appSource, /saveOrderRecords\(nextOrderRecords, \{ submissionId: orderSubmissionId \}\)/);
+  assert.match(formSource, /if \(registrationSubmitInFlight\) return;/);
+  assert.match(formSource, /saveRegistrationData\(data, \{ submissionId: registrationSubmissionId \}\)/);
+});

@@ -2495,8 +2495,18 @@ function writeRegistrations(items) {
   registrationsState = Array.isArray(items) ? items.slice() : [];
 }
 
-async function saveRegistrationData(data) {
+function createSubmissionId(prefix = "submission") {
+  const normalizedPrefix = String(prefix || "submission").replace(/[^A-Za-z0-9._:-]/g, "-");
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return `${normalizedPrefix}:${globalThis.crypto.randomUUID()}`;
+  }
+  const randomPart = Math.random().toString(36).slice(2);
+  return `${normalizedPrefix}:${Date.now().toString(36)}:${randomPart}`;
+}
+
+async function saveRegistrationData(data, options = {}) {
   if (!csrfToken) await fetchCsrfToken();
+  const submissionId = String(options?.submissionId || createSubmissionId("requisition")).trim();
   const payload = await requestJson("/api/portal/registrations", {
     method: "POST",
     headers: {
@@ -2504,6 +2514,7 @@ async function saveRegistrationData(data) {
       "x-csrf-token": csrfToken,
     },
     body: JSON.stringify({
+      submissionId,
       registration: {
         ...data,
         createdAt: data?.createdAt || new Date().toISOString(),
@@ -2699,17 +2710,18 @@ async function allocateOrderIds(count) {
   return Array.isArray(payload?.orderIds) ? payload.orderIds : [];
 }
 
-async function saveOrderRecords(records) {
+async function saveOrderRecords(records, options = {}) {
   const nextRecords = Array.isArray(records) ? records.filter(Boolean) : [];
   if (!nextRecords.length) return 0;
   if (!csrfToken) await fetchCsrfToken();
+  const submissionId = String(options?.submissionId || createSubmissionId("orders")).trim();
   const payload = await requestJson("/api/portal/orders/bulk", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-csrf-token": csrfToken,
     },
-    body: JSON.stringify({ orders: nextRecords }),
+    body: JSON.stringify({ submissionId, orders: nextRecords }),
   });
   const existing = readOrders().filter((row) => !payload.orders.some((saved) => String(saved?.orderId || "") === String(row?.orderId || "")));
   writeOrders([...(Array.isArray(payload.orders) ? payload.orders : []), ...existing]);
@@ -3694,6 +3706,7 @@ function renderOrderPatient(patient) {
   const orderPageNode = panelBody.querySelector(".order-page");
   const orderServiceRowsNode = document.getElementById("order-service-rows");
   const addServiceBtn = document.getElementById("order-add-service");
+  const confirmOrderBtn = orderPageNode?.querySelector(".order-confirm-btn");
   const customIcdModalNode = document.getElementById("custom-icd-modal");
   const customIcdForm = document.getElementById("custom-icd-form");
   const customIcdCodeValueNode = document.getElementById("custom-icd-code-value");
@@ -3702,6 +3715,15 @@ function renderOrderPatient(patient) {
   const orderState = {
     rows: [],
     openPicker: null,
+  };
+  const orderSubmissionId = createSubmissionId("orders");
+  const confirmOrderLabel = confirmOrderBtn?.textContent || "Confirm and Order";
+  let orderSubmitInFlight = false;
+  const setOrderSubmitBusy = (isBusy) => {
+    if (!confirmOrderBtn) return;
+    confirmOrderBtn.disabled = isBusy;
+    confirmOrderBtn.setAttribute("aria-busy", isBusy ? "true" : "false");
+    confirmOrderBtn.textContent = isBusy ? "Creating Order..." : confirmOrderLabel;
   };
   let activeCustomIcdResolver = null;
 
@@ -4048,6 +4070,7 @@ function renderOrderPatient(patient) {
   }
 
   async function commitOrder() {
+    if (orderSubmitInFlight) return;
     const sampleCollectTime = document.getElementById("sample-collect-time")?.value || "";
     const orderBookingTime = document.getElementById("order-booking-time")?.value || "";
     const preparedRows = orderState.rows
@@ -4074,6 +4097,9 @@ function renderOrderPatient(patient) {
       return;
     }
 
+    orderSubmitInFlight = true;
+    setOrderSubmitBusy(true);
+
     const commonFields = {
       patientId: patient.patientId || "",
       patientName: fullName,
@@ -4086,37 +4112,33 @@ function renderOrderPatient(patient) {
       status: "Pending",
     };
 
-    let reservedOrderIds = [];
     try {
-      reservedOrderIds = await allocateOrderIds(preparedRows.length);
-    } catch (error) {
-      alert(error?.message || "Unable to reserve order IDs.");
-      return;
-    }
-    if (reservedOrderIds.length !== preparedRows.length || reservedOrderIds.some((value) => !String(value || "").trim())) {
-      alert("Unable to reserve order IDs.");
-      return;
-    }
+      const reservedOrderIds = await allocateOrderIds(preparedRows.length);
+      if (reservedOrderIds.length !== preparedRows.length || reservedOrderIds.some((value) => !String(value || "").trim())) {
+        throw new Error("Unable to reserve order IDs.");
+      }
 
-    const nextOrderRecords = preparedRows.map((serviceRow, index) => {
-      const orderId = String(reservedOrderIds[index] || "").trim();
-      return {
-        orderId,
-        accessionPrefix: resolvePanelPrefixFromService(serviceRow),
-        ...commonFields,
-        services: [serviceRow],
-        amount: serviceRow.price,
-        concession: serviceRow.concession,
-        due: serviceRow.due,
-      };
-    });
-    try {
-      await saveOrderRecords(nextOrderRecords);
+      const nextOrderRecords = preparedRows.map((serviceRow, index) => {
+        const orderId = String(reservedOrderIds[index] || "").trim();
+        return {
+          orderId,
+          accessionPrefix: resolvePanelPrefixFromService(serviceRow),
+          ...commonFields,
+          services: [serviceRow],
+          amount: serviceRow.price,
+          concession: serviceRow.concession,
+          due: serviceRow.due,
+        };
+      });
+      await saveOrderRecords(nextOrderRecords, { submissionId: orderSubmissionId });
       currentView = "order-history";
       renderNav();
       renderView();
     } catch (error) {
       alert(error?.message || "Unable to save order.");
+    } finally {
+      orderSubmitInFlight = false;
+      setOrderSubmitBusy(false);
     }
   }
 
@@ -4281,7 +4303,7 @@ function renderOrderPatient(patient) {
   document.getElementById("order-back")?.addEventListener("click", backToRegistration);
   document.getElementById("order-close")?.addEventListener("click", backToRegistration);
   document.getElementById("order-cancel")?.addEventListener("click", backToRegistration);
-  document.querySelector(".order-confirm-btn")?.addEventListener("click", commitOrder);
+  confirmOrderBtn?.addEventListener("click", commitOrder);
 }
 
 function renderPatientSearch() {

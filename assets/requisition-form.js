@@ -834,6 +834,15 @@ function renderRegistration(prefillData = null, options = {}) {
   const status = document.getElementById("registration-status");
   const requisitionAuditEventsNode = document.getElementById("requisition-audit-events");
   const registerAndOrderBtn = document.getElementById("register-and-order");
+  const registrationSubmissionId = createSubmissionId("requisition");
+  const registerAndOrderLabel = registerAndOrderBtn?.textContent || "Register And Order";
+  let registrationSubmitInFlight = false;
+  const setRegistrationSubmitBusy = (isBusy) => {
+    if (!registerAndOrderBtn) return;
+    registerAndOrderBtn.disabled = isBusy;
+    registerAndOrderBtn.setAttribute("aria-busy", isBusy ? "true" : "false");
+    registerAndOrderBtn.textContent = isBusy ? "Creating Requisition..." : registerAndOrderLabel;
+  };
   const facilityComboboxNode = document.getElementById("req-facility-combobox");
   const facilityNameInput = document.getElementById("req-facility-name");
   const facilityToggleBtn = document.getElementById("req-facility-toggle");
@@ -2885,15 +2894,22 @@ function renderRegistration(prefillData = null, options = {}) {
     if (isViewedRequisition || isReadOnlyRequisition) return;
     validateRequisitionFields();
     if (!form.reportValidity()) return;
+    if (registrationSubmitInFlight) return;
+    registrationSubmitInFlight = true;
+    setRegistrationSubmitBusy(true);
     const data = Object.fromEntries(new FormData(form).entries());
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
     patientIdNode.textContent = data.patientId;
     try {
-      const count = await saveRegistrationData(data);
+      status.textContent = "Creating requisition...";
+      const count = await saveRegistrationData(data, { submissionId: registrationSubmissionId });
       status.textContent = `Requisition saved for Patient ID ${data.patientId}. Total records: ${count}`;
       renderOrderPatient(data);
     } catch (error) {
       status.textContent = error?.message || "Unable to save requisition.";
+    } finally {
+      registrationSubmitInFlight = false;
+      setRegistrationSubmitBusy(false);
     }
   });
 

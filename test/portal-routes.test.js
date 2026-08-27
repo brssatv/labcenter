@@ -180,6 +180,7 @@ test("portal registration order id bulk order and upload-log routes persist work
   assert.deepEqual(orderIdsResult.payload.orderIds, ["00001", "00002"]);
 
   const registrationResult = await sendJson(harness, "/api/portal/registrations", {
+    submissionId: "registration-workflow-0001",
     registration: {
       patientId: "9001",
       firstName: "Portal",
@@ -193,6 +194,7 @@ test("portal registration order id bulk order and upload-log routes persist work
   assert.equal(registrationResult.payload.totalCount, 1);
 
   const bulkOrdersResult = await sendJson(harness, "/api/portal/orders/bulk", {
+    submissionId: "orders-workflow-0001",
     orders: [
       {
         orderId: "00001",
@@ -241,6 +243,7 @@ test("portal registration order id bulk order and upload-log routes persist work
   }));
 
   const nextBulkOrderResult = await sendJson(harness, "/api/portal/orders/bulk", {
+    submissionId: "orders-workflow-0002",
     orders: [
       {
         orderId: "00003",
@@ -279,4 +282,93 @@ test("portal registration order id bulk order and upload-log routes persist work
   assert.equal(uploadLogResult.payload.registrations.length, 1);
   assert.equal(uploadLogResult.payload.orders.length, 3);
   assert.equal(uploadLogResult.payload.uploadResultsLog.length, 1);
+});
+
+test("repeated requisition submissions create only one registration and order", async (t) => {
+  const harness = await startPortalHarness();
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const registrationRequests = await Promise.all([
+    sendJson(harness, "/api/portal/registrations", {
+      submissionId: "registration-repeat-0001",
+      registration: {
+        patientId: "9100",
+        firstName: "Repeat",
+        lastName: "Patient",
+        createdAt: "2026-08-27T10:00:00.000Z",
+      },
+    }),
+    sendJson(harness, "/api/portal/registrations", {
+      submissionId: "registration-repeat-0001",
+      registration: {
+        patientId: "9100",
+        firstName: "Repeat",
+        lastName: "Patient",
+        createdAt: "2026-08-27T10:00:01.000Z",
+      },
+    }),
+  ]);
+
+  registrationRequests.forEach(({ response }) => assert.equal(response.status, 200));
+  assert.deepEqual(
+    registrationRequests.map(({ payload }) => payload.replayed).sort(),
+    [false, true]
+  );
+  assert.equal(registrationRequests[0].payload.registration.createdAt, registrationRequests[1].payload.registration.createdAt);
+  assert.equal(registrationRequests[0].payload.totalCount, 1);
+  assert.equal(registrationRequests[1].payload.totalCount, 1);
+
+  const reserved = await sendJson(harness, "/api/portal/order-ids", { count: 2 });
+  assert.equal(reserved.response.status, 200);
+  const orderRequests = await Promise.all(reserved.payload.orderIds.map((orderId) => sendJson(harness, "/api/portal/orders/bulk", {
+    submissionId: "orders-repeat-0001",
+    orders: [
+      {
+        orderId,
+        patientId: "9100",
+        patientName: "Repeat Patient",
+        accessionPrefix: "RP",
+        services: [{ serviceName: "Respiratory Pathogens Panel" }],
+        status: "Pending",
+      },
+    ],
+  })));
+
+  orderRequests.forEach(({ response }) => assert.equal(response.status, 200));
+  assert.deepEqual(
+    orderRequests.map(({ payload }) => payload.replayed).sort(),
+    [false, true]
+  );
+  assert.equal(orderRequests[0].payload.orders[0].orderId, orderRequests[1].payload.orders[0].orderId);
+
+  const portalDataResponse = await fetch(`${harness.baseUrl}/api/portal/data`, {
+    headers: { Cookie: harness.cookieJar.header() },
+  });
+  assert.equal(portalDataResponse.status, 200);
+  const portalData = await portalDataResponse.json();
+  assert.equal(portalData.registrations.length, 1);
+  assert.equal(portalData.orders.length, 1);
+
+  const auditResponse = await fetch(
+    `${harness.baseUrl}/api/portal/orders/${encodeURIComponent(portalData.orders[0].orderId)}/audit-events`,
+    { headers: { Cookie: harness.cookieJar.header() } }
+  );
+  assert.equal(auditResponse.status, 200);
+  const auditPayload = await auditResponse.json();
+  assert.equal(auditPayload.events.filter((event) => event.eventType === "order_created").length, 1);
+
+  const laterRequisition = await sendJson(harness, "/api/portal/registrations", {
+    submissionId: "registration-later-0002",
+    registration: {
+      patientId: "9100",
+      firstName: "Repeat",
+      lastName: "Patient",
+      createdAt: "2026-08-28T10:00:00.000Z",
+    },
+  });
+  assert.equal(laterRequisition.response.status, 200);
+  assert.equal(laterRequisition.payload.replayed, false);
+  assert.equal(laterRequisition.payload.totalCount, 2);
 });
