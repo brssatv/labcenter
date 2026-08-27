@@ -26,6 +26,16 @@
   function parseUsDate(value) {
     const text = String(value || "").trim();
     if (!text) return "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      const [year, month, day] = text.split("-");
+      const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+      if (
+        date.getUTCFullYear() !== Number(year)
+        || date.getUTCMonth() !== Number(month) - 1
+        || date.getUTCDate() !== Number(day)
+      ) return null;
+      return text;
+    }
     const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
     if (!match) return null;
     const [, month, day, year] = match;
@@ -38,9 +48,54 @@
     return `${year}-${month}-${day}`;
   }
 
+  function getDateOneMonthEarlier(dateKey) {
+    const normalized = parseUsDate(dateKey);
+    if (!normalized) return "";
+    const [year, month, day] = normalized.split("-").map(Number);
+    const targetMonthIndex = month - 2;
+    const targetYear = targetMonthIndex < 0 ? year - 1 : year;
+    const targetMonth = targetMonthIndex < 0 ? 12 : targetMonthIndex + 1;
+    const lastDay = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+    return `${targetYear}-${String(targetMonth).padStart(2, "0")}-${String(Math.min(day, lastDay)).padStart(2, "0")}`;
+  }
+
+  function getLocalTodayDateKey() {
+    const today = new Date();
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  }
+
+  function joinUnique(values) {
+    return Array.from(new Set(values
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)))
+      .join(", ");
+  }
+
+  function getOrderServices(row) {
+    return Array.isArray(row?.order?.services) ? row.order.services.filter(Boolean) : [];
+  }
+
+  function getPanelNames(row) {
+    if (row?.panel) return String(row.panel);
+    return joinUnique(getOrderServices(row).flatMap((line) => {
+      const serviceNames = String(line?.serviceName || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      return serviceNames.length ? serviceNames : (Array.isArray(line?.panelIds) ? line.panelIds : []);
+    }));
+  }
+
+  function getIcdCodes(row) {
+    if (row?.icdCodes) return Array.isArray(row.icdCodes) ? joinUnique(row.icdCodes) : String(row.icdCodes);
+    return joinUnique(getOrderServices(row).flatMap((line) => Array.isArray(line?.icdCodes)
+      ? line.icdCodes
+      : String(line?.icdCodes || "").split(/[\n,;]+/)));
+  }
+
   const EXPORT_FIELDS = [
     { key: "accession", label: "Accession #", value: (row) => row.accession },
-    { key: "orderCreatedDate", label: "Order Creation Date", value: (row) => formatExportDate(row.order?.createdAt) },
+    { key: "orderCreatedDate", label: "Order Creation Date", value: (row) => row.orderCreatedDate || formatExportDate(row.order?.createdAt) },
     { key: "collectionDate", label: "Sample Collection Date", value: (row) => row.collectionDate },
     { key: "patientId", label: "Patient ID", value: (row) => row.raw?.patientId },
     { key: "patientName", label: "Patient Name", value: (row) => [row.firstName, row.lastName].filter((part) => part && part !== "-").join(" ") },
@@ -49,6 +104,8 @@
     { key: "gender", label: "Gender", value: (row) => row.gender },
     { key: "status", label: "Status", value: (row) => row.status },
     { key: "testType", label: "Test Type", value: (row) => row.testType },
+    { key: "panel", label: "Panel", value: getPanelNames },
+    { key: "icdCode", label: "ICD Code", value: getIcdCodes },
     { key: "labCode", label: "Lab Code", value: (row) => row.labCode },
     { key: "collectionTime", label: "Collection Time", value: (row) => row.collectionTime },
     { key: "sampleReceivedDate", label: "Sample Received Date", value: (row) => formatExportDate(row.raw?.receivedDate) },
@@ -88,6 +145,8 @@
   }
 
   function getOrderCreatedDateKey(row) {
+    const preparedKey = String(row?.orderCreatedDateKey || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(preparedKey)) return preparedKey;
     const value = String(row?.order?.createdAt || "").trim();
     if (!value) return "";
     const isoDate = value.match(/^(\d{4}-\d{2}-\d{2})/);
@@ -108,7 +167,7 @@
     });
   }
 
-  function init({ trigger, getRows } = {}) {
+  function init({ trigger, getRows, getTodayDateKey = getLocalTodayDateKey } = {}) {
     if (!trigger || typeof getRows !== "function") return () => {};
     let backdrop = null;
     const close = () => { backdrop?.remove(); backdrop = null; trigger.focus(); };
@@ -120,7 +179,7 @@
         <section class="req-export-dialog" role="dialog" aria-modal="true" aria-labelledby="req-export-title" tabindex="-1">
           <header class="req-export-head"><div class="req-export-title-group"><span class="req-export-title-icon" aria-hidden="true">&#8595;</span><div><h3 id="req-export-title">Download requisition data</h3><p>Create a custom CSV export for your selected order creation period.</p></div></div><button type="button" class="req-export-close" aria-label="Close">&times;</button></header>
           <div class="req-export-body">
-            <section class="req-export-section"><div class="req-export-section-head"><div><h4>Order creation period</h4><p>Filter by Order Creation Date, or leave both dates empty to include all requisitions.</p></div></div><div class="req-export-dates"><label><span>From date (MM/DD/YYYY)</span><input type="text" inputmode="numeric" maxlength="10" placeholder="MM/DD/YYYY" aria-label="From date in MM/DD/YYYY format" data-export-from></label><label><span>To date (MM/DD/YYYY)</span><input type="text" inputmode="numeric" maxlength="10" placeholder="MM/DD/YYYY" aria-label="To date in MM/DD/YYYY format" data-export-to></label></div></section>
+            <section class="req-export-section"><div class="req-export-section-head"><div><h4>Order creation period</h4><p>Defaults to the previous month through today. Clear both dates to include all requisitions.</p></div></div><div class="req-export-dates"><div class="req-export-date-field"><span>From date (MM/DD/YYYY)</span><div class="req-export-date-control"><button type="button" aria-label="Choose From date" data-export-open-from><span data-export-from-display></span><span class="req-export-calendar-icon" aria-hidden="true">&#128197;</span></button><input class="req-export-native-date" type="date" tabindex="-1" aria-label="From date" data-export-from></div></div><div class="req-export-date-field"><span>To date (MM/DD/YYYY)</span><div class="req-export-date-control"><button type="button" aria-label="Choose To date" data-export-open-to><span data-export-to-display></span><span class="req-export-calendar-icon" aria-hidden="true">&#128197;</span></button><input class="req-export-native-date" type="date" tabindex="-1" aria-label="To date" data-export-to></div></div></div></section>
             <fieldset class="req-export-fields req-export-section"><div class="req-export-section-head"><div><legend>Attributes to download</legend><p>Choose which columns should appear in the CSV file.</p></div><span class="req-export-recommended">5 recommended selected</span></div><div class="req-export-field-grid">
               ${EXPORT_FIELDS.map((field) => `<label class="${field.selectionOnly ? "req-export-field-master" : ""}"><input type="checkbox" value="${field.key}" ${field.selectionOnly ? `data-export-selects="${field.selects.join(",")}"` : ""} ${DEFAULT_FIELD_KEYS.includes(field.key) ? "checked" : ""}><span>${field.label}</span></label>`).join("")}
             </div></fieldset>
@@ -133,6 +192,18 @@
       const status = backdrop.querySelector(".req-export-status");
       const fromInput = backdrop.querySelector("[data-export-from]");
       const toInput = backdrop.querySelector("[data-export-to]");
+      const fromButton = backdrop.querySelector("[data-export-open-from]");
+      const toButton = backdrop.querySelector("[data-export-open-to]");
+      const fromDisplay = backdrop.querySelector("[data-export-from-display]");
+      const toDisplay = backdrop.querySelector("[data-export-to-display]");
+      const syncDateDisplays = () => {
+        fromDisplay.textContent = formatExportDate(fromInput.value) || "MM/DD/YYYY";
+        toDisplay.textContent = formatExportDate(toInput.value) || "MM/DD/YYYY";
+      };
+      const openDatePicker = (input) => {
+        if (typeof input.showPicker === "function") input.showPicker();
+        else { input.focus(); input.click(); }
+      };
       const download = () => {
         const fromDate = parseUsDate(fromInput.value);
         const toDate = parseUsDate(toInput.value);
@@ -140,9 +211,9 @@
           Array.from(backdrop.querySelectorAll(".req-export-fields input:checked"), (input) => input.value)
             .flatMap((key) => EXPORT_FIELDS.find((field) => field.key === key)?.selects || [key])
         ));
-        if (fromDate === null) { status.textContent = "Enter From date as MM/DD/YYYY."; fromInput.focus(); return; }
-        if (toDate === null) { status.textContent = "Enter To date as MM/DD/YYYY."; toInput.focus(); return; }
-        if (fromDate && toDate && fromDate > toDate) { status.textContent = "From date must be on or before To date."; fromInput.focus(); return; }
+        if (fromDate === null) { status.textContent = "Choose a valid From date."; fromButton.focus(); return; }
+        if (toDate === null) { status.textContent = "Choose a valid To date."; toButton.focus(); return; }
+        if (fromDate && toDate && fromDate > toDate) { status.textContent = "From date must be on or before To date."; fromButton.focus(); return; }
         if (!fields.length) { status.textContent = "Select at least one attribute to download."; return; }
         const rows = filterRowsByOrderCreatedDate(getRows(), fromDate, toDate);
         if (!rows.length) { status.textContent = "No requisitions were created in this date range."; return; }
@@ -152,9 +223,33 @@
         link.download = `requisitions-created-${[fromDate, toDate].filter(Boolean).join("_to_") || "all-dates"}.csv`;
         document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); close();
       };
+      const updateDateMatchStatus = () => {
+        const fromDate = parseUsDate(fromInput.value);
+        const toDate = parseUsDate(toInput.value);
+        if (fromDate === null || toDate === null || (fromDate && toDate && fromDate > toDate)) {
+          status.textContent = "";
+          return;
+        }
+        const allRows = getRows();
+        if (!fromDate && !toDate) {
+          status.textContent = `All ${allRows.length} requisitions will be included.`;
+          return;
+        }
+        const matchCount = filterRowsByOrderCreatedDate(allRows, fromDate, toDate).length;
+        status.textContent = `${matchCount} of ${allRows.length} requisitions match this order creation period.`;
+      };
       backdrop.querySelector(".req-export-close").addEventListener("click", close);
       backdrop.querySelector("[data-export-cancel]").addEventListener("click", close);
       backdrop.querySelector("[data-export-download]").addEventListener("click", download);
+      fromInput.addEventListener("change", () => { syncDateDisplays(); updateDateMatchStatus(); });
+      toInput.addEventListener("change", () => { syncDateDisplays(); updateDateMatchStatus(); });
+      fromButton.addEventListener("click", () => openDatePicker(fromInput));
+      toButton.addEventListener("click", () => openDatePicker(toInput));
+      const todayDateKey = parseUsDate(getTodayDateKey()) || getLocalTodayDateKey();
+      fromInput.value = getDateOneMonthEarlier(todayDateKey);
+      toInput.value = todayDateKey;
+      syncDateDisplays();
+      updateDateMatchStatus();
       backdrop.querySelectorAll("[data-export-selects]").forEach((masterInput) => {
         const keys = String(masterInput.dataset.exportSelects || "").split(",").filter(Boolean);
         masterInput.addEventListener("change", () => {
@@ -172,13 +267,13 @@
       });
       backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
       dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
-      fromInput.focus();
+      fromButton.focus();
     };
     trigger.addEventListener("click", open);
     return () => trigger.removeEventListener("click", open);
   }
 
-  const api = { init, buildCsv, filterRowsByOrderCreatedDate, formatExportDate, parseUsDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS };
+  const api = { init, buildCsv, filterRowsByOrderCreatedDate, formatExportDate, getDateOneMonthEarlier, parseUsDate, DEFAULT_FIELD_KEYS, INSURANCE_FIELD_KEYS, EXPORT_FIELDS };
   globalScope.RequisitionExport = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

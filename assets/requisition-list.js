@@ -681,6 +681,7 @@ function renderRequisitionList() {
       orderId,
     });
     const collectionDateKey = getAppDateKey(collectionDateSource);
+    const orderCreatedDateKey = getAppDateKey(order?.createdAt);
     const status = order?.status || "Pending";
     const testType = Array.isArray(order?.services) && order.services.length
       ? order.services.map((line) => line?.serviceName).filter(Boolean).join(", ")
@@ -700,6 +701,8 @@ function renderRequisitionList() {
       collectionDate: formatDate(sourceRecord.collectionDate || collectionDateKey),
       collectionTime: formatTime(sourceRecord.collectionTime || order?.sampleCollectTime || ""),
       collectionDateKey,
+      orderCreatedDate: formatDate(order?.createdAt),
+      orderCreatedDateKey,
       statusClass: getStatusClass(status),
     };
   }
@@ -836,6 +839,7 @@ function renderRequisitionList() {
   window.RequisitionExport?.init({
     trigger: panelBody.querySelector(".req-export-btn"),
     getRows: () => allOrders.map((item, idx) => mapOrder(item, idx)),
+    getTodayDateKey: () => getAppDateKey(new Date().toISOString()),
   });
 
   renderRows();

@@ -76,9 +76,29 @@
 .req-export-section-head p { margin: 3px 0 0; color: #718398; font-size: .86rem; }
 .req-export-recommended { flex: 0 0 auto; padding: 4px 9px; border-radius: 999px; background: #eaf4ff; color: #2368ae; font-size: .77rem; font-weight: 700; }
 .req-export-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.req-export-dates label { display: grid; gap: 6px; color: #344f69; font-weight: 600; }
-.req-export-dates label > span { color: #344f69; font-size: .9rem; }
-.req-export-dates input { width: 100%; height: 40px; border-radius: 7px; background: #fbfcfe; }
+.req-export-date-field { display: grid; gap: 6px; color: #344f69; font-weight: 600; }
+.req-export-date-field > span { color: #344f69; font-size: .9rem; }
+.req-export-date-control { position: relative; }
+.req-export-date-control > button {
+  width: 100%;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fbfcfe;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.req-export-date-control > button:hover { border-color: #8fb0d4; background: #fff; }
+.req-export-date-control > button:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+.req-export-calendar-icon { flex: 0 0 auto; font-size: 1rem; line-height: 1; }
+.req-export-native-date { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .req-export-fields { min-inline-size: 0; }
 .req-export-field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .req-export-field-grid label {
