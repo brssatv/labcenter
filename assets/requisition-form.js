@@ -374,9 +374,28 @@ function renderRegistration(prefillData = null, options = {}) {
               <label><span>Middle Name</span><input name="middleName" placeholder="Middle Name"></label>
               <label><span>Last Name *</span><input name="lastName" placeholder="Last Name" required></label>
             </div>
-            <div class="field-grid four-col">
+            <div class="field-grid patient-demographics-grid">
               <label><span>Suffix</span><input name="suffix" placeholder="Suffix"></label>
-              <label><span>Patient DOB *</span><input type="date" name="dob" required></label>
+              <label><span>Patient DOB *</span>
+                <div class="dob-input-wrap">
+                  <input
+                    id="patient-dob-display"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="bday"
+                    placeholder="dd/mm/yyyy"
+                    pattern="[0-9]{2}/[0-9]{2}/[0-9]{4}"
+                    aria-describedby="patient-dob-help"
+                    required
+                  >
+                  <input id="patient-dob-value" type="hidden" name="dob">
+                  <button id="patient-dob-trigger" type="button" class="dob-trigger" aria-haspopup="dialog" aria-controls="patient-dob-modal" aria-label="Choose patient date of birth">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2v3M17 2v3M3.5 9h17M5.5 4h13a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>
+                  </button>
+                </div>
+                <small id="patient-dob-help" class="dob-field-help">Range → year → month → day</small>
+              </label>
+              <label class="patient-age-field"><span>Age</span><input type="text" name="age" placeholder="Calculated" readonly></label>
               <label><span>Sex *</span>
                 <select name="sex" required>
                   <option value="">Select Sex</option>
@@ -385,7 +404,7 @@ function renderRegistration(prefillData = null, options = {}) {
                   <option>Other</option>
                 </select>
               </label>
-              <div><span class="field-label">Patient ID</span><p class="patient-id">Auto</p></div>
+              <div class="patient-id-field"><span class="field-label">Patient ID</span><p class="patient-id">Auto</p></div>
             </div>
             <div class="field-grid two-col">
               <label><span>Patient ID (MRN)</span><input name="mrn" placeholder="Enter Patient ID (MRN)"></label>
@@ -405,10 +424,9 @@ function renderRegistration(prefillData = null, options = {}) {
               <label><span>Country</span><input name="country" value="United States of America" placeholder="Country"></label>
               <label><span>Email</span><input type="email" name="email" placeholder="Email"></label>
             </div>
-            <div class="field-grid four-col">
+            <div class="field-grid three-col">
               <label><span>Ethnicity</span><input name="ethnicity" placeholder="Select Ethnicity"></label>
               <label><span>Race</span><input name="race" placeholder="Select Race"></label>
-              <label><span>Age</span><input type="text" name="age" placeholder="Age" readonly></label>
               <label><span>Phone Belongs To</span>
                 <select name="phoneBelongsTo">
                   <option value="Patient">Patient</option>
@@ -622,6 +640,24 @@ function renderRegistration(prefillData = null, options = {}) {
         </div>
       </div>
     </form>
+    <div id="patient-dob-modal" class="custom-icd-modal patient-dob-modal hidden" role="dialog" aria-modal="true" aria-labelledby="patient-dob-title">
+      <div class="custom-icd-dialog patient-dob-dialog">
+        <div class="dob-picker-head">
+          <button type="button" id="patient-dob-back" class="dob-picker-back is-placeholder" aria-label="Go back one step" aria-hidden="true" tabindex="-1">← Back</button>
+          <div>
+            <p class="badge">Patient date of birth</p>
+            <h3 id="patient-dob-title">Select the year range</h3>
+          </div>
+          <button type="button" id="patient-dob-close" class="custom-icd-close" aria-label="Close date of birth selector">×</button>
+        </div>
+        <div id="patient-dob-progress" class="dob-picker-progress" aria-label="Date selection progress"></div>
+        <div id="patient-dob-grid" class="dob-picker-grid" role="group" aria-labelledby="patient-dob-title"></div>
+        <div class="dob-picker-footer">
+          <button type="button" id="patient-dob-clear" class="btn-ghost">Clear date</button>
+          <p id="patient-dob-selected" aria-live="polite">No date selected</p>
+        </div>
+      </div>
+    </div>
     <div id="custom-provider-modal" class="custom-icd-modal hidden" role="dialog" aria-modal="true" aria-labelledby="custom-provider-title">
       <div class="custom-icd-dialog custom-provider-dialog">
         <div class="custom-icd-head">
@@ -834,6 +870,17 @@ function renderRegistration(prefillData = null, options = {}) {
   const status = document.getElementById("registration-status");
   const requisitionAuditEventsNode = document.getElementById("requisition-audit-events");
   const registerAndOrderBtn = document.getElementById("register-and-order");
+  const patientDobValueInput = document.getElementById("patient-dob-value");
+  const patientDobDisplayInput = document.getElementById("patient-dob-display");
+  const patientDobTrigger = document.getElementById("patient-dob-trigger");
+  const patientDobModal = document.getElementById("patient-dob-modal");
+  const patientDobGrid = document.getElementById("patient-dob-grid");
+  const patientDobTitle = document.getElementById("patient-dob-title");
+  const patientDobBack = document.getElementById("patient-dob-back");
+  const patientDobClose = document.getElementById("patient-dob-close");
+  const patientDobClear = document.getElementById("patient-dob-clear");
+  const patientDobProgress = document.getElementById("patient-dob-progress");
+  const patientDobSelected = document.getElementById("patient-dob-selected");
   const registrationSubmissionId = createSubmissionId("requisition");
   const registerAndOrderLabel = registerAndOrderBtn?.textContent || "Register And Order";
   let registrationSubmitInFlight = false;
@@ -909,6 +956,7 @@ function renderRegistration(prefillData = null, options = {}) {
   let activeFacilityMatchIndex = -1;
   let providerMatchResults = [];
   let activeProviderMatchIndex = -1;
+  let patientDobPicker = null;
 
   attachRequisitionTabEvents();
 
@@ -1444,6 +1492,7 @@ function renderRegistration(prefillData = null, options = {}) {
       specimenTypeOtherText.value = normalizedValues.specimenTypeOtherText || "";
     }
 
+    patientDobPicker?.syncFromValue();
     if (normalizedValues.patientId) patientIdNode.textContent = normalizedValues.patientId;
   }
 
@@ -2396,6 +2445,21 @@ function renderRegistration(prefillData = null, options = {}) {
     tryAutoFillFromZip();
   });
 
+  patientDobPicker = window.LabCenterDobPicker?.createDobPicker({
+    valueInput: patientDobValueInput,
+    displayInput: patientDobDisplayInput,
+    trigger: patientDobTrigger,
+    modal: patientDobModal,
+    grid: patientDobGrid,
+    title: patientDobTitle,
+    backButton: patientDobBack,
+    closeButton: patientDobClose,
+    clearButton: patientDobClear,
+    progress: patientDobProgress,
+    selectedLabel: patientDobSelected,
+    minYear: 1900,
+  }) || null;
+
   if (prefillData) {
     applyFormData(prefillData);
   }
@@ -2840,6 +2904,7 @@ function renderRegistration(prefillData = null, options = {}) {
       return;
     }
     form.reset();
+    patientDobPicker?.syncFromValue();
     clearCustomAllergies();
     syncSpecimenTypeDependentFields();
     syncAgeFromDob();
@@ -2879,6 +2944,7 @@ function renderRegistration(prefillData = null, options = {}) {
       const count = await saveRegistrationData(data);
       status.textContent = `Requisition saved for Patient ID ${data.patientId}. Total records: ${count}`;
       form.reset();
+      patientDobPicker?.syncFromValue();
       clearCustomAllergies();
       syncSpecimenTypeDependentFields();
       syncAgeFromDob();

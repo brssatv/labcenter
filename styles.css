@@ -30,6 +30,409 @@
   --shadow-pop: 0 14px 28px rgba(20, 35, 54, 0.14);
 }
 
+.dob-input-wrap {
+  position: relative;
+}
+
+.dob-input-wrap > input[type="text"] {
+  padding-right: 52px;
+}
+
+.dob-trigger {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid #d3dce6;
+  border-radius: 7px;
+  background: transparent;
+  color: #25384a;
+  cursor: pointer;
+}
+
+.dob-trigger:hover {
+  background: #eaf3fc;
+  color: #1669b2;
+}
+
+.dob-trigger:focus-visible {
+  outline: 3px solid rgba(37, 118, 191, 0.28);
+  outline-offset: 1px;
+}
+
+.dob-trigger svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dob-field-help {
+  color: #647588;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.patient-demographics-grid {
+  grid-template-columns:
+    minmax(0, 0.72fr)
+    minmax(0, 1.6fr)
+    minmax(0, 1fr)
+    minmax(0, 1.2fr)
+    minmax(0, 0.72fr);
+  align-items: start;
+}
+
+.patient-demographics-grid > * {
+  min-width: 0;
+}
+
+.patient-age-field input {
+  padding-inline: 10px;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.patient-id-field {
+  min-height: 72px;
+  display: grid;
+  align-content: start;
+}
+
+.requisition-column {
+  container-type: inline-size;
+}
+
+@container (max-width: 760px) {
+  .patient-demographics-grid {
+    grid-template-columns: minmax(100px, 0.8fr) minmax(210px, 1.5fr) minmax(130px, 1fr);
+  }
+
+  .patient-demographics-grid > :nth-child(4) {
+    grid-column: 1 / 3;
+  }
+}
+
+@container (max-width: 500px) {
+  .patient-demographics-grid {
+    grid-template-columns: minmax(0, 1.4fr) minmax(125px, 1fr);
+  }
+
+  .patient-demographics-grid > :nth-child(1) {
+    grid-column: 1 / -1;
+  }
+
+  .patient-demographics-grid > :nth-child(4) {
+    grid-column: auto;
+  }
+}
+
+.custom-icd-dialog.patient-dob-dialog {
+  width: min(760px, 100%);
+  max-height: min(92vh, 820px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.dob-picker-head {
+  min-height: 94px;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #dbe4ec;
+}
+
+.dob-picker-head > div {
+  text-align: center;
+}
+
+.dob-picker-head h3 {
+  margin: 4px 0 0;
+  color: #20364b;
+  font-size: 1.55rem;
+}
+
+.dob-picker-back {
+  min-height: 42px;
+  border: 1px solid #b8c9da;
+  border-radius: 10px;
+  background: #f7fafe;
+  color: #284d70;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dob-picker-back:hover {
+  border-color: #7fa5c8;
+  background: #eaf3fc;
+}
+
+.dob-picker-back.is-placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.dob-picker-progress {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 14px 20px;
+  background: #f6f9fc;
+  border-bottom: 1px solid #dbe4ec;
+}
+
+.dob-picker-progress .dob-progress-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+  color: #718091;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.dob-progress-step b {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid #b8c6d4;
+  border-radius: 50%;
+  background: #fff;
+  color: #607185;
+}
+
+.dob-progress-step.is-current {
+  color: #174f83;
+}
+
+.dob-progress-step.is-current b,
+.dob-progress-step.is-complete b {
+  border-color: #2576bf;
+  background: #2576bf;
+  color: #fff;
+}
+
+.dob-picker-grid {
+  overflow-y: auto;
+  padding: 20px;
+  background: #fff;
+}
+
+.dob-picker-ranges {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dob-picker-years {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dob-picker-months {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dob-picker-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(42px, 1fr));
+  gap: 8px;
+}
+
+.dob-choice {
+  min-height: 58px;
+  border: 1px solid #b9c9d9;
+  border-radius: 12px;
+  background: #f9fbfd;
+  color: #26384a;
+  font: inherit;
+  font-size: 1.08rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-apple);
+}
+
+.dob-choice:hover:not(:disabled) {
+  border-color: #4385c1;
+  background: #edf6ff;
+  transform: translateY(-1px);
+}
+
+.dob-choice:focus-visible {
+  outline: 3px solid rgba(37, 118, 191, 0.3);
+  outline-offset: 2px;
+}
+
+.dob-choice.is-selected {
+  border-color: #176db7;
+  background: #e4f2ff;
+  box-shadow: inset 0 0 0 2px #2576bf;
+  color: #124f84;
+}
+
+.dob-choice:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.dob-range-choice,
+.dob-month-choice {
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  padding: 10px;
+}
+
+.dob-range-choice strong {
+  font-size: 1.18rem;
+}
+
+.dob-range-choice span,
+.dob-month-choice span {
+  color: #6b7c8e;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.dob-month-choice strong {
+  font-size: 1.12rem;
+}
+
+.dob-day-choice {
+  min-height: 48px;
+}
+
+.dob-weekday {
+  padding: 4px 0 6px;
+  color: #627386;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.dob-day-blank {
+  min-height: 48px;
+}
+
+.dob-picker-footer {
+  min-height: 70px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid #dbe4ec;
+  background: #f7fafc;
+}
+
+.dob-picker-footer p {
+  margin: 0;
+  color: #3d5165;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .patient-demographics-grid {
+    grid-template-columns: minmax(0, 0.8fr) minmax(240px, 1.4fr) minmax(160px, 1fr);
+  }
+}
+
+@media (max-width: 680px) {
+  .custom-icd-modal.patient-dob-modal {
+    padding: 10px;
+  }
+
+  .custom-icd-dialog.patient-dob-dialog {
+    max-height: calc(100vh - 20px);
+  }
+
+  .dob-picker-head {
+    grid-template-columns: 72px minmax(0, 1fr) 36px;
+    gap: 8px;
+    padding-inline: 12px;
+  }
+
+  .dob-picker-head h3 {
+    font-size: 1.2rem;
+  }
+
+  .dob-picker-back {
+    min-height: 38px;
+    font-size: 0.86rem;
+  }
+
+  .dob-picker-progress {
+    padding-inline: 10px;
+  }
+
+  .dob-picker-progress .dob-progress-step {
+    gap: 4px;
+    font-size: 0.72rem;
+  }
+
+  .dob-progress-step b {
+    width: 22px;
+    height: 22px;
+  }
+
+  .dob-picker-grid {
+    padding: 14px;
+  }
+
+  .dob-picker-ranges,
+  .dob-picker-months {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dob-picker-years {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dob-picker-days {
+    gap: 5px;
+  }
+
+  .dob-day-choice,
+  .dob-day-blank {
+    min-height: 42px;
+  }
+
+  .dob-picker-footer {
+    align-items: flex-start;
+    flex-direction: column-reverse;
+  }
+
+  .patient-demographics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dob-field-help {
+    white-space: normal;
+  }
+}
+
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
