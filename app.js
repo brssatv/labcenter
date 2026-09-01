@@ -7466,7 +7466,7 @@ function renderOutputResults() {
     const eventTime = (type) => events.find((event) => event?.eventType === type)?.eventAt || "";
     const steps = [
       { label: "Sample Collection", at: order?.sampleCollectTime || order?.sampleCollectedAt || "" },
-      { label: "Sample Received", at: order?.sampleReceivedAt || order?.accessionAssignedAt || "" },
+      { label: "Order Created", at: order?.createdAt || eventTime("order_created") || "" },
       { label: "Testing In Progress", at: eventTime("results_processed") || order?.processedResult?.processedAt || order?.processedAt || "" },
       { label: "Review", at: order?.pharmd?.validationReadyAt || order?.pharmd?.reportReceivedAt || order?.pharmd?.receivedAt || "" },
       { label: "Published", at: order?.publishedReports?.final?.publishedAt || order?.publishedReports?.email?.sentAt || "" },
