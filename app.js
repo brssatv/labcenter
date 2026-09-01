@@ -1146,7 +1146,7 @@ const orderPanelCatalog = [
 ];
 const panelAccessionPrefixById = {
   attachment: "AT",
-  "gastrointestinal-panel": "GS",
+  "gastrointestinal-panel": "GI",
   "nail-panel": "NL",
   "basic-flu-panel": "BF",
   "final-report": "FR",
@@ -1156,7 +1156,7 @@ const panelAccessionPrefixById = {
   "wound-panel": "WN",
   "respiratory-pathogens-panel": "RP",
   "sti-panel": "ST",
-  "uti-pcr-panel": "UT",
+  "uti-pcr-panel": "UU",
   "womens-health-panel": "WH",
 };
 
@@ -1240,11 +1240,13 @@ function loadPanelCatalogState() {
 
     const prefixes = parsed?.prefixes && typeof parsed.prefixes === "object" ? parsed.prefixes : {};
     nextPanels.forEach((panel) => {
-      const prefix = String(prefixes[panel.id] || "")
+      let prefix = String(prefixes[panel.id] || "")
         .trim()
         .toUpperCase()
         .replace(/[^A-Z0-9]/g, "")
         .slice(0, 6);
+      if (panel.id === "gastrointestinal-panel" && prefix === "GS") prefix = "GI";
+      if (panel.id === "uti-pcr-panel" && prefix === "UT") prefix = "UU";
       if (prefix) panelAccessionPrefixById[panel.id] = prefix;
     });
     return true;
@@ -6687,7 +6689,7 @@ function renderPanelMaster() {
         </label>
         <label class="mr-field">
           <span>Prefix</span>
-          <input name="prefix" value="${escapeHtml(panelAccessionPrefixById[panel.id] || "")}" maxlength="6" placeholder="e.g. UT">
+          <input name="prefix" value="${escapeHtml(panelAccessionPrefixById[panel.id] || "")}" maxlength="6" placeholder="e.g. UU">
         </label>
         <label class="mr-field">
           <span>Price</span>

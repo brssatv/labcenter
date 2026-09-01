@@ -39,7 +39,8 @@ test("accession numbers use MMDDYY and timezone-aware day keys", () => {
 
 test("accession prefix resolution prefers explicit prefixes and falls back to panel mappings", () => {
   assert.equal(resolveAccessionPrefix({ explicitPrefix: " ey " }), "EY");
-  assert.equal(resolveAccessionPrefix({ serviceLine: { panelIds: ["uti-pcr-panel"] } }), "UT");
+  assert.equal(resolveAccessionPrefix({ serviceLine: { panelIds: ["gastrointestinal-panel"] } }), "GI");
+  assert.equal(resolveAccessionPrefix({ serviceLine: { panelIds: ["uti-pcr-panel"] } }), "UU");
   assert.equal(resolveAccessionPrefix({ serviceLine: { serviceName: "Eye Panel" } }), "EY");
   assert.equal(resolveAccessionPrefix({ serviceLine: { serviceName: "Unknown Panel" } }), "GN");
 });
