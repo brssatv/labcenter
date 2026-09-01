@@ -136,10 +136,10 @@
 }
 
 .custom-icd-dialog.patient-dob-dialog {
-  width: min(760px, 100%);
+  width: min(620px, 100%);
   max-height: min(92vh, 820px);
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .dob-picker-head {
@@ -227,9 +227,50 @@
 }
 
 .dob-picker-grid {
-  overflow-y: auto;
+  overflow: hidden;
   padding: 20px;
   background: #fff;
+}
+
+.dob-picker-columns {
+  display: grid;
+  grid-template-columns: 1.35fr 0.75fr 1fr;
+  gap: 12px;
+  min-height: 360px;
+}
+
+.dob-picker-column {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #d4e0eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.dob-picker-column h4 {
+  margin: 0;
+  padding: 12px;
+  border-bottom: 1px solid #d4e0eb;
+  color: #52677c;
+  text-align: center;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.dob-picker-scroll {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.dob-picker-scroll .dob-choice {
+  min-height: 46px;
+  flex: 0 0 auto;
 }
 
 .dob-picker-ranges {
@@ -252,7 +293,7 @@
 
 .dob-picker-days {
   display: grid;
-  grid-template-columns: repeat(7, minmax(42px, 1fr));
+  grid-template-columns: repeat(6, minmax(52px, 1fr));
   gap: 8px;
 }
 
@@ -323,19 +364,6 @@
   min-height: 48px;
 }
 
-.dob-weekday {
-  padding: 4px 0 6px;
-  color: #627386;
-  text-align: center;
-  font-size: 0.78rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.dob-day-blank {
-  min-height: 48px;
-}
-
 .dob-picker-footer {
   min-height: 70px;
   display: flex;
@@ -345,6 +373,10 @@
   padding: 14px 20px;
   border-top: 1px solid #dbe4ec;
   background: #f7fafc;
+}
+
+.dob-picker-footer .btn-primary {
+  min-width: 92px;
 }
 
 .dob-picker-footer p {
@@ -401,6 +433,16 @@
     padding: 14px;
   }
 
+  .dob-picker-columns {
+    grid-template-columns: 1.25fr 0.75fr 1fr;
+    gap: 7px;
+    min-height: 330px;
+  }
+
+  .dob-picker-scroll {
+    padding-inline: 6px;
+  }
+
   .dob-picker-ranges,
   .dob-picker-months {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -411,11 +453,11 @@
   }
 
   .dob-picker-days {
+    grid-template-columns: repeat(4, minmax(52px, 1fr));
     gap: 5px;
   }
 
-  .dob-day-choice,
-  .dob-day-blank {
+  .dob-day-choice {
     min-height: 42px;
   }
 

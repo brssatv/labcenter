@@ -383,17 +383,17 @@ function renderRegistration(prefillData = null, options = {}) {
                     type="text"
                     inputmode="numeric"
                     autocomplete="bday"
-                    placeholder="dd/mm/yyyy"
+                    placeholder="mm/dd/yyyy"
                     pattern="[0-9]{2}/[0-9]{2}/[0-9]{4}"
                     aria-describedby="patient-dob-help"
                     required
                   >
                   <input id="patient-dob-value" type="hidden" name="dob">
-                  <button id="patient-dob-trigger" type="button" class="dob-trigger" aria-haspopup="dialog" aria-controls="patient-dob-modal" aria-label="Choose patient date of birth">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2v3M17 2v3M3.5 9h17M5.5 4h13a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>
+                  <button id="patient-dob-trigger" type="button" class="dob-trigger" aria-haspopup="dialog" aria-controls="patient-dob-modal" aria-label="Open patient date of birth selector">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
                   </button>
                 </div>
-                <small id="patient-dob-help" class="dob-field-help">Range → year → month → day</small>
+                <small id="patient-dob-help" class="dob-field-help">Select month, day, and year · MM/DD/YYYY</small>
               </label>
               <label class="patient-age-field"><span>Age</span><input type="text" name="age" placeholder="Calculated" readonly></label>
               <label><span>Sex *</span>
@@ -643,18 +643,18 @@ function renderRegistration(prefillData = null, options = {}) {
     <div id="patient-dob-modal" class="custom-icd-modal patient-dob-modal hidden" role="dialog" aria-modal="true" aria-labelledby="patient-dob-title">
       <div class="custom-icd-dialog patient-dob-dialog">
         <div class="dob-picker-head">
-          <button type="button" id="patient-dob-back" class="dob-picker-back is-placeholder" aria-label="Go back one step" aria-hidden="true" tabindex="-1">← Back</button>
+          <span class="dob-picker-head-spacer" aria-hidden="true"></span>
           <div>
             <p class="badge">Patient date of birth</p>
-            <h3 id="patient-dob-title">Select the year range</h3>
+            <h3 id="patient-dob-title">Select date of birth</h3>
           </div>
           <button type="button" id="patient-dob-close" class="custom-icd-close" aria-label="Close date of birth selector">×</button>
         </div>
-        <div id="patient-dob-progress" class="dob-picker-progress" aria-label="Date selection progress"></div>
         <div id="patient-dob-grid" class="dob-picker-grid" role="group" aria-labelledby="patient-dob-title"></div>
         <div class="dob-picker-footer">
           <button type="button" id="patient-dob-clear" class="btn-ghost">Clear date</button>
           <p id="patient-dob-selected" aria-live="polite">No date selected</p>
+          <button type="button" id="patient-dob-apply" class="btn-primary">Done</button>
         </div>
       </div>
     </div>
@@ -876,11 +876,10 @@ function renderRegistration(prefillData = null, options = {}) {
   const patientDobModal = document.getElementById("patient-dob-modal");
   const patientDobGrid = document.getElementById("patient-dob-grid");
   const patientDobTitle = document.getElementById("patient-dob-title");
-  const patientDobBack = document.getElementById("patient-dob-back");
   const patientDobClose = document.getElementById("patient-dob-close");
   const patientDobClear = document.getElementById("patient-dob-clear");
-  const patientDobProgress = document.getElementById("patient-dob-progress");
   const patientDobSelected = document.getElementById("patient-dob-selected");
+  const patientDobApply = document.getElementById("patient-dob-apply");
   const registrationSubmissionId = createSubmissionId("requisition");
   const registerAndOrderLabel = registerAndOrderBtn?.textContent || "Register And Order";
   let registrationSubmitInFlight = false;
@@ -2459,11 +2458,10 @@ function renderRegistration(prefillData = null, options = {}) {
     modal: patientDobModal,
     grid: patientDobGrid,
     title: patientDobTitle,
-    backButton: patientDobBack,
     closeButton: patientDobClose,
     clearButton: patientDobClear,
-    progress: patientDobProgress,
     selectedLabel: patientDobSelected,
+    applyButton: patientDobApply,
     minYear: 1900,
   }) || null;
 

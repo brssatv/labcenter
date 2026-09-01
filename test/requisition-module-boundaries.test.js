@@ -19,18 +19,22 @@ test("requisition UI is loaded from dedicated feature files before app bootstrap
   assert.ok(appIndex > formIndex);
 });
 
-test("requisition DOB uses the guided range year month and day selector", () => {
+test("requisition DOB uses simultaneous scrollable year month and day columns", () => {
   const formSource = fs.readFileSync(path.join(root, "assets", "requisition-form.js"), "utf8");
   const pickerSource = fs.readFileSync(path.join(root, "assets", "dob-picker.js"), "utf8");
   assert.match(formSource, /id="patient-dob-display"/);
   assert.match(formSource, /id="patient-dob-trigger"/);
-  assert.match(formSource, /id="patient-dob-progress"/);
-  assert.match(formSource, /Range → year → month → day/);
+  assert.match(formSource, /id="patient-dob-apply"/);
+  assert.match(formSource, /Select month, day, and year · MM\/DD\/YYYY/);
   assert.match(formSource, /patient-demographics-grid/);
   assert.match(formSource, /patient-age-field/);
   assert.match(formSource, /LabCenterDobPicker\?\.createDobPicker/);
-  assert.match(formSource, /dob-picker-back is-placeholder/);
-  assert.match(pickerSource, /classList\.toggle\("is-placeholder", isFirstStep\)/);
+  assert.match(pickerSource, /dob-picker-columns/);
+  assert.match(pickerSource, /data-dob-column="year"/);
+  assert.match(pickerSource, /data-dob-column="month"/);
+  assert.match(pickerSource, /data-dob-column="day"/);
+  assert.ok(pickerSource.indexOf('data-dob-column="month"') < pickerSource.indexOf('data-dob-column="day"'));
+  assert.ok(pickerSource.indexOf('data-dob-column="day"') < pickerSource.indexOf('data-dob-column="year"'));
 });
 
 test("requisition page implementations no longer live in the app bootstrap file", () => {

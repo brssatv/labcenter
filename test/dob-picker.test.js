@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   formatIsoDateForDisplay,
+  formatDobInput,
   getDaysInMonth,
   getDobYearRanges,
   getYearsInRange,
@@ -26,9 +27,9 @@ test("DOB picker lists the selected range as individual years", () => {
   assert.deepEqual(getYearsInRange(1940, 1949), [1949, 1948, 1947, 1946, 1945, 1944, 1943, 1942, 1941, 1940]);
 });
 
-test("DOB picker converts between stored ISO dates and day-first display dates", () => {
-  assert.equal(formatIsoDateForDisplay("1945-08-27"), "27/08/1945");
-  assert.deepEqual(parseDisplayDate("27/08/1945"), {
+test("DOB picker converts between stored ISO dates and MM/DD/YYYY display dates", () => {
+  assert.equal(formatIsoDateForDisplay("1945-08-27"), "08/27/1945");
+  assert.deepEqual(parseDisplayDate("08/27/1945"), {
     year: 1945,
     month: 8,
     day: 27,
@@ -40,6 +41,14 @@ test("DOB picker converts between stored ISO dates and day-first display dates",
     day: 27,
     iso: "1945-08-27",
   });
+});
+
+test("DOB typing automatically inserts MM/DD/YYYY separators", () => {
+  assert.equal(formatDobInput("0"), "0");
+  assert.equal(formatDobInput("0111"), "01/11");
+  assert.equal(formatDobInput("01112026"), "01/11/2026");
+  assert.equal(formatDobInput("01/11/2026"), "01/11/2026");
+  assert.equal(formatDobInput("01-11-202612"), "01/11/2026");
 });
 
 test("DOB picker validates real calendar days and leap years", () => {

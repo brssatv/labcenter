@@ -19,8 +19,6 @@
     "November",
     "December",
   ]);
-  const WEEKDAY_NAMES = Object.freeze(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
-  const STEPS = Object.freeze(["range", "year", "month", "day"]);
 
   function padDatePart(value) {
     return String(value).padStart(2, "0");
@@ -52,17 +50,24 @@
   function parseDisplayDate(value) {
     const match = String(value || "").trim().match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);
     if (!match) return null;
-    const day = Number(match[1]);
-    const month = Number(match[2]);
+    const month = Number(match[1]);
+    const day = Number(match[2]);
     const year = Number(match[3]);
     if (!isValidDateParts(year, month, day)) return null;
     return { year, month, day, iso: toIsoDate(year, month, day) };
   }
 
+  function formatDobInput(value) {
+    const digits = String(value || "").replace(/\D/g, "").slice(0, 8);
+    if (digits.length <= 2) return digits;
+    if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+  }
+
   function formatIsoDateForDisplay(value) {
     const parsed = parseIsoDate(value);
     if (!parsed) return "";
-    return `${padDatePart(parsed.day)}/${padDatePart(parsed.month)}/${parsed.year}`;
+    return `${padDatePart(parsed.month)}/${padDatePart(parsed.day)}/${parsed.year}`;
   }
 
   function getDobYearRanges(options = {}) {
@@ -111,11 +116,10 @@
     const modal = options.modal;
     const grid = options.grid;
     const title = options.title;
-    const backButton = options.backButton;
     const closeButton = options.closeButton;
     const clearButton = options.clearButton;
-    const progress = options.progress;
     const selectedLabel = options.selectedLabel;
+    const applyButton = options.applyButton;
     if (!valueInput || !displayInput || !trigger || !modal || !grid || !title) return null;
 
     const today = options.today instanceof Date ? options.today : new Date();
@@ -123,10 +127,10 @@
     const maxYear = today.getFullYear();
     const minYear = Math.max(1, Math.floor(Number(options.minYear || 1900)));
     const ranges = getDobYearRanges({ minYear, maxYear });
-    let activeStep = "range";
     let selectedRange = null;
     let selectedYear = null;
     let selectedMonth = null;
+    let selectedDay = null;
     let restoreFocusNode = null;
     let isOpen = false;
 
@@ -160,6 +164,7 @@
         displayInput.value = formatIsoDateForDisplay(parsed.iso);
         selectedYear = parsed.year;
         selectedMonth = parsed.month;
+        selectedDay = parsed.day;
         selectedRange = ranges.find((range) => parsed.year >= range.start && parsed.year <= range.end) || null;
         displayInput.setCustomValidity("");
         if (emit) emitCanonicalChange();
@@ -167,6 +172,7 @@
         displayInput.value = "";
         selectedYear = null;
         selectedMonth = null;
+        selectedDay = null;
         selectedRange = null;
         displayInput.setCustomValidity("");
       }
@@ -198,19 +204,38 @@
       updateCanonicalValue(parsed.iso);
       selectedYear = parsed.year;
       selectedMonth = parsed.month;
+      selectedDay = parsed.day;
       selectedRange = ranges.find((range) => parsed.year >= range.start && parsed.year <= range.end) || null;
       updateSelectedLabel();
       return true;
     }
 
-    function renderProgress() {
-      if (!progress) return;
-      const activeIndex = STEPS.indexOf(activeStep);
-      const labels = { range: "Range", year: "Year", month: "Month", day: "Day" };
-      progress.innerHTML = STEPS.map((step, index) => {
-        const state = index === activeIndex ? "current" : index < activeIndex ? "complete" : "upcoming";
-        return `<span class="dob-progress-step is-${state}" ${index === activeIndex ? 'aria-current="step"' : ""}><b>${index + 1}</b>${labels[step]}</span>`;
+    function renderWheelPicker() {
+      title.textContent = "Select date of birth";
+      grid.className = "dob-picker-grid dob-picker-columns";
+      const yearMarkup = Array.from({ length: maxYear - minYear + 1 }, (_, index) => maxYear - index)
+        .map((year) => `<button type="button" class="dob-choice${year === selectedYear ? " is-selected" : ""}" data-dob-choice="year" data-value="${year}" aria-pressed="${year === selectedYear}">${year}</button>`)
+        .join("");
+      const monthMarkup = MONTH_NAMES.map((name, index) => {
+        const month = index + 1;
+        return `<button type="button" class="dob-choice${month === selectedMonth ? " is-selected" : ""}" data-dob-choice="month" data-value="${month}" aria-pressed="${month === selectedMonth}">${name}</button>`;
       }).join("");
+      const dayYear = selectedYear || maxYear;
+      const dayMonth = selectedMonth || 1;
+      const dayMarkup = Array.from({ length: getDaysInMonth(dayYear, dayMonth) }, (_, index) => index + 1)
+        .map((day) => `<button type="button" class="dob-choice${day === selectedDay ? " is-selected" : ""}" data-dob-choice="day" data-value="${day}" aria-pressed="${day === selectedDay}">${padDatePart(day)}</button>`)
+        .join("");
+      grid.innerHTML = `
+        <section class="dob-picker-column"><h4>Month</h4><div class="dob-picker-scroll" data-dob-column="month">${monthMarkup}</div></section>
+        <section class="dob-picker-column"><h4>Day</h4><div class="dob-picker-scroll" data-dob-column="day">${dayMarkup}</div></section>
+        <section class="dob-picker-column"><h4>Year</h4><div class="dob-picker-scroll" data-dob-column="year">${yearMarkup}</div></section>`;
+      requestAnimationFrame(() => {
+        grid.querySelectorAll(".dob-picker-scroll").forEach((column) => {
+          const selected = column.querySelector(".dob-choice.is-selected");
+          if (selected) selected.scrollIntoView({ block: "center" });
+          else column.scrollTop = 0;
+        });
+      });
     }
 
     function renderRangeStep() {
@@ -260,11 +285,8 @@
       }
       title.textContent = `Select the day in ${MONTH_NAMES[selectedMonth - 1]} ${selectedYear}`;
       grid.className = "dob-picker-grid dob-picker-days";
-      const firstWeekday = new Date(Date.UTC(selectedYear, selectedMonth - 1, 1)).getUTCDay();
       const numberOfDays = getDaysInMonth(selectedYear, selectedMonth);
       const current = getSelectedDateParts();
-      const weekdayMarkup = WEEKDAY_NAMES.map((name) => `<span class="dob-weekday" role="columnheader">${name}</span>`).join("");
-      const blankMarkup = Array.from({ length: firstWeekday }, () => '<span class="dob-day-blank" aria-hidden="true"></span>').join("");
       const dayMarkup = Array.from({ length: numberOfDays }, (_, index) => {
         const day = index + 1;
         const iso = toIsoDate(selectedYear, selectedMonth, day);
@@ -272,7 +294,7 @@
         const disabled = iso > maxDate;
         return `<button type="button" class="dob-choice dob-day-choice${selected ? " is-selected" : ""}" data-dob-choice="day" data-value="${day}" aria-label="${MONTH_NAMES[selectedMonth - 1]} ${day}, ${selectedYear}" aria-pressed="${selected ? "true" : "false"}" ${disabled ? "disabled" : ""}>${day}</button>`;
       }).join("");
-      grid.innerHTML = `${weekdayMarkup}${blankMarkup}${dayMarkup}`;
+      grid.innerHTML = dayMarkup;
     }
 
     function focusFirstChoice() {
@@ -284,17 +306,8 @@
     }
 
     function render() {
-      renderProgress();
-      const isFirstStep = activeStep === "range";
-      backButton?.classList.toggle("is-placeholder", isFirstStep);
-      backButton?.setAttribute("aria-hidden", isFirstStep ? "true" : "false");
-      if (backButton) backButton.tabIndex = isFirstStep ? -1 : 0;
-      if (activeStep === "range") renderRangeStep();
-      if (activeStep === "year") renderYearStep();
-      if (activeStep === "month") renderMonthStep();
-      if (activeStep === "day") renderDayStep();
+      renderWheelPicker();
       updateSelectedLabel();
-      if (isOpen) focusFirstChoice();
     }
 
     function open(sourceNode = trigger) {
@@ -302,9 +315,9 @@
       if (current) {
         selectedYear = current.year;
         selectedMonth = current.month;
+        selectedDay = current.day;
         selectedRange = ranges.find((range) => current.year >= range.start && current.year <= range.end) || null;
       }
-      activeStep = "range";
       restoreFocusNode = sourceNode;
       isOpen = true;
       modal.classList.remove("hidden");
@@ -326,32 +339,32 @@
       selectedRange = null;
       selectedYear = null;
       selectedMonth = null;
+      selectedDay = null;
       updateCanonicalValue("");
       updateSelectedLabel();
       close();
     }
 
     trigger.addEventListener("click", () => open(trigger));
-    displayInput.addEventListener("input", () => syncFromDisplay({ showError: false }));
+    displayInput.addEventListener("input", () => {
+      const formattedValue = formatDobInput(displayInput.value);
+      if (displayInput.value !== formattedValue) displayInput.value = formattedValue;
+      syncFromDisplay({ showError: false });
+    });
     displayInput.addEventListener("change", () => syncFromDisplay({ showError: true }));
     displayInput.addEventListener("blur", () => syncFromDisplay({ showError: Boolean(displayInput.value.trim()) }));
-    displayInput.addEventListener("keydown", (event) => {
-      if (event.key === "ArrowDown" && event.altKey) {
-        event.preventDefault();
-        open(displayInput);
-      }
-    });
-    displayInput.addEventListener("invalid", () => {
-      syncFromDisplay({ showError: true });
-      open(displayInput);
-    });
-    backButton?.addEventListener("click", () => {
-      const index = Math.max(0, STEPS.indexOf(activeStep) - 1);
-      activeStep = STEPS[index];
-      render();
-    });
+    displayInput.addEventListener("invalid", () => syncFromDisplay({ showError: true }));
     closeButton?.addEventListener("click", () => close());
     clearButton?.addEventListener("click", clearDate);
+    applyButton?.addEventListener("click", () => {
+      const iso = toIsoDate(selectedYear, selectedMonth, selectedDay);
+      if (!iso || !isDobWithinBounds(iso, { minYear, maxDate })) return;
+      displayInput.value = formatIsoDateForDisplay(iso);
+      displayInput.setCustomValidity("");
+      updateCanonicalValue(iso);
+      updateSelectedLabel();
+      close();
+    });
     modal.addEventListener("mousedown", (event) => {
       if (event.target === modal) close();
     });
@@ -378,31 +391,15 @@
       const button = event.target.closest("[data-dob-choice]");
       if (!button || button.disabled) return;
       const choice = button.dataset.dobChoice;
-      if (choice === "range") {
-        selectedRange = {
-          start: Number(button.dataset.start),
-          end: Number(button.dataset.end),
-          label: `${button.dataset.start}–${button.dataset.end}`,
-        };
-        selectedYear = null;
-        selectedMonth = null;
-        activeStep = "year";
-      } else if (choice === "year") {
+      if (choice === "year") {
         selectedYear = Number(button.dataset.value);
-        selectedMonth = null;
-        activeStep = "month";
       } else if (choice === "month") {
         selectedMonth = Number(button.dataset.value);
-        activeStep = "day";
       } else if (choice === "day") {
-        const iso = toIsoDate(selectedYear, selectedMonth, Number(button.dataset.value));
-        displayInput.value = formatIsoDateForDisplay(iso);
-        displayInput.setCustomValidity("");
-        updateCanonicalValue(iso);
-        updateSelectedLabel();
-        close();
-        return;
+        selectedDay = Number(button.dataset.value);
       }
+      const maxDay = getDaysInMonth(selectedYear || maxYear, selectedMonth || 1);
+      if (selectedDay > maxDay) selectedDay = maxDay;
       render();
     });
 
@@ -421,6 +418,7 @@
 
   return {
     MONTH_NAMES,
+    formatDobInput,
     formatIsoDateForDisplay,
     getDaysInMonth,
     getDobYearRanges,
