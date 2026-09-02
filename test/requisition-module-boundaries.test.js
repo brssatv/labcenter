@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const root = path.resolve(__dirname, "..");
 
@@ -59,4 +60,20 @@ test("requisition creation uses stable submission IDs and single-flight click gu
   assert.match(appSource, /saveOrderRecords\(nextOrderRecords, \{ submissionId: orderSubmissionId \}\)/);
   assert.match(formSource, /if \(registrationSubmitInFlight\) return;/);
   assert.match(formSource, /saveRegistrationData\(data, \{ submissionId: registrationSubmissionId \}\)/);
+});
+
+test("requisition view keeps structured middle and last names from the linked registration", () => {
+  const listSource = fs.readFileSync(path.join(root, "assets", "requisition-list.js"), "utf8");
+  const context = {};
+  vm.runInNewContext(listSource, context);
+
+  const linkedRegistration = { firstName: "First", middleName: "Middle", lastName: "Last" };
+  assert.deepEqual(
+    { ...context.applyRequisitionOrderNameFallback({ ...linkedRegistration }, "First Middle Last", linkedRegistration) },
+    linkedRegistration
+  );
+  assert.deepEqual(
+    { ...context.applyRequisitionOrderNameFallback({}, "First Middle Last", null) },
+    { firstName: "First", lastName: "Middle Last" }
+  );
 });

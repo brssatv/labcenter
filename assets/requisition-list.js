@@ -38,6 +38,27 @@ function normalizeRequisitionSummaryItems(items = []) {
     });
 }
 
+function splitRequisitionPatientName(fullName) {
+  const value = String(fullName || "").trim().replace(/\s+/g, " ");
+  if (!value) return { firstName: "-", lastName: "-" };
+  const parts = value.split(" ");
+  if (parts.length === 1) return { firstName: parts[0], lastName: "-" };
+  return {
+    firstName: parts[0],
+    lastName: parts.slice(1).join(" "),
+  };
+}
+
+function applyRequisitionOrderNameFallback(record, historicalPatientName, linkedRegistration) {
+  if (!historicalPatientName || linkedRegistration) return record;
+  const nameParts = splitRequisitionPatientName(historicalPatientName);
+  return {
+    ...record,
+    firstName: nameParts.firstName,
+    lastName: nameParts.lastName,
+  };
+}
+
 function getServiceLinePanelLabels(serviceLine = {}) {
   if (Array.isArray(serviceLine?.panelIds) && serviceLine.panelIds.length) {
     return normalizeRequisitionSummaryItems(
@@ -518,17 +539,6 @@ function renderRequisitionList() {
       registrationsByPatientId.set(key, record);
     });
 
-  function splitPatientName(fullName) {
-    const value = String(fullName || "").trim().replace(/\s+/g, " ");
-    if (!value) return { firstName: "-", lastName: "-" };
-    const parts = value.split(" ");
-    if (parts.length === 1) return { firstName: parts[0], lastName: "-" };
-    return {
-      firstName: parts[0],
-      lastName: parts.slice(1).join(" "),
-    };
-  }
-
   panelBody.innerHTML = `
     <section class="req-view-page">
       ${renderRequisitionTabsMarkup()}
@@ -682,7 +692,7 @@ function renderRequisitionList() {
     const patientKey = String(order?.patientId || "").trim();
     const linkedRegistration = registrationsByPatientId.get(patientKey) || null;
     const historicalPatientName = String(order?.patientName || "").trim();
-    const nameParts = splitPatientName(historicalPatientName);
+    const nameParts = splitRequisitionPatientName(historicalPatientName);
     const fallbackRecord = {
       patientId: order?.patientId || "",
       firstName: nameParts.firstName,
@@ -697,12 +707,9 @@ function renderRequisitionList() {
       collectionTime: "",
       labCode: "LABCENTER",
     };
-    const sourceRecord = linkedRegistration ? { ...fallbackRecord, ...linkedRegistration } : { ...fallbackRecord };
+    let sourceRecord = linkedRegistration ? { ...fallbackRecord, ...linkedRegistration } : { ...fallbackRecord };
     sourceRecord.patientId = order?.patientId || sourceRecord.patientId || "";
-    if (historicalPatientName) {
-      sourceRecord.firstName = nameParts.firstName;
-      sourceRecord.lastName = nameParts.lastName;
-    }
+    sourceRecord = applyRequisitionOrderNameFallback(sourceRecord, historicalPatientName, linkedRegistration);
     if (order?.patientDob) sourceRecord.dob = order.patientDob;
     if (order?.provider) sourceRecord.provider = order.provider;
     if (order?.facilityName) sourceRecord.facilityName = order.facilityName;
