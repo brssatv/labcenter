@@ -321,3 +321,122 @@ test("order update route clears Completed workflow fields when returning to Pend
   assert.equal(storedOrder?.pharmd?.completionSource, undefined);
   assert.equal(storedOrder?.generatedReports?.final?.key, "labcenter/reports/final/00001/preview.pdf");
 });
+
+test("published reports require a reasoned amendment that preserves the original report reference", async (t) => {
+  const harness = await startOrderUpdateHarness({
+    status: "Complete",
+    completedAt: "2026-06-01T09:30:00.000Z",
+    publishedReports: {
+      final: {
+        publishedAt: "2026-06-01T10:00:00.000Z",
+        publishedBy: "admin@clinic.local",
+      },
+    },
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const missingReason = await fetch(`${harness.baseUrl}/api/portal/orders/00001/amendments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({ reason: "" }),
+  });
+  assert.equal(missingReason.status, 400);
+
+  const response = await fetch(`${harness.baseUrl}/api/portal/orders/00001/amendments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({ reason: "Correcting an incorrect reported result." }),
+  });
+  assert.equal(response.status, 201);
+  const payload = await response.json();
+  assert.equal(payload.order?.status, "Pending");
+  assert.equal(payload.order?.pharmd?.amendment?.status, "pending_pharmd");
+  assert.equal(payload.order?.reportAmendments?.length, 1);
+  assert.equal(payload.order?.reportAmendments?.[0]?.reason, "Correcting an incorrect reported result.");
+  assert.equal(payload.order?.reportAmendments?.[0]?.originalReport?.key, "labcenter/reports/final/00001/preview.pdf");
+  assert.equal(payload.order?.reportAmendments?.[0]?.originalPublication?.publishedAt, "2026-06-01T10:00:00.000Z");
+
+  const auditResponse = await fetch(`${harness.baseUrl}/api/portal/orders/00001/audit-events`, {
+    headers: { Cookie: harness.cookieJar.header() },
+  });
+  assert.equal(auditResponse.status, 200);
+  const auditPayload = await auditResponse.json();
+  assert.equal(auditPayload.events[0]?.eventType, "report_amendment_initiated");
+  assert.equal(auditPayload.events[0]?.reason, "Correcting an incorrect reported result.");
+});
+
+test("publishing a corrected report for testing finalizes its amendment", async (t) => {
+  const harness = await startOrderUpdateHarness({
+    status: "Complete",
+    pharmd: {
+      amendment: {
+        id: "AMD-TEST-001",
+        status: "corrected_ready_for_publish",
+        correctedAt: "2026-06-01T11:00:00.000Z",
+      },
+    },
+    reportAmendments: [{
+      id: "AMD-TEST-001",
+      status: "corrected_ready_for_publish",
+      reason: "Corrected an incorrect reported result.",
+    }],
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const response = await fetch(`${harness.baseUrl}/api/portal/orders/00001/mark-published-for-testing`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: harness.cookieJar.header(),
+      "x-csrf-token": harness.csrfToken,
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.order?.pharmd?.amendment?.status, "published");
+  assert.ok(payload.order?.pharmd?.amendment?.publishedAt);
+  assert.equal(payload.order?.reportAmendments?.[0]?.status, "published");
+});
+
+test("server startup finalizes a correction that was test-published before the workflow update", async (t) => {
+  const harness = await startOrderUpdateHarness({
+    status: "Complete",
+    publishedReports: {
+      final: {
+        publishedAt: "2026-06-01T12:00:00.000Z",
+        publishedBy: "admin@clinic.local",
+        status: "simulated",
+        mode: "test",
+      },
+    },
+    pharmd: {
+      amendment: {
+        id: "AMD-LEGACY-001",
+        status: "corrected_ready_for_publish",
+        correctedAt: "2026-06-01T11:00:00.000Z",
+      },
+    },
+    reportAmendments: [{ id: "AMD-LEGACY-001", status: "corrected_ready_for_publish" }],
+  });
+  t.after(async () => {
+    await harness.close();
+  });
+
+  const savedOrder = harness.portalStore.getOrderById("00001");
+  assert.equal(savedOrder?.pharmd?.amendment?.status, "published");
+  assert.equal(savedOrder?.pharmd?.amendment?.publishedAt, "2026-06-01T12:00:00.000Z");
+  assert.equal(savedOrder?.reportAmendments?.[0]?.status, "published");
+});

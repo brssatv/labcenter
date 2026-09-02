@@ -248,6 +248,116 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
     }
   });
 
+  app.post("/api/portal/orders/:orderId/amendments", requireAuthenticatedUser, (req, res) => {
+    try {
+      const current = portalStore.getOrderById(req.params.orderId);
+      if (!current || !canAccessOrderRecord(req, current)) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+      if (!current?.publishedReports?.final?.publishedAt) {
+        return res.status(400).json({ error: "Only published reports can be amended." });
+      }
+      const reason = String(req.body?.reason || "").trim();
+      if (reason.length < 5) {
+        return res.status(400).json({ error: "A correction reason of at least 5 characters is required." });
+      }
+      if (reason.length > 1000) {
+        return res.status(400).json({ error: "The correction reason must be 1,000 characters or fewer." });
+      }
+
+      const nowIso = new Date().toISOString();
+      const actor = String(req?.session?.user?.email || req?.session?.user?.displayName || req?.session?.clientUser?.username || "system").trim();
+      const amendmentId = `AMD-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      const amendment = {
+        id: amendmentId,
+        status: "pending_pharmd",
+        reason,
+        initiatedAt: nowIso,
+        initiatedBy: actor,
+        originalReport: current?.generatedReports?.final && typeof current.generatedReports.final === "object"
+          ? { ...current.generatedReports.final }
+          : null,
+        originalPublication: current?.publishedReports?.final && typeof current.publishedReports.final === "object"
+          ? { ...current.publishedReports.final }
+          : null,
+      };
+      const currentPharmd = current?.pharmd && typeof current.pharmd === "object" ? current.pharmd : {};
+      const saved = portalStore.upsertOrders([{
+        ...current,
+        status: "Pending",
+        completedAt: "",
+        updatedAt: nowIso,
+        pharmd: {
+          ...currentPharmd,
+          amendment: {
+            id: amendmentId,
+            status: "pending_pharmd",
+            reason,
+            initiatedAt: nowIso,
+            initiatedBy: actor,
+          },
+        },
+        reportAmendments: [...(Array.isArray(current?.reportAmendments) ? current.reportAmendments : []), amendment],
+      }])[0];
+      portalStore.appendOrderAuditEvent({
+        orderId: saved.orderId,
+        eventType: "report_amendment_initiated",
+        eventAt: nowIso,
+        actor,
+        reason,
+        details: {
+          amendmentId,
+          previousStatus: current.status || "",
+          originalPublishedAt: amendment.originalPublication?.publishedAt || "",
+          originalReportKey: amendment.originalReport?.key || "",
+        },
+      });
+      auditLog(req, "report_amendment_initiated", "success", { orderId: saved.orderId, amendmentId });
+      return res.status(201).json({ order: saved, amendment });
+    } catch (error) {
+      auditLog(req, "report_amendment_initiated", "failed", {
+        orderId: String(req.params.orderId || ""),
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(500).json({ error: "Unable to initiate the report amendment." });
+    }
+  });
+
+  app.post("/api/portal/orders/:orderId/mark-published-for-testing", requireAuthenticatedUser, (req, res) => {
+    try {
+      const current = portalStore.getOrderById(req.params.orderId);
+      if (!current || !canAccessOrderRecord(req, current)) return res.status(404).json({ error: "Order not found." });
+      if (String(current?.status || "").trim().toLowerCase() !== "complete") return res.status(400).json({ error: "Only completed reports can be marked as published for testing." });
+      if (!current?.generatedReports?.final?.key) return res.status(400).json({ error: "A saved final report is required before marking this report as published." });
+      const nowIso = new Date().toISOString();
+      const actor = String(req?.session?.user?.email || req?.session?.user?.displayName || req?.session?.clientUser?.username || "system").trim();
+      const amendment = current?.pharmd?.amendment;
+      const amendmentIsReadyToPublish = String(amendment?.status || "").trim().toLowerCase() === "corrected_ready_for_publish";
+      const saved = portalStore.upsertOrders([{
+        ...current,
+        updatedAt: nowIso,
+        ...(amendmentIsReadyToPublish ? {
+          pharmd: {
+            ...(current?.pharmd || {}),
+            amendment: { ...amendment, status: "published", publishedAt: nowIso, publishedBy: actor },
+          },
+          reportAmendments: (Array.isArray(current?.reportAmendments) ? current.reportAmendments : []).map((item) => (
+            item?.id === amendment.id
+              ? { ...item, status: "published", publishedAt: nowIso, publishedBy: actor }
+              : item
+          )),
+        } : {}),
+        publishedReports: { ...(current?.publishedReports || {}), final: { publishedAt: nowIso, publishedBy: actor, channel: "test", status: "simulated", mode: "test", fileName: String(current.generatedReports.final.fileName || ""), note: "Marked as published for workflow testing; no fax or email was sent." } },
+      }])[0];
+      portalStore.appendOrderAuditEvent({ orderId: saved.orderId, eventType: "report_marked_published_for_testing", eventAt: nowIso, actor, reason: "Workflow testing; no external delivery was sent.", details: { channel: "test", mode: "test" } });
+      auditLog(req, "report_marked_published_for_testing", "success", { orderId: saved.orderId });
+      return res.json({ order: saved, message: `Order #${saved.orderId} was marked as published for testing. No fax or email was sent.` });
+    } catch (error) {
+      auditLog(req, "report_marked_published_for_testing", "failed", { orderId: String(req.params.orderId || ""), reason: error?.message || "unexpected_error" });
+      return res.status(500).json({ error: "Unable to mark the report as published for testing." });
+    }
+  });
+
   app.put("/api/portal/orders/:orderId", requireAuthenticatedUser, (req, res) => {
     try {
       const current = portalStore.getOrderById(req.params.orderId);
@@ -261,6 +371,12 @@ function registerPortalWorkflowRoutes({ app, dependencies }) {
       const order = req.body?.order && typeof req.body.order === "object" ? req.body.order : null;
       if (!order) {
         return res.status(400).json({ error: "Order payload is required." });
+      }
+      const isPublishedCompletion = Boolean(current?.publishedReports?.final?.publishedAt)
+        && String(current?.status || "").trim().toLowerCase() === "complete"
+        && String(order?.status || "").trim().toLowerCase() !== "complete";
+      if (isPublishedCompletion) {
+        return res.status(400).json({ error: "Published reports must be corrected through the amendment workflow." });
       }
 
       const nowIso = new Date().toISOString();

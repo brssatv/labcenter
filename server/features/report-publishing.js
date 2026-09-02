@@ -114,6 +114,28 @@ function createPublishFaxRecord(existingRecord, patch = {}, {
   };
 }
 
+function buildAmendmentPublishedPatch(order, { publishedAt, publishedBy } = {}) {
+  const amendment = order?.pharmd?.amendment;
+  if (String(amendment?.status || "").trim().toLowerCase() !== "corrected_ready_for_publish") return {};
+  const publishedAmendment = {
+    ...amendment,
+    status: "published",
+    publishedAt,
+    publishedBy,
+  };
+  return {
+    pharmd: {
+      ...(order?.pharmd && typeof order.pharmd === "object" ? order.pharmd : {}),
+      amendment: publishedAmendment,
+    },
+    reportAmendments: (Array.isArray(order?.reportAmendments) ? order.reportAmendments : []).map((item) => (
+      item?.id === amendment.id
+        ? { ...item, status: "published", publishedAt, publishedBy }
+        : item
+    )),
+  };
+}
+
 function resolveOrderFaxRecipient(order, dependencies) {
   const recipientFaxDigits = String(typeof dependencies.resolveFacilityFaxForOrderPublish === "function"
     ? dependencies.resolveFacilityFaxForOrderPublish(order)
@@ -850,6 +872,52 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     }
   });
 
+  app.get("/api/orders/:orderId/amendments/:amendmentId/original-report-pdf", requireReportViewerAuth, async (req, res) => {
+    try {
+      const orderId = String(req.params.orderId || "").trim();
+      const amendmentId = String(req.params.amendmentId || "").trim();
+      const existingOrder = portalStore.getOrderById(orderId);
+      if (!existingOrder || !canAccessOrderRecord(req, existingOrder)) {
+        return res.status(404).json({ error: "Order not found." });
+      }
+      const amendment = (Array.isArray(existingOrder?.reportAmendments) ? existingOrder.reportAmendments : [])
+        .find((item) => String(item?.id || "").trim() === amendmentId);
+      if (!amendment?.originalReport?.key) {
+        return res.status(404).json({ error: "The original report for this amendment is not available." });
+      }
+      const fileName = sanitizeReportPdfFileName(
+        amendment.originalReport.fileName || `Order_${orderId}_Original_Final_Report.pdf`
+      );
+      const storedReport = await loadStoredPortalFileBuffer(amendment.originalReport, dependencies, {
+        notFoundMessage: "The original report PDF could not be found.",
+        loadFailedMessage: "The original report PDF could not be loaded.",
+        serviceUnavailableMessage: "S3 report storage is not configured for this environment.",
+      });
+      auditLog(req, "view_amendment_original_report_pdf", "success", {
+        orderId,
+        amendmentId,
+        bucket: storedReport.bucket,
+        key: storedReport.key,
+        storageType: storedReport.storageType,
+        bytes: storedReport.buffer.length,
+      });
+      res.setHeader("Content-Type", storedReport.contentType || "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+      res.setHeader("Cache-Control", "private, max-age=0, no-store");
+      if (storedReport.contentLength) res.setHeader("Content-Length", String(storedReport.contentLength));
+      return res.send(storedReport.buffer);
+    } catch (error) {
+      auditLog(req, "view_amendment_original_report_pdf", "failed", {
+        orderId: String(req.params.orderId || ""),
+        amendmentId: String(req.params.amendmentId || ""),
+        reason: error?.message || "unexpected_error",
+      });
+      return res.status(Number(error?.statusCode) || 500).json({
+        error: error?.message || "Unable to load the original report PDF.",
+      });
+    }
+  });
+
   app.get("/api/pharmd/orders/:orderId/receipt-file", requireAuthenticatedUser, async (req, res) => {
     try {
       const orderId = String(req.params.orderId || "").trim();
@@ -1292,6 +1360,7 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       const savedOrder = portalStore.upsertOrders([
         {
           ...existingOrder,
+          ...buildAmendmentPublishedPatch(existingOrder, { publishedAt, publishedBy: requestedBy }),
           updatedAt: publishedAt,
           publishedReports: {
             ...(existingOrder?.publishedReports && typeof existingOrder.publishedReports === "object"

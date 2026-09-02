@@ -757,7 +757,7 @@ function formatSessionCountdown(remainingMs) {
 function syncBodyModalOpenState() {
   const hasVisibleModal = Boolean(
     document.querySelector(
-      ".facility-modal-backdrop:not(.hidden), .custom-icd-modal:not(.hidden), .history-preview-modal:not(.hidden), .session-expiry-backdrop:not(.hidden), .output-results-publish-modal:not(.hidden), .output-previous-records-drawer.is-open"
+      ".facility-modal-backdrop:not(.hidden), .custom-icd-modal:not(.hidden), .history-preview-modal:not(.hidden), .session-expiry-backdrop:not(.hidden), .output-results-publish-modal:not(.hidden), .output-results-amendment-modal:not(.hidden), .output-previous-records-drawer.is-open"
     )
   );
   document.body.classList.toggle("modal-open", hasVisibleModal);
@@ -7270,8 +7270,11 @@ function renderOutputResults() {
   let outputTableNode = null;
   let tabsNode = null;
   let publishModalNode = null;
+  let amendmentModalNode = null;
   let publishModalOrderId = "";
   let publishModalView = "menu";
+  let amendmentModalOrderId = "";
+  let amendmentModalTrigger = null;
   const publishFaxDisplayNumber = "352-565-4554";
   let publishModalEmailState = { orderId: "", loading: false, senderEmail: "", recipientEmail: "", error: "" };
   let publishModalFaxState = {
@@ -7317,9 +7320,34 @@ function renderOutputResults() {
   function resolveOutputBucket(order) {
     const status = String(order?.status || "").trim().toLowerCase();
     if (status === "rejected") return "rejected";
+    if (order?.pharmd?.amendment?.status === "pending_pharmd") return "pending-pharmd";
     if (order?.publishedReports?.final?.publishedAt || order?.pharmd?.completedAt || order?.completedAt || status === "complete") return "completed";
     if (status === "processed" || status === "validated" || order?.processedResult?.report) return "pending-pharmd";
     return "pending-results";
+  }
+
+  function getUnpublishedAmendment(order) {
+    const pharmdAmendment = order?.pharmd?.amendment;
+    if (!pharmdAmendment || typeof pharmdAmendment !== "object") return null;
+    const status = String(pharmdAmendment.status || "").trim().toLowerCase();
+    return ["pending_pharmd", "corrected_ready_for_publish"].includes(status)
+      ? pharmdAmendment
+      : null;
+  }
+
+  function isPendingAmendment(order) {
+    return String(order?.pharmd?.amendment?.status || "").trim().toLowerCase() === "pending_pharmd";
+  }
+
+  function buildUnpublishedAmendmentBanner(order, columnCount) {
+    const amendment = getUnpublishedAmendment(order);
+    if (!amendment) return "";
+    const isReadyToPublish = String(amendment.status || "").trim().toLowerCase() === "corrected_ready_for_publish";
+    const title = isReadyToPublish ? "Corrected report ready to publish" : "Amendment in progress";
+    const message = isReadyToPublish
+      ? "The corrected report has not been published yet. The previously published report remains the official version until publication is complete."
+      : "This record is being amended and the correction has not been published yet. The previously published report remains the official version.";
+    return `<tr class="output-results-amendment-banner-row"><td colspan="${columnCount}"><div class="output-results-amendment-banner" role="status"><span class="history-status status-amendment">${escapeHtml(title)}</span><div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(message)}</p></div></div></td></tr>`;
   }
 
   function resolveOutputBadgeClass(order) {
@@ -7435,6 +7463,8 @@ function renderOutputResults() {
       order_created: "Report requested and submitted",
       results_processed: "Processing completed",
       order_completed: "Report completed",
+      report_amendment_initiated: "Report amendment initiated",
+      report_marked_published_for_testing: "Report marked published for testing",
       order_updated: "Report information updated",
       order_rejected: "Report rejected",
       order_rejection_undone: "Report restored",
@@ -7517,6 +7547,10 @@ function renderOutputResults() {
     const orderId = String(order?.orderId || "").trim();
     const events = getOutputStatusEvents(order).slice().sort((a, b) => new Date(a?.eventAt || 0) - new Date(b?.eventAt || 0));
     const isLoading = outputStatusHistoryLoading.has(orderId);
+    const amendments = Array.isArray(order?.reportAmendments) ? order.reportAmendments : [];
+    const amendmentHistory = amendments.length
+      ? `<section><h5>Report Amendments</h5><ol class="output-status-history">${amendments.map((amendment) => `<li><span aria-hidden="true"></span><div><strong>Amendment ${escapeHtml(amendment?.id || "-")}</strong><small>${escapeHtml(formatOutputDate(amendment?.initiatedAt))} • ${escapeHtml(amendment?.reason || "Reason not recorded")}</small><div class="output-results-message-actions output-results-secondary-actions"><button type="button" class="table-action-btn" data-view-amendment-original="${escapeHtml(orderId)}" data-amendment-id="${escapeHtml(amendment?.id || "")}">View Original</button>${amendment?.correctedReport?.key ? `<button type="button" class="table-action-btn" data-view-current-final="${escapeHtml(orderId)}">View Corrected</button>` : ""}</div></div></li>`).join("")}</ol></section>`
+      : "";
     return `<tr class="output-results-detail-row"><td colspan="11">
       <section class="output-results-detail-panel" aria-label="Details for report ${escapeHtml(orderId)}">
         <div class="output-results-detail-head"><div><p class="badge">Report progress</p><h4>Order #${escapeHtml(orderId)}</h4></div><button type="button" class="output-detail-collapse" data-toggle-completed-detail="${escapeHtml(orderId)}">Collapse <span aria-hidden="true">&#8963;</span></button></div>
@@ -7525,6 +7559,7 @@ function renderOutputResults() {
           <section><h5>Status History</h5>${isLoading ? '<p class="subtle">Loading status history...</p>' : events.length ? `<ol class="output-status-history">${events.slice(-5).map((event) => `<li><span aria-hidden="true"></span><div><strong>${escapeHtml(resolveOutputEventLabel(event))}</strong><small>${escapeHtml(formatOutputDate(event?.eventAt))}</small></div></li>`).join("")}</ol>` : '<p class="subtle">No persisted status events are available.</p>'}</section>
           <section><h5>Report Details</h5><dl class="output-report-details"><div><dt>Report ID</dt><dd>${escapeHtml(orderId || "-")}</dd></div><div><dt>Patient</dt><dd>${escapeHtml(order?.patientName || "-")}</dd></div><div><dt>Panel</dt><dd>${escapeHtml(order?.services?.[0]?.serviceName || "Lab Panel")}</dd></div><div><dt>Provider</dt><dd>${escapeHtml(order?.provider || "-")}</dd></div><div><dt>Lab</dt><dd>${escapeHtml(order?.facilityName || "-")}</dd></div><div><dt>Accession</dt><dd>${escapeHtml(resolveOrderAccession(order))}</dd></div></dl><button type="button" class="table-action-btn output-previous-records-btn" data-open-previous-records="${escapeHtml(orderId)}">Previous Records</button></section>
           <section><h5>Communication Summary</h5><div class="output-communication-list">${buildCommunicationSummaryMarkup(order)}</div></section>
+          ${amendmentHistory}
         </div>
       </section>
     </td></tr>`;
@@ -7787,6 +7822,10 @@ function renderOutputResults() {
                 <span class="output-results-publish-choice-label">Send Fax</span>
                 <span class="output-results-publish-choice-copy">Review the fax details and confirm before sending the completed report.</span>
               </button>
+              <button type="button" class="output-results-publish-choice" data-mark-published-for-testing="${escapeHtml(orderId)}">
+                <span class="output-results-publish-choice-label">Mark as Published (Test)</span>
+                <span class="output-results-publish-choice-copy">Testing only: records a simulated publication and does not send fax or email.</span>
+              </button>
             </div>
             <div class="output-results-publish-actions">
               <button type="button" class="table-action-btn secondary-btn" data-close-output-publish-modal>Cancel</button>
@@ -7850,6 +7889,18 @@ function renderOutputResults() {
         "x-csrf-token": csrfToken,
       },
       body: JSON.stringify({ confirmed: true }),
+    });
+    if (payload?.order) replaceOrderInState(payload.order);
+    renderOutputResultsTable();
+    return payload;
+  }
+
+  async function markReportPublishedForTesting(orderId) {
+    if (!csrfToken) await fetchCsrfToken();
+    const payload = await requestJson(`/api/portal/orders/${encodeURIComponent(orderId)}/mark-published-for-testing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
+      body: JSON.stringify({}),
     });
     if (payload?.order) replaceOrderInState(payload.order);
     renderOutputResultsTable();
@@ -8180,14 +8231,137 @@ function renderOutputResults() {
       const pharmd = row?.pharmd && typeof row.pharmd === "object" ? { ...row.pharmd } : {};
       pharmd.completedAt = nowIso;
       pharmd.completionSource = isPharmdSkipped(row) ? "skip_pharmd" : "pharmd_report_received";
+      const amendment = pharmd?.amendment && typeof pharmd.amendment === "object" ? pharmd.amendment : null;
+      if (amendment?.status === "pending_pharmd") {
+        pharmd.amendment = {
+          ...amendment,
+          status: "corrected_ready_for_publish",
+          correctedAt: nowIso,
+        };
+      }
       return {
         ...row,
         status: "Complete",
         completedAt: nowIso,
         updatedAt: nowIso,
         pharmd,
+        reportAmendments: amendment?.status === "pending_pharmd"
+          ? (Array.isArray(row?.reportAmendments) ? row.reportAmendments : []).map((item) => (
+            item?.id === amendment.id
+              ? { ...item, status: "corrected_ready_for_publish", correctedAt: nowIso, correctedReport: { ...(row?.generatedReports?.final || {}) } }
+              : item
+          ))
+          : row?.reportAmendments,
       };
     });
+  }
+
+  async function initiatePublishedReportAmendment(orderId, reason) {
+    if (!csrfToken) await fetchCsrfToken();
+    const payload = await requestJson(`/api/portal/orders/${encodeURIComponent(orderId)}/amendments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrfToken,
+      },
+      body: JSON.stringify({ reason }),
+    });
+    const orders = readOrders();
+    const index = orders.findIndex((row) => String(row?.orderId || "").trim() === String(orderId || "").trim());
+    if (index >= 0 && payload?.order) {
+      orders[index] = payload.order;
+      writeOrders(orders);
+    }
+    return payload;
+  }
+
+  function closeAmendmentModal({ restoreFocus = true, force = false } = {}) {
+    if (!amendmentModalNode || amendmentModalNode.classList.contains("hidden")) return;
+    if (!force && amendmentModalOrderId && workflowSavingOrders.has(amendmentModalOrderId)) return;
+    amendmentModalNode.classList.add("hidden");
+    amendmentModalNode.setAttribute("aria-hidden", "true");
+    amendmentModalNode.innerHTML = "";
+    amendmentModalOrderId = "";
+    syncBodyModalOpenState();
+    if (restoreFocus && amendmentModalTrigger?.isConnected) {
+      requestAnimationFrame(() => amendmentModalTrigger.focus());
+    }
+    amendmentModalTrigger = null;
+  }
+
+  function updateAmendmentModalState() {
+    if (!amendmentModalNode) return;
+    const reasonNode = amendmentModalNode.querySelector("#output-amendment-reason");
+    const countNode = amendmentModalNode.querySelector("[data-amendment-count]");
+    const submitNode = amendmentModalNode.querySelector("[data-submit-amendment]");
+    const errorNode = amendmentModalNode.querySelector("#output-amendment-error");
+    const reasonLength = String(reasonNode?.value || "").length;
+    if (countNode) countNode.textContent = `${reasonLength} / 1,000`;
+    if (submitNode) submitNode.disabled = String(reasonNode?.value || "").trim().length < 5;
+    if (errorNode && String(reasonNode?.value || "").trim().length >= 5) errorNode.textContent = "";
+  }
+
+  function openAmendmentModal(orderId, trigger) {
+    if (!amendmentModalNode) return;
+    amendmentModalOrderId = String(orderId || "").trim();
+    amendmentModalTrigger = trigger || document.activeElement;
+    amendmentModalNode.innerHTML = `
+      <section class="output-amendment-dialog" role="dialog" aria-modal="true" aria-labelledby="output-amendment-title" aria-describedby="output-amendment-intro output-amendment-privacy-copy output-amendment-impact">
+        <header class="output-amendment-head">
+          <div>
+            <h3 id="output-amendment-title">Correct patient record</h3>
+            <p id="output-amendment-intro">Document why this entry is being corrected.</p>
+          </div>
+          <button type="button" class="output-amendment-close" data-close-amendment aria-label="Close correction dialog">&times;</button>
+        </header>
+        <form class="output-amendment-form" data-amendment-form novalidate>
+          <div class="output-amendment-privacy" role="note">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3 4.5 6v5.2c0 4.7 3 8.2 7.5 9.8 4.5-1.6 7.5-5.1 7.5-9.8V6L12 3Z"></path>
+              <rect x="9" y="10.5" width="6" height="5" rx="1"></rect>
+              <path d="M10.5 10.5V9a1.5 1.5 0 0 1 3 0v1.5"></path>
+            </svg>
+            <div>
+              <strong>Protect patient privacy</strong>
+              <p id="output-amendment-privacy-copy">Do not include names, dates of birth, medical record numbers, or other patient identifiers.</p>
+            </div>
+          </div>
+
+          <label class="output-amendment-field" for="output-amendment-reason">
+            <span>Reason for correction <b aria-hidden="true">*</b> <small>Required</small></span>
+            <textarea id="output-amendment-reason" name="reason" rows="5" minlength="5" maxlength="1000" required placeholder="Example: Corrected an incorrect medication dosage." aria-describedby="output-amendment-help output-amendment-error"></textarea>
+          </label>
+          <div class="output-amendment-field-meta">
+            <span id="output-amendment-help">Enter at least 5 characters.</span>
+            <span data-amendment-count>0 / 1,000</span>
+          </div>
+          <p id="output-amendment-error" class="output-amendment-error" role="alert"></p>
+
+          <div class="output-amendment-impact" id="output-amendment-impact">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v4l2.5 1.5"></path><circle cx="12" cy="12" r="8.5"></circle><path d="M5.8 5.8 4 4v4h4"></path></svg>
+            <span>This correction will be recorded in the audit history. The original published report will remain available, and the report will return to Pending PharmD.</span>
+          </div>
+
+          <footer class="output-amendment-actions">
+            <button type="button" class="btn-ghost" data-close-amendment>Cancel</button>
+            <button type="submit" class="btn-primary" data-submit-amendment disabled>Submit correction</button>
+          </footer>
+        </form>
+      </section>
+    `;
+    amendmentModalNode.classList.remove("hidden");
+    amendmentModalNode.setAttribute("aria-hidden", "false");
+    syncBodyModalOpenState();
+    requestAnimationFrame(() => amendmentModalNode.querySelector("#output-amendment-reason")?.focus());
+  }
+
+  function openAmendmentOriginalReport(orderId, amendmentId) {
+    const url = `/api/orders/${encodeURIComponent(orderId)}/amendments/${encodeURIComponent(amendmentId)}/original-report-pdf`;
+    window.open(url, "_blank", "noopener");
+  }
+
+  function openCurrentFinalReport(orderId) {
+    window.open(`/api/orders/${encodeURIComponent(orderId)}/final-report-pdf`, "_blank", "noopener");
   }
 
   async function returnOrderToPendingPharmd(orderId) {
@@ -8251,8 +8425,11 @@ function renderOutputResults() {
               const isPublished = Boolean(row?.publishedReports?.final?.publishedAt);
               const publishButtonState = getCompletedPublishButtonState(row);
               const isExpanded = showCompletedActions && expandedCompletedOrderId === orderId;
+              const amendment = getUnpublishedAmendment(row);
+              const columnCount = 8 + (showCompletedActions ? 3 : 0) + (showRejectedActions ? 1 : 0);
               return `
-                <tr class="${isExpanded ? "output-results-row-expanded" : ""}">
+                ${buildUnpublishedAmendmentBanner(row, columnCount)}
+                <tr class="${[isExpanded ? "output-results-row-expanded" : "", amendment ? "output-results-row-amendment" : ""].filter(Boolean).join(" ")}">
                   ${showCompletedActions ? `<td class="output-results-expand-cell"><button type="button" class="output-results-expand-button" data-toggle-completed-detail="${escapeHtml(orderId)}" aria-expanded="${isExpanded ? "true" : "false"}" aria-label="${isExpanded ? "Collapse" : "Expand"} details for Order ${escapeHtml(orderId)}"><span aria-hidden="true">&#8250;</span></button></td>` : ""}
                   <td>${escapeHtml(row?.orderId || "-")}</td>
                   <td>${escapeHtml(resolveOrderAccession(row))}</td>
@@ -8302,17 +8479,12 @@ function renderOutputResults() {
                         >
                           ${escapeHtml(publishButtonState.label)}
                         </button>
-                        <button
-                          type="button"
-                          class="table-action-btn"
-                          data-return-to-pending-pharmd="${escapeHtml(orderId)}"
-                          ${!isPublished && !isWorkflowSaving ? "" : "disabled"}
-                        >
-                          ${isWorkflowSaving ? "Returning..." : "Return to PharmD"}
-                        </button>
+                        ${isPublished
+                          ? `<button type="button" class="table-action-btn" data-initiate-report-amendment="${escapeHtml(orderId)}" ${isWorkflowSaving ? "disabled" : ""}>${isWorkflowSaving ? "Starting..." : "Amend Report"}</button>`
+                          : `<button type="button" class="table-action-btn" data-return-to-pending-pharmd="${escapeHtml(orderId)}" ${isWorkflowSaving ? "disabled" : ""}>${isWorkflowSaving ? "Returning..." : "Return to PharmD"}</button>`}
                       </div>
                       <div class="subtle output-results-inline-note">
-                        ${isPublished ? "Published reports stay in Completed." : "Moves this report back to the Pending PharmD queue."}
+                        ${isPublished ? "Starts a reason-required amendment and preserves the original report." : "Moves this report back to the Pending PharmD queue."}
                       </div>
                     </td>
                   ` : ""}
@@ -8534,8 +8706,10 @@ function renderOutputResults() {
                     <div class="subtle">${escapeHtml(row?.provider || "-")} • ${escapeHtml(row?.facilityName || "-")}</div>
                   </td>
                   <td>
-                    <span class="history-status ${escapeHtml(state.stageClass)}">${escapeHtml(state.label)}</span>
+                    <span class="history-status ${pendingAmendment ? "status-amendment" : escapeHtml(state.stageClass)}">${pendingAmendment ? "Pending - Amendment" : escapeHtml(state.label)}</span>
+                    ${unpublishedAmendment && !pendingAmendment ? '<div class="output-results-amendment-flag"><span class="history-status status-amendment">Amendment in progress</span></div>' : ""}
                     <div class="subtle output-results-inline-note">${escapeHtml(state.detail)}</div>
+                    ${amendment ? `<div class="subtle output-results-inline-note"><strong>Amendment:</strong> ${escapeHtml(amendment.reason || "Reason not recorded")}</div><button type="button" class="table-action-btn" data-view-amendment-original="${escapeHtml(orderId)}" data-amendment-id="${escapeHtml(amendment.id || "")}">View Original Report</button>` : ""}
                   </td>
                   <td>
                     ${buildPharmdPrimaryActionMarkup(state)}
@@ -8664,6 +8838,7 @@ function renderOutputResults() {
 
       <div id="output-results-table"></div>
       <div id="output-results-publish-modal" class="output-results-publish-modal hidden" aria-hidden="true"></div>
+      <div id="output-results-amendment-modal" class="output-results-amendment-modal hidden" aria-hidden="true"></div>
       <div id="output-previous-records-backdrop" class="output-previous-records-backdrop" aria-hidden="true"></div>
       <aside id="output-previous-records-drawer" class="output-previous-records-drawer" role="dialog" aria-modal="true" aria-labelledby="output-previous-records-title" aria-hidden="true"></aside>
     </section>
@@ -8674,6 +8849,7 @@ function renderOutputResults() {
   const sortNode = document.getElementById("output-results-sort");
   outputTableNode = document.getElementById("output-results-table");
   publishModalNode = document.getElementById("output-results-publish-modal");
+  amendmentModalNode = document.getElementById("output-results-amendment-modal");
 
   tabsNode?.addEventListener("click", (event) => {
     const tabBtn = event.target.closest("[data-output-tab]");
@@ -8921,6 +9097,29 @@ function renderOutputResults() {
       return;
     }
 
+    const amendmentOriginalBtn = event.target.closest("[data-view-amendment-original]");
+    if (amendmentOriginalBtn) {
+      const orderId = String(amendmentOriginalBtn.getAttribute("data-view-amendment-original") || "").trim();
+      const amendmentId = String(amendmentOriginalBtn.getAttribute("data-amendment-id") || "").trim();
+      if (orderId && amendmentId) openAmendmentOriginalReport(orderId, amendmentId);
+      return;
+    }
+
+    const currentFinalBtn = event.target.closest("[data-view-current-final]");
+    if (currentFinalBtn) {
+      const orderId = String(currentFinalBtn.getAttribute("data-view-current-final") || "").trim();
+      if (orderId) openCurrentFinalReport(orderId);
+      return;
+    }
+
+    const amendBtn = event.target.closest("[data-initiate-report-amendment]");
+    if (amendBtn) {
+      const orderId = String(amendBtn.getAttribute("data-initiate-report-amendment") || "").trim();
+      if (!orderId || workflowSavingOrders.has(orderId)) return;
+      openAmendmentModal(orderId, amendBtn);
+      return;
+    }
+
     const returnBtn = event.target.closest("[data-return-to-pending-pharmd]");
     if (returnBtn) {
       const orderId = String(returnBtn.getAttribute("data-return-to-pending-pharmd") || "").trim();
@@ -8935,6 +9134,81 @@ function renderOutputResults() {
           workflowSavingOrders.delete(orderId);
           renderOutputResultsTable();
         });
+    }
+  });
+
+  amendmentModalNode?.addEventListener("input", (event) => {
+    if (event.target.matches("#output-amendment-reason")) updateAmendmentModalState();
+  });
+
+  amendmentModalNode?.addEventListener("click", (event) => {
+    if (event.target === amendmentModalNode || event.target.closest("[data-close-amendment]")) {
+      closeAmendmentModal();
+    }
+  });
+
+  amendmentModalNode?.addEventListener("submit", async (event) => {
+    if (!event.target.matches("[data-amendment-form]")) return;
+    event.preventDefault();
+    const orderId = amendmentModalOrderId;
+    const reasonNode = amendmentModalNode.querySelector("#output-amendment-reason");
+    const errorNode = amendmentModalNode.querySelector("#output-amendment-error");
+    const submitNode = amendmentModalNode.querySelector("[data-submit-amendment]");
+    const reason = String(reasonNode?.value || "").trim();
+    if (!orderId || reason.length < 5 || reason.length > 1000 || workflowSavingOrders.has(orderId)) {
+      if (reason.length < 5 && errorNode) errorNode.textContent = "Enter a correction reason of at least 5 characters.";
+      reasonNode?.focus();
+      return;
+    }
+    workflowSavingOrders.add(orderId);
+    if (errorNode) errorNode.textContent = "";
+    if (reasonNode) reasonNode.disabled = true;
+    event.target.setAttribute("aria-busy", "true");
+    amendmentModalNode.querySelectorAll("[data-close-amendment]").forEach((node) => {
+      node.disabled = true;
+    });
+    if (submitNode) {
+      submitNode.disabled = true;
+      submitNode.textContent = "Submitting...";
+    }
+    renderOutputResultsTable();
+    try {
+      await initiatePublishedReportAmendment(orderId, reason);
+      closeAmendmentModal({ restoreFocus: false, force: true });
+      alert(`Amendment started for Order #${orderId}. The original report is preserved and available in Pending PharmD.`);
+    } catch (error) {
+      if (errorNode) errorNode.textContent = error?.message || "Unable to start the report amendment.";
+      if (reasonNode) reasonNode.disabled = false;
+      event.target.removeAttribute("aria-busy");
+      amendmentModalNode.querySelectorAll("[data-close-amendment]").forEach((node) => {
+        node.disabled = false;
+      });
+      if (submitNode) submitNode.textContent = "Submit correction";
+      updateAmendmentModalState();
+      reasonNode?.focus();
+    } finally {
+      workflowSavingOrders.delete(orderId);
+      renderOutputResultsTable();
+    }
+  });
+
+  amendmentModalNode?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeAmendmentModal();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(amendmentModalNode.querySelectorAll('button:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
 
@@ -9014,6 +9288,27 @@ function renderOutputResults() {
         renderCompletedPublishModal();
         loadCompletedPublishEmailDetails(order?.orderId).catch(() => {});
       }
+      return;
+    }
+
+    const markPublishedBtn = event.target.closest("[data-mark-published-for-testing]");
+    if (markPublishedBtn) {
+      const orderId = String(markPublishedBtn.getAttribute("data-mark-published-for-testing") || "").trim();
+      if (!orderId || workflowSavingOrders.has(orderId)) return;
+      if (!window.confirm("Mark this report as published for testing? No fax or email will be sent.")) return;
+      workflowSavingOrders.add(orderId);
+      renderCompletedPublishModal();
+      markReportPublishedForTesting(orderId)
+        .then((payload) => {
+          closeCompletedPublishModal();
+          alert(payload?.message || `Order #${orderId} was marked as published for testing.`);
+        })
+        .catch((error) => alert(error?.message || "Unable to mark the report as published for testing."))
+        .finally(() => {
+          workflowSavingOrders.delete(orderId);
+          renderOutputResultsTable();
+          renderCompletedPublishModal();
+        });
       return;
     }
 
@@ -10791,8 +11086,9 @@ function renderOrderHistory(initialTab = "all-orders") {
   function buildDetectedSummaryReportHtml(order, assetSources, options = {}) {
     const variant = String(options?.variant || "summary").trim().toLowerCase() === "final" ? "final" : "summary";
     const context = buildReportContext(order, { excludeRnaseP: variant === "final" });
-    const reportTitle = variant === "final" ? "Final Report" : "Summary Report";
-    const reportSectionTitle = variant === "final" ? "Final Lab Report" : "Summary Lab Report";
+    const isCorrection = variant === "final" && Boolean(order?.pharmd?.amendment?.id);
+    const reportTitle = variant === "final" ? (isCorrection ? "Corrected Report" : "Final Report") : "Summary Report";
+    const reportSectionTitle = variant === "final" ? (isCorrection ? "Corrected Lab Report" : "Final Lab Report") : "Summary Lab Report";
     const headerVariant = variant === "final" ? "final-summary" : "default";
     const selectedPanelReference = { id: context.panelId, name: context.panelName };
     const applyRespiratorySarsRule = variant === "final"
@@ -13126,8 +13422,11 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         <tbody>
           ${rows.length ? rows
             .map((row) => {
+              const isPendingAmendment = String(row?.pharmd?.amendment?.status || "").trim().toLowerCase() === "pending_pharmd";
               const statusClass =
-                row.status === "Processed"
+                isPendingAmendment
+                  ? "status-amendment"
+                  : row.status === "Processed"
                   ? "status-processed"
                   : row.status === "Complete"
                   ? "status-complete"
@@ -13144,7 +13443,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               const isPharmdBypassed = isPharmdSkipped(row);
               const canPreviewResult = isPharmdBypassed ? hasSavedFinalReport(row) : canPreviewCombinedPharmdReport(row);
               return `
-                <tr>
+                <tr class="${isPendingAmendment ? "output-results-row-amendment" : ""}">
                   <td>${row.orderId}</td>
                   <td>${escapeHtml(getOrderAccession(row))}</td>
                   <td>
@@ -13172,7 +13471,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                       `
                       : ""
                   }
-                  <td><span class="history-status ${statusClass}">${row.status || "-"}</span></td>
+                  <td><span class="history-status ${statusClass}">${isPendingAmendment ? "Pending - Amendment" : (row.status || "-")}</span></td>
                   ${
                     showClientResultPreview
                       ? `

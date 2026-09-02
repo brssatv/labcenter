@@ -12,6 +12,8 @@
     order_rejected: "Order rejected",
     order_rejection_undone: "Order rejection undone",
     order_completed: "Order completed",
+    report_amendment_initiated: "Report amendment initiated",
+    report_marked_published_for_testing: "Report marked published for testing",
     order_updated: "Order updated",
   });
 

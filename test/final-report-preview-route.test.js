@@ -577,7 +577,11 @@ test("publish fax route sends only the saved final report when PharmD is bypasse
         mimeType: "application/pdf",
       },
     },
-    pharmd: { skipPharmd: true },
+    pharmd: {
+      skipPharmd: true,
+      amendment: { id: "AMD-FAX-001", status: "corrected_ready_for_publish" },
+    },
+    reportAmendments: [{ id: "AMD-FAX-001", status: "corrected_ready_for_publish" }],
   }, {
     LABCENTER_PUBLISH_FAX_MODE: "simulated",
   });
@@ -608,6 +612,9 @@ test("publish fax route sends only the saved final report when PharmD is bypasse
   assert.equal(response.status, 200, payload.error);
   assert.equal(payload.order?.publishedReports?.final?.fileName, "Order_00001_Final_Report.pdf");
   assert.equal(payload.fax?.recipientFaxDigits, "5557772323");
+  assert.equal(payload.order?.pharmd?.amendment?.status, "published");
+  assert.ok(payload.order?.pharmd?.amendment?.publishedAt);
+  assert.equal(payload.order?.reportAmendments?.[0]?.status, "published");
 });
 
 test("publish fax route returns 404 when the PharmD return file is missing for the combined PDF", async (t) => {

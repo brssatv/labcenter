@@ -3660,7 +3660,41 @@ function stopPharmdReceiptPolling() {
   }
 }
 
+function reconcilePreviouslyPublishedAmendments() {
+  const successfulPublicationStatuses = new Set(["sent", "delivered", "queued", "accepted", "simulated", "logged", "success"]);
+  const amendedOrders = portalStore.listOrders().flatMap((order) => {
+    const amendment = order?.pharmd?.amendment;
+    if (String(amendment?.status || "").trim().toLowerCase() !== "corrected_ready_for_publish") return [];
+
+    const publication = order?.publishedReports?.final;
+    const publicationStatus = String(publication?.status || "").trim().toLowerCase();
+    const amendmentAt = new Date(amendment?.correctedAt || amendment?.initiatedAt || 0).getTime();
+    const publishedAt = new Date(publication?.publishedAt || 0).getTime();
+    if (!successfulPublicationStatuses.has(publicationStatus) || !Number.isFinite(amendmentAt) || !Number.isFinite(publishedAt) || publishedAt < amendmentAt) return [];
+
+    const publishedBy = String(publication?.publishedBy || amendment?.initiatedBy || "system").trim();
+    return [{
+      ...order,
+      updatedAt: publication.publishedAt,
+      pharmd: {
+        ...(order?.pharmd || {}),
+        amendment: { ...amendment, status: "published", publishedAt: publication.publishedAt, publishedBy },
+      },
+      reportAmendments: (Array.isArray(order?.reportAmendments) ? order.reportAmendments : []).map((item) => (
+        item?.id === amendment.id
+          ? { ...item, status: "published", publishedAt: publication.publishedAt, publishedBy }
+          : item
+      )),
+    }];
+  });
+  if (!amendedOrders.length) return 0;
+  portalStore.upsertOrders(amendedOrders);
+  console.log(`[workflow] Finalized ${amendedOrders.length} previously published amendment(s).`);
+  return amendedOrders.length;
+}
+
 function startServer(port = PORT) {
+  reconcilePreviouslyPublishedAmendments();
   return new Promise((resolve, reject) => {
     const server = app.listen(port, HOST);
     const handleError = (error) => {
