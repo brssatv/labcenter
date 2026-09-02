@@ -1116,7 +1116,26 @@ function renderRegistration(prefillData = null, options = {}) {
       patientDob: data.dob || "",
       provider: data.provider || "",
       facilityName: data.facilityName || "",
+      specimenTypeSwab: data.specimenTypeSwab || "",
+      specimenTypeWound: data.specimenTypeWound || "",
+      specimenTypeWoundLocation: data.specimenTypeWoundLocation || "",
+      specimenTypeOther: data.specimenTypeOther || "",
+      specimenTypeOtherText: data.specimenTypeOtherText || "",
     };
+  }
+
+  function readRequisitionFormData() {
+    const data = Object.fromEntries(new FormData(form).entries());
+    [
+      "specimenTypeSwab",
+      "specimenTypeWound",
+      "specimenTypeWoundLocation",
+      "specimenTypeOther",
+      "specimenTypeOtherText",
+    ].forEach((fieldName) => {
+      if (!Object.prototype.hasOwnProperty.call(data, fieldName)) data[fieldName] = "";
+    });
+    return data;
   }
 
   async function publishApprovedRequisitionChanges(data, plan, approval) {
@@ -1262,7 +1281,7 @@ function renderRegistration(prefillData = null, options = {}) {
       const nextOrder = buildOrderWithIcdCodes(sourceOrder, selectedCodes);
       if (!nextOrder) throw new Error("Unable to apply ICD codes to this order.");
       sourceOrder = nextOrder;
-      const currentDraftRecord = { ...(prefillData || {}), ...Object.fromEntries(new FormData(form).entries()) };
+      const currentDraftRecord = { ...(prefillData || {}), ...readRequisitionFormData() };
       currentDraftRecord.patientId = patientIdNode.textContent.trim() || currentDraftRecord.patientId || "";
       renderRegistration(currentDraftRecord, { sourceOrder, mode: requisitionMode, originalSourceOrder, originalRecord: originalRequisitionRecord });
     } catch (error) {
@@ -1288,7 +1307,7 @@ function renderRegistration(prefillData = null, options = {}) {
       const nextOrder = buildOrderWithPanels(sourceOrder, selectedPanelIds);
       if (!nextOrder) throw new Error("Select at least one valid panel before saving.");
       sourceOrder = nextOrder;
-      const currentDraftRecord = { ...(prefillData || {}), ...Object.fromEntries(new FormData(form).entries()) };
+      const currentDraftRecord = { ...(prefillData || {}), ...readRequisitionFormData() };
       currentDraftRecord.patientId = patientIdNode.textContent.trim() || currentDraftRecord.patientId || "";
       renderRegistration(currentDraftRecord, { sourceOrder, mode: requisitionMode, originalSourceOrder, originalRecord: originalRequisitionRecord });
     } catch (error) {
@@ -2928,7 +2947,7 @@ function renderRegistration(prefillData = null, options = {}) {
     }
     validateRequisitionFields();
     if (!form.reportValidity()) return;
-    const data = Object.fromEntries(new FormData(form).entries());
+    const data = readRequisitionFormData();
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
     if (savedRegistrationCreatedAt) data.createdAt = savedRegistrationCreatedAt;
     patientIdNode.textContent = data.patientId;
@@ -2968,7 +2987,7 @@ function renderRegistration(prefillData = null, options = {}) {
     if (registrationSubmitInFlight) return;
     registrationSubmitInFlight = true;
     setRegistrationSubmitBusy(true);
-    const data = Object.fromEntries(new FormData(form).entries());
+    const data = readRequisitionFormData();
     data.patientId = resolvePatientId(data, patientIdNode.textContent.trim());
     patientIdNode.textContent = data.patientId;
     try {

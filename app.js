@@ -4193,6 +4193,11 @@ function renderOrderPatient(patient) {
       patientDob: patient.dob || "",
       provider: patient.provider || "",
       facilityName: patient.facilityName || "",
+      specimenTypeSwab: patient.specimenTypeSwab || "",
+      specimenTypeWound: patient.specimenTypeWound || "",
+      specimenTypeWoundLocation: patient.specimenTypeWoundLocation || "",
+      specimenTypeOther: patient.specimenTypeOther || "",
+      specimenTypeOtherText: patient.specimenTypeOtherText || "",
       orderSource: getActiveOrderSource(),
       sampleCollectTime,
       orderBookingTime,
@@ -9735,6 +9740,25 @@ function renderOrderHistory(initialTab = "all-orders") {
     return "";
   }
 
+  function resolveReportSpecimenType(order, patientRecord, metadata) {
+    const resolveFromRecord = (record) => {
+      if (!record || typeof record !== "object") return "";
+      const selected = [];
+      if (isTruthyPharmdField(record.specimenTypeSwab)) selected.push("Swab");
+      if (isTruthyPharmdField(record.specimenTypeWound)) selected.push("Wound");
+      if (isTruthyPharmdField(record.specimenTypeOther) || String(record.specimenTypeOtherText || "").trim()) {
+        selected.push(String(record.specimenTypeOtherText || "").trim() || "Others");
+      }
+      return [...new Set(selected)].join(", ");
+    };
+
+    return resolveFromRecord(order)
+      || resolveFromRecord(patientRecord)
+      || pickReportMetadataValue(metadata, ["Specimen Type"])
+      || pickReportMetadataValue(metadata, ["Sample Type"])
+      || "Swab";
+  }
+
   function extractResistanceGeneNames(value) {
     const key = normalizeReportKey(value);
     if (!key) return [];
@@ -10042,9 +10066,7 @@ function renderOrderHistory(initialTab = "all-orders") {
     const patientAge = patientAgeRaw || (patientDob ? `${calcAge(patientDob) || "-"} years` : "-");
     const patientGender = String(patientRecord?.sex || "").trim();
     const patientId = String(order?.patientId || patientRecord?.patientId || "-").trim() || "-";
-    const specimenType = pickReportMetadataValue(metadata, ["Specimen Type"])
-      || pickReportMetadataValue(metadata, ["Sample Type"])
-      || "Swab";
+    const specimenType = resolveReportSpecimenType(order, patientRecord, metadata);
     const orderDateTime = order?.createdAt || order?.orderBookingTime || order?.sampleCollectTime || "";
     const dateCollected = order?.sampleCollectTime || orderDateTime;
     const dateReceived = order?.orderBookingTime || order?.sampleCollectTime || orderDateTime;
