@@ -3491,6 +3491,36 @@ app.post("/api/orders/process-raw", async (req, res) => {
           panelName,
         },
       });
+    } else {
+      const localKey = buildStoredFileKey("uploads", "raw", orderId || expectedSampleId || "unassigned", `${processedAt}-${fileName}`);
+      const localPath = resolveLocalReportStoragePath(localKey);
+      if (!localPath) {
+        throw new Error("Unable to resolve local result upload storage path.");
+      }
+      ensureDir(path.dirname(localPath));
+      fs.writeFileSync(localPath, fileBuffer);
+      rawFile = {
+        bucket: "local",
+        key: localKey,
+        storageType: "local",
+        sizeBytes: fileBuffer.length,
+      };
+      portalStore.saveOrderFile({
+        orderId,
+        fileRole: "raw_result_upload",
+        reportType: panelName,
+        bucket: rawFile.bucket,
+        key: rawFile.key,
+        fileName,
+        mimeType: inferMimeTypeFromFileName(fileName),
+        sizeBytes: rawFile.sizeBytes,
+        createdAt: processedAt,
+        metadata: {
+          expectedSampleId,
+          panelName,
+          storageType: "local",
+        },
+      });
     }
     auditLog(req, "process_raw_lab_excel", "success", {
       fileName,

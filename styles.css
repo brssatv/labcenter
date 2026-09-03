@@ -6776,6 +6776,37 @@ body.modal-open {
   color: #617489;
 }
 
+.bulk-result-replacement-dialog {
+  width: min(980px, 100%);
+  grid-template-rows: auto 1fr;
+}
+
+.bulk-result-replacement-intro {
+  margin: 0 0 14px;
+  color: #40556c;
+}
+
+.bulk-result-replacement-table {
+  min-width: 760px;
+}
+
+.bulk-result-replacement-table th:first-child,
+.bulk-result-replacement-table td:first-child {
+  width: 48px;
+  text-align: center;
+}
+
+.bulk-result-replacement-note {
+  margin: 12px 0 0;
+}
+
+.bulk-result-replacement-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
 .master-registry-page {
   min-height: calc(100vh - 120px);
   display: grid;

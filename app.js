@@ -12380,6 +12380,24 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       ...row,
       status: "Processed",
       processedAt: response.processedAt,
+      processedResultHistory: row?.processedResult
+        ? [
+            ...(Array.isArray(row?.processedResultHistory) ? row.processedResultHistory : []),
+            {
+              replacedAt: uploadedAt,
+              result: row.processedResult,
+            },
+          ]
+        : (Array.isArray(row?.processedResultHistory) ? row.processedResultHistory : []),
+      rawUploadHistory: row?.rawUpload
+        ? [
+            ...(Array.isArray(row?.rawUploadHistory) ? row.rawUploadHistory : []),
+            {
+              replacedAt: uploadedAt,
+              upload: row.rawUpload,
+            },
+          ]
+        : (Array.isArray(row?.rawUploadHistory) ? row.rawUploadHistory : []),
       rawUpload: {
         fileName: response.fileName,
         uploadedAt,
@@ -12424,7 +12442,9 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                   ? row.updatedOrderIds.map((id) => `#${id}`).join(", ")
                   : row?.result === "Failed"
                   ? "Failed"
-                  : "No matching pending orders";
+                  : row?.result === "Not Applied"
+                  ? "Not applied"
+                  : "No matching orders";
                 return `
                   <tr>
                     <td>${escapeHtml(row?.fileName || "-")}</td>
@@ -12439,6 +12459,114 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         </table>
       </div>
     `;
+  }
+
+  function orderHasExistingTestResult(order) {
+    return Boolean(order?.processedResult?.report);
+  }
+
+  function requestBulkResultReplacementConfirmation(candidates) {
+    const rows = Array.isArray(candidates) ? candidates : [];
+    if (!rows.length) return Promise.resolve([]);
+
+    return new Promise((resolve) => {
+      const modal = document.createElement("div");
+      modal.className = "history-preview-modal bulk-result-replacement-modal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-labelledby", "bulk-result-replacement-title");
+      modal.innerHTML = `
+        <section class="history-preview-dialog bulk-result-replacement-dialog">
+          <div class="history-preview-head">
+            <h3 id="bulk-result-replacement-title">Confirm result replacements</h3>
+            <button type="button" class="preview-close-btn" data-close-bulk-replacements aria-label="Close">×</button>
+          </div>
+          <div class="history-preview-body">
+            <p class="bulk-result-replacement-intro">
+              The following matching orders already have saved test results. Select the records whose results should be replaced by this upload.
+            </p>
+            <div class="upload-log-table-wrap">
+              <table class="order-history-table bulk-result-replacement-table">
+                <thead>
+                  <tr>
+                    <th><input type="checkbox" id="bulk-replacement-select-all" aria-label="Select all records"></th>
+                    <th>Order</th>
+                    <th>Patient</th>
+                    <th>Accession Number</th>
+                    <th>Uploaded File</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows.map((candidate, index) => `
+                    <tr>
+                      <td><input type="checkbox" class="bulk-replacement-check" value="${index}" aria-label="Select Order #${escapeHtml(candidate?.order?.orderId || "")}"></td>
+                      <td>#${escapeHtml(candidate?.order?.orderId || "-")}</td>
+                      <td>${escapeHtml(candidate?.order?.patientName || "-")}</td>
+                      <td>${escapeHtml(candidate?.accessionNumber || "-")}</td>
+                      <td>${escapeHtml(candidate?.file?.name || candidate?.parsed?.fileName || "-")}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+            <p class="subtle bulk-result-replacement-note">Previous result files and result data are retained with the order for audit history.</p>
+            <div class="bulk-result-replacement-actions">
+              <button type="button" class="btn-ghost" data-close-bulk-replacements>Cancel</button>
+              <button type="button" class="btn-primary" id="confirm-bulk-replacements">Update selected records</button>
+            </div>
+          </div>
+        </section>
+      `;
+
+      const close = (selected = []) => {
+        modal.remove();
+        document.body.classList.remove("modal-open");
+        resolve(selected);
+      };
+      const checkboxes = () => Array.from(modal.querySelectorAll(".bulk-replacement-check"));
+      const selectAll = modal.querySelector("#bulk-replacement-select-all");
+      selectAll?.addEventListener("change", () => {
+        checkboxes().forEach((checkbox) => { checkbox.checked = selectAll.checked; });
+      });
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal || event.target.closest("[data-close-bulk-replacements]")) {
+          close();
+          return;
+        }
+        if (event.target.closest("#confirm-bulk-replacements")) {
+          const selected = checkboxes()
+            .filter((checkbox) => checkbox.checked)
+            .map((checkbox) => rows[Number(checkbox.value)])
+            .filter(Boolean);
+          close(selected);
+        }
+      });
+      document.body.appendChild(modal);
+      document.body.classList.add("modal-open");
+      modal.querySelector(".preview-close-btn")?.focus();
+    });
+  }
+
+  async function applyBulkResultCandidate(candidate, notes) {
+    const { order, file, parsed, accessionNumber, uploadedAt } = candidate;
+    const filteredReport = filterReportBySampleClient(parsed?.report || {}, accessionNumber);
+    if (!Number(filteredReport?.summary?.totalRows)) return false;
+    const responseForOrder = {
+      ...parsed,
+      fileName: parsed?.fileName || file.name,
+      processedAt: parsed?.processedAt || uploadedAt,
+      report: {
+        ...filteredReport,
+        panelName: getOrderPanelName(order),
+      },
+    };
+    const applied = await processRawWorkbook(order, file, notes, {
+      expectedSampleId: accessionNumber,
+      parsedResponse: responseForOrder,
+      uploadedAt,
+      panelName: getOrderPanelName(order),
+    });
+    return Boolean(applied.updated);
   }
 
   function renderUploadPanel() {
@@ -12465,7 +12593,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
             <input id="upload-result-file" type="file" accept=".xlsx,.xls,.xlsm">
           </label>
           <label class="upload-full">
-            <span>Bulk Result Files (Pending Orders)</span>
+            <span>Bulk Result Files</span>
             <input id="upload-bulk-files" type="file" accept=".xlsx,.xls,.xlsm" multiple>
           </label>
           <label class="upload-full">
@@ -12475,7 +12603,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         </div>
         <div class="upload-results-actions">
           <button type="button" id="upload-result-btn" class="btn-primary">Upload Results</button>
-          <button type="button" id="upload-bulk-btn" class="btn-primary">Bulk Upload Pending Orders</button>
+          <button type="button" id="upload-bulk-btn" class="btn-primary">Bulk Upload Results</button>
           <span id="upload-result-status" class="subtle">${escapeHtml(uploadStatusMessage)}</span>
         </div>
         <div class="upload-log-section">
@@ -12558,17 +12686,17 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         return;
       }
 
-      const pendingOrderRows = readOrders()
-        .filter((row) => row.status === "Pending")
+      const eligibleOrderRows = readOrders()
+        .filter((row) => row.status === "Pending" || orderHasExistingTestResult(row))
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      if (!pendingOrderRows.length) {
-        uploadStatusMessage = "No pending orders available for bulk upload.";
+      if (!eligibleOrderRows.length) {
+        uploadStatusMessage = "No orders are available for bulk upload.";
         if (statusNode) statusNode.textContent = uploadStatusMessage;
         return;
       }
 
       const assignedOrderIds = new Set();
-      const logEntries = [];
+      const uploadItems = [];
       const notes = notesInput?.value?.trim() || "";
       let totalUpdatedOrders = 0;
 
@@ -12581,10 +12709,17 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         try {
           const parsed = await requestRawWorkbookProcessing(file, "Lab Panel", "");
           const accessionNumbers = extractAccessionNumbersFromReport(parsed?.report);
-          const updatedOrderIds = [];
+          const item = {
+            file,
+            parsed,
+            uploadedAt,
+            accessionNumbers,
+            candidates: [],
+            updatedOrderIds: [],
+          };
 
           for (const accessionNumber of accessionNumbers) {
-            const matchingOrder = pendingOrderRows.find((row) => {
+            const matchingOrder = eligibleOrderRows.find((row) => {
               const orderIdKey = getOrderIdMatchKey(row.orderId);
               if (assignedOrderIds.has(orderIdKey)) return false;
               return uploadSampleMatchesExpected(accessionNumber, getOrderAccession(row));
@@ -12596,38 +12731,19 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
 
             const orderId = String(matchingOrder.orderId || "").trim();
             const orderIdKey = getOrderIdMatchKey(orderId);
-            const panelName = getOrderPanelName(matchingOrder);
-            const responseForOrder = {
-              ...parsed,
-              fileName: parsed?.fileName || file.name,
-              processedAt: parsed?.processedAt || uploadedAt,
-              report: {
-                ...filteredReport,
-                panelName,
-              },
-            };
-
-            const applied = await processRawWorkbook(matchingOrder, file, notes, {
-              expectedSampleId: accessionNumber,
-              parsedResponse: responseForOrder,
-              uploadedAt,
-              panelName,
-            });
-            if (!applied.updated) continue;
             assignedOrderIds.add(orderIdKey);
-            updatedOrderIds.push(orderId);
+            item.candidates.push({
+              item,
+              order: matchingOrder,
+              file,
+              parsed,
+              accessionNumber,
+              uploadedAt,
+            });
           }
-
-          totalUpdatedOrders += updatedOrderIds.length;
-          logEntries.push({
-            fileName: parsed?.fileName || file.name,
-            uploadedAt,
-            accessionNumbers,
-            updatedOrderIds,
-            result: updatedOrderIds.length ? "Applied" : "No Match",
-          });
+          uploadItems.push(item);
         } catch {
-          logEntries.push({
+          uploadItems.push({
             fileName: file.name,
             uploadedAt,
             accessionNumbers: [],
@@ -12637,10 +12753,52 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
         }
       }
 
+      const firstTimeCandidates = uploadItems
+        .flatMap((item) => item.candidates || [])
+        .filter((candidate) => !orderHasExistingTestResult(candidate.order));
+      const replacementCandidates = uploadItems
+        .flatMap((item) => item.candidates || [])
+        .filter((candidate) => orderHasExistingTestResult(candidate.order));
+
+      for (const candidate of firstTimeCandidates) {
+        try {
+          if (await applyBulkResultCandidate(candidate, notes)) {
+            candidate.item.updatedOrderIds.push(String(candidate.order.orderId || "").trim());
+            totalUpdatedOrders += 1;
+          }
+        } catch {
+          // The upload is still retained and reported below, even if this order update fails.
+        }
+      }
+
+      if (replacementCandidates.length) {
+        uploadStatusMessage = "Review existing results before replacing them.";
+        if (statusNode) statusNode.textContent = uploadStatusMessage;
+        const selectedCandidates = await requestBulkResultReplacementConfirmation(replacementCandidates);
+        for (const candidate of selectedCandidates) {
+          try {
+            if (await applyBulkResultCandidate(candidate, notes)) {
+              candidate.item.updatedOrderIds.push(String(candidate.order.orderId || "").trim());
+              totalUpdatedOrders += 1;
+            }
+          } catch {
+            // The upload is still retained and reported below, even if this order update fails.
+          }
+        }
+      }
+
+      const logEntries = uploadItems.map((item) => ({
+        fileName: item?.parsed?.fileName || item?.file?.name || item?.fileName || "-",
+        uploadedAt: item.uploadedAt,
+        accessionNumbers: item.accessionNumbers || [],
+        updatedOrderIds: item.updatedOrderIds || [],
+        result: item.result || (item.updatedOrderIds?.length ? "Applied" : (item.candidates?.length ? "Not Applied" : "No Match")),
+      }));
+
       await appendUploadResultsLog(logEntries);
       uploadStatusMessage = totalUpdatedOrders
-        ? `Bulk upload complete. Updated ${totalUpdatedOrders} pending order(s).`
-        : "Bulk upload complete. No pending orders matched the uploaded accession numbers.";
+        ? `Bulk upload complete. Updated ${totalUpdatedOrders} order(s).`
+        : "Bulk upload complete. No orders matched the uploaded accession numbers.";
       renderUploadPanel();
       renderTable();
     });
