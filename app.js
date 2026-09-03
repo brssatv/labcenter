@@ -8693,6 +8693,9 @@ function renderOutputResults() {
               const orderId = String(row?.orderId || "").trim();
               const state = resolvePharmdWorkflowState(row);
               const receivedFileName = resolvePharmdReceivedFileName(row);
+              const amendment = row?.pharmd?.amendment && typeof row.pharmd.amendment === "object" ? row.pharmd.amendment : null;
+              const unpublishedAmendment = getUnpublishedAmendment(row);
+              const pendingAmendment = isPendingAmendment(row);
               return `
                 <tr>
                   <td>${escapeHtml(row?.orderId || "-")}</td>
