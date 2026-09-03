@@ -8633,7 +8633,7 @@ function renderOutputResults() {
     if (state.primaryAction === "validate") {
       return `
         <button type="button" class="table-action-btn preview-btn output-results-primary-action" data-validate-final-report="${orderId}" ${state.canValidate && !state.isPreviewLoading ? "" : "disabled"}>
-          ${state.isPreviewLoading ? "Opening..." : "Review & Validate"}
+          ${state.isPreviewLoading ? "Opening..." : "Review"}
         </button>
       `;
     }
