@@ -742,6 +742,7 @@ function renderRequisitionList() {
       orderId,
       accession,
       firstName: sourceRecord.firstName || "-",
+      middleName: sourceRecord.middleName || "",
       lastName: sourceRecord.lastName || "-",
       dob: formatDate(sourceRecord.dob),
       gender: sourceRecord.sex || "-",

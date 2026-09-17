@@ -1355,8 +1355,9 @@ function openBarcodeLabelPrint(row) {
 
   const barcodeValue = normalizeCode128Value(row.accession || row.orderId || row.raw?.patientId || "");
   const firstName = String(row.firstName || "").trim();
+  const middleName = String(row.middleName || "").trim();
   const lastName = String(row.lastName || "").trim();
-  const fullName = [lastName, firstName].filter(Boolean).join(" ");
+  const fullName = [firstName, middleName, lastName].filter(Boolean).join(" ");
   const dob = String(row.dob || "").trim() || "-";
   const gender = String(row.gender || "").trim();
   const genderCode = gender ? gender.charAt(0).toUpperCase() : "U";
