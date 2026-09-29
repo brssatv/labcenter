@@ -1163,6 +1163,7 @@ function getPortalDataForSession(req) {
 
   return {
     timeZone: appSettingsStore.getTimeZone(),
+    settings: appSettingsStore.getSettings(),
     registrations,
     orders,
     uploadResultsLog: uploadResultsLog.slice(0, 200),

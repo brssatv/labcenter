@@ -26,15 +26,23 @@ function registerAdminSettingsRoutes({ app, dependencies }) {
         return res.status(403).json({ error: "Invalid admin PIN." });
       }
 
-      const settings = appSettingsStore.updateTimeZone(timeZone);
-      auditLog(req, "admin_settings_timezone_update", "success", {
+      const settings = appSettingsStore.updateSettings({
+        timeZone,
+        showCollectionDate: req.body?.showCollectionDate !== false,
+        showCollectionTime: req.body?.showCollectionTime !== false,
+        orderHistoryColumns: req.body?.orderHistoryColumns,
+      });
+      auditLog(req, "admin_settings_update", "success", {
         timeZone: settings.timeZone,
+        showCollectionDate: settings.showCollectionDate,
+        showCollectionTime: settings.showCollectionTime,
+        orderHistoryColumns: settings.orderHistoryColumns,
       });
       return res.json({ settings });
     } catch (error) {
       const message = error?.message || "Unable to update admin settings.";
       const statusCode = /time zone/i.test(message) ? 400 : 500;
-      auditLog(req, "admin_settings_timezone_update", "failed", {
+      auditLog(req, "admin_settings_update", "failed", {
         reason: message,
       });
       return res.status(statusCode).json({ error: message });

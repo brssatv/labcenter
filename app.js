@@ -225,6 +225,9 @@ const adminTimeZoneSuggestions = [
 ];
 let adminSettingsState = {
   timeZone: defaultAppTimeZone,
+  showCollectionDate: true,
+  showCollectionTime: true,
+  orderHistoryColumns: ["orderId", "accessionNo", "patientDetails", "provider", "orderSource", "facilityName", "orderDate", "amount", "due", "status"],
 };
 let adminSettingsReady = false;
 let adminSettingsPromise = null;
@@ -1821,6 +1824,10 @@ function applyPortalDataPayload(payload) {
   if (payload?.timeZone) {
     setAppTimeZone(payload.timeZone);
   }
+  if (payload?.settings && typeof payload.settings === "object") {
+    applyAdminSettingsPayload(payload.settings);
+    adminSettingsReady = true;
+  }
   registrationsState = Array.isArray(payload?.registrations) ? payload.registrations : [];
   ordersState = Array.isArray(payload?.orders) ? payload.orders : [];
   uploadResultsLogState = Array.isArray(payload?.uploadResultsLog) ? payload.uploadResultsLog : [];
@@ -1835,6 +1842,11 @@ function applyAdminSettingsPayload(payload) {
   const nextTimeZone = resolveAppTimeZone(settings?.timeZone || getAppTimeZone());
   adminSettingsState = {
     timeZone: nextTimeZone,
+    showCollectionDate: settings.showCollectionDate !== false,
+    showCollectionTime: settings.showCollectionTime !== false,
+    orderHistoryColumns: Array.isArray(settings.orderHistoryColumns)
+      ? settings.orderHistoryColumns.map(String)
+      : ["orderId", "accessionNo", "patientDetails", "provider", "orderSource", "facilityName", "orderDate", "amount", "due", "status"],
   };
   authConfig = {
     ...authConfig,
@@ -3601,6 +3613,13 @@ function renderOrderPatient(patient) {
   const ageLabel = /\b(year|month)s?\b/i.test(String(age || "")) ? String(age) : `${age} years`;
   const sex = (patient.sex || "U").charAt(0).toUpperCase();
   const sampleTime = nowDateTimeLocal();
+  const [sampleDateValue = "", sampleTimeValue = ""] = sampleTime.split("T");
+  const collectionDateField = adminSettingsState.showCollectionDate
+    ? `<label>Collection Date: <input id="sample-collect-date" type="date" value="${sampleDateValue}"></label>`
+    : "";
+  const collectionTimeField = adminSettingsState.showCollectionTime
+    ? `<label>Collection Time: <input id="sample-collect-time" type="time" value="${sampleTimeValue}"></label>`
+    : "";
 
   panelBody.innerHTML = `
     <section class="order-page">
@@ -3608,7 +3627,8 @@ function renderOrderPatient(patient) {
         <button type="button" id="order-back" class="btn-link">◁ Back</button>
         <h3>Order Patient</h3>
         <div class="order-time-row">
-          <label>Sample Collect Time: <input id="sample-collect-time" type="datetime-local" value="${sampleTime}"></label>
+          ${collectionDateField}
+          ${collectionTimeField}
           <label>Order Booking Time: <input id="order-booking-time" type="datetime-local" value="${sampleTime}"></label>
         </div>
         <button type="button" id="order-close" class="order-close">×</button>
@@ -4157,7 +4177,11 @@ function renderOrderPatient(patient) {
 
   async function commitOrder() {
     if (orderSubmitInFlight) return;
-    const sampleCollectTime = document.getElementById("sample-collect-time")?.value || "";
+    const collectionDate = document.getElementById("sample-collect-date")?.value || sampleDateValue;
+    const collectionTime = document.getElementById("sample-collect-time")?.value || sampleTimeValue;
+    const sampleCollectTime = collectionDate && collectionTime
+      ? `${collectionDate}T${collectionTime}`
+      : collectionDate || collectionTime || "";
     const orderBookingTime = document.getElementById("order-booking-time")?.value || "";
     const preparedRows = orderState.rows
       .map((row, index) => {
@@ -9607,6 +9631,11 @@ function renderOrderHistory(initialTab = "all-orders") {
     due: "",
     status: "",
   };
+  const configuredHistoryColumns = new Set(adminSettingsState.orderHistoryColumns || []);
+  const configurableHistoryColumnKeys = new Set([
+    "orderId", "accessionNo", "patientDetails", "provider", "orderSource",
+    "facilityName", "orderDate", "amount", "due", "status",
+  ]);
 
   function shouldShowRawUploadColumn() {
     return activeTab !== "all-orders";
@@ -13529,11 +13558,12 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
     const showRawUploadColumn = shouldShowRawUploadColumn();
     const showClientResultPreview = activeSession.type === "client" && activeTab === "all-orders";
     const showResultActionColumns = activeSession.type !== "client" || activeTab !== "all-orders";
-    const visibleColumnCount = Object.keys(headerMap)
-      .filter((key) => showRawUploadColumn || key !== "uploadRaw")
-      .filter((key) => showClientResultPreview || key !== "resultPreview")
-      .filter((key) => showResultActionColumns || !["reviewAction", "preview", "reportActions", "publishReport"].includes(key))
-      .length;
+    const visibleHeaderEntries = Object.entries(headerMap)
+      .filter(([key]) => showRawUploadColumn || key !== "uploadRaw")
+      .filter(([key]) => showClientResultPreview || key !== "resultPreview")
+      .filter(([key]) => showResultActionColumns || !["reviewAction", "preview", "reportActions", "publishReport"].includes(key))
+      .filter(([key]) => !configurableHistoryColumnKeys.has(key) || configuredHistoryColumns.has(key));
+    const visibleColumnCount = visibleHeaderEntries.length;
     const rows = applyFilters(readOrders()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     if (openReportMenuOrderId && !rows.some((row) => String(row?.orderId || "").trim() === openReportMenuOrderId)) {
       openReportMenuOrderId = "";
@@ -13546,10 +13576,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
       <table class="order-history-table">
         <thead>
           <tr>
-            ${Object.entries(headerMap)
-              .filter(([key]) => showRawUploadColumn || key !== "uploadRaw")
-              .filter(([key]) => showClientResultPreview || key !== "resultPreview")
-              .filter(([key]) => showResultActionColumns || !["reviewAction", "preview", "reportActions", "publishReport"].includes(key))
+            ${visibleHeaderEntries
               .map(([key, title]) => {
                 const headerClass = headerClassMap[key];
                 return `<th${headerClass ? ` class="${headerClass}"` : ""}>${title}</th>`;
@@ -13557,17 +13584,17 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               .join("")}
           </tr>
           <tr>
-            <th></th>
-            <th><input data-filter-field="accessionNo" class="history-filter-input" placeholder="Filter"></th>
-            <th><input data-filter-field="patientDetails" class="history-filter-input" placeholder="Filter"></th>
-            <th><input data-filter-field="provider" class="history-filter-input" placeholder="Filter"></th>
-            <th><input data-filter-field="orderSource" class="history-filter-input" placeholder="Filter"></th>
-            <th><input data-filter-field="facilityName" class="history-filter-input" placeholder="Filter"></th>
-            <th><input data-filter-field="orderDate" class="history-filter-input" placeholder="Filter"></th>
-            <th><input data-filter-field="amount" class="history-filter-input" placeholder="Filter"></th>
-            <th><input data-filter-field="due" class="history-filter-input" placeholder="Filter"></th>
+            ${configuredHistoryColumns.has("orderId") ? "<th></th>" : ""}
+            ${configuredHistoryColumns.has("accessionNo") ? '<th><input data-filter-field="accessionNo" class="history-filter-input" placeholder="Filter"></th>' : ""}
+            ${configuredHistoryColumns.has("patientDetails") ? '<th><input data-filter-field="patientDetails" class="history-filter-input" placeholder="Filter"></th>' : ""}
+            ${configuredHistoryColumns.has("provider") ? '<th><input data-filter-field="provider" class="history-filter-input" placeholder="Filter"></th>' : ""}
+            ${configuredHistoryColumns.has("orderSource") ? '<th><input data-filter-field="orderSource" class="history-filter-input" placeholder="Filter"></th>' : ""}
+            ${configuredHistoryColumns.has("facilityName") ? '<th><input data-filter-field="facilityName" class="history-filter-input" placeholder="Filter"></th>' : ""}
+            ${configuredHistoryColumns.has("orderDate") ? '<th><input data-filter-field="orderDate" class="history-filter-input" placeholder="Filter"></th>' : ""}
+            ${configuredHistoryColumns.has("amount") ? '<th><input data-filter-field="amount" class="history-filter-input" placeholder="Filter"></th>' : ""}
+            ${configuredHistoryColumns.has("due") ? '<th><input data-filter-field="due" class="history-filter-input" placeholder="Filter"></th>' : ""}
             ${showRawUploadColumn ? "<th></th>" : ""}
-            <th><input data-filter-field="status" class="history-filter-input" placeholder="Filter"></th>
+            ${configuredHistoryColumns.has("status") ? '<th><input data-filter-field="status" class="history-filter-input" placeholder="Filter"></th>' : ""}
             ${showClientResultPreview ? "<th></th>" : ""}
             ${
               showResultActionColumns
@@ -13606,18 +13633,18 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
               const canPreviewResult = isPharmdBypassed ? hasSavedFinalReport(row) : canPreviewCombinedPharmdReport(row);
               return `
                 <tr class="${isPendingAmendment ? "output-results-row-amendment" : ""}">
-                  <td>${row.orderId}</td>
-                  <td>${escapeHtml(getOrderAccession(row))}</td>
-                  <td>
+                  ${configuredHistoryColumns.has("orderId") ? `<td>${row.orderId}</td>` : ""}
+                  ${configuredHistoryColumns.has("accessionNo") ? `<td>${escapeHtml(getOrderAccession(row))}</td>` : ""}
+                  ${configuredHistoryColumns.has("patientDetails") ? `<td>
                     <strong>${row.patientName || "-"}</strong>
                     <div class="subtle">(${row.patientId || "-"})</div>
-                  </td>
-                  <td>${row.provider || "-"}</td>
-                  <td>${row.orderSource || "-"}</td>
-                  <td>${row.facilityName || "-"}</td>
-                  <td>${formatOrderDate(row.createdAt)}</td>
-                  <td>${money(row.amount)}</td>
-                  <td>${money(row.due)}</td>
+                  </td>` : ""}
+                  ${configuredHistoryColumns.has("provider") ? `<td>${row.provider || "-"}</td>` : ""}
+                  ${configuredHistoryColumns.has("orderSource") ? `<td>${row.orderSource || "-"}</td>` : ""}
+                  ${configuredHistoryColumns.has("facilityName") ? `<td>${row.facilityName || "-"}</td>` : ""}
+                  ${configuredHistoryColumns.has("orderDate") ? `<td>${formatOrderDate(row.createdAt)}</td>` : ""}
+                  ${configuredHistoryColumns.has("amount") ? `<td>${money(row.amount)}</td>` : ""}
+                  ${configuredHistoryColumns.has("due") ? `<td>${money(row.due)}</td>` : ""}
                   ${
                     showRawUploadColumn
                       ? `
@@ -13633,7 +13660,7 @@ async function processRawWorkbook(order, file, notes = "", options = {}) {
                       `
                       : ""
                   }
-                  <td><span class="history-status ${statusClass}">${isPendingAmendment ? "Pending - Amendment" : (row.status || "-")}</span></td>
+                  ${configuredHistoryColumns.has("status") ? `<td><span class="history-status ${statusClass}">${isPendingAmendment ? "Pending - Amendment" : (row.status || "-")}</span></td>` : ""}
                   ${
                     showClientResultPreview
                       ? `
@@ -16183,33 +16210,34 @@ function renderAdminSettings(options = {}) {
     <section class="card admin-settings-card">
       <div class="admin-settings-hero">
         <div>
-          <p class="badge">Protected Setting</p>
-          <h3>Application Time Zone</h3>
-          <p class="subtle">Set the single IANA time zone used for new accession numbers and date formatting across the app.</p>
+          <p class="badge">Protected Settings</p>
+          <h3>Application Settings</h3>
+          <p class="subtle">Manage date and time behavior, the Order Patient page, and Order History columns.</p>
         </div>
         <button type="button" class="btn-ghost" data-admin-settings-refresh>Reload</button>
       </div>
 
-      <div class="admin-settings-summary">
-        <div class="admin-settings-summary-card">
-          <span class="admin-settings-summary-label">Current Time Zone</span>
-          <strong data-admin-current-timezone>${escapeHtml(adminSettingsState.timeZone || defaultAppTimeZone)}</strong>
-          <span class="admin-settings-summary-meta" data-admin-current-offset>${escapeHtml(getTimeZoneOffsetLabel(adminSettingsState.timeZone || defaultAppTimeZone, nowIso))}</span>
-        </div>
-        <div class="admin-settings-summary-card">
-          <span class="admin-settings-summary-label">Current Time In App Zone</span>
-          <strong data-admin-current-time>${escapeHtml(formatAppDateTime(nowIso, {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-          }, "-"))}</strong>
-        </div>
-      </div>
-
       <form id="admin-settings-form" class="admin-settings-form">
-        <label class="admin-settings-field">
+        <fieldset class="admin-settings-group">
+          <legend>Date &amp; Time</legend>
+          <div class="admin-settings-summary">
+            <div class="admin-settings-summary-card">
+              <span class="admin-settings-summary-label">Current Time Zone</span>
+              <strong data-admin-current-timezone>${escapeHtml(adminSettingsState.timeZone || defaultAppTimeZone)}</strong>
+              <span class="admin-settings-summary-meta" data-admin-current-offset>${escapeHtml(getTimeZoneOffsetLabel(adminSettingsState.timeZone || defaultAppTimeZone, nowIso))}</span>
+            </div>
+            <div class="admin-settings-summary-card">
+              <span class="admin-settings-summary-label">Current Time In App Zone</span>
+              <strong data-admin-current-time>${escapeHtml(formatAppDateTime(nowIso, {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              }, "-"))}</strong>
+            </div>
+          </div>
+          <label class="admin-settings-field">
           <span>Application Time Zone</span>
           <select
             id="admin-timezone-input"
@@ -16218,9 +16246,9 @@ function renderAdminSettings(options = {}) {
             ${buildAdminTimeZoneOptionsMarkup(adminSettingsState.timeZone || defaultAppTimeZone, nowIso)}
           </select>
           <small>Uses standardized IANA time zone identifiers with the current UTC offset. This single setting is used by the server for accession generation and by the client for date and time rendering everywhere in the app.</small>
-        </label>
+          </label>
 
-        <div class="admin-settings-preview-card">
+          <div class="admin-settings-preview-card">
           <span class="admin-settings-summary-label">Selected Time Zone Preview</span>
           <strong data-admin-selected-timezone>${escapeHtml(adminSettingsState.timeZone || defaultAppTimeZone)}</strong>
           <span class="admin-settings-summary-meta" data-admin-selected-offset>${escapeHtml(getTimeZoneOffsetLabel(adminSettingsState.timeZone || defaultAppTimeZone, nowIso))}</span>
@@ -16236,7 +16264,35 @@ function renderAdminSettings(options = {}) {
             },
             "-"
           ))}</span>
-        </div>
+          </div>
+        </fieldset>
+
+        <fieldset class="admin-settings-group">
+          <legend>Patient Order Display</legend>
+          <p class="subtle">Choose which collection fields appear after a requisition is completed.</p>
+          <label class="admin-settings-check"><input type="checkbox" id="admin-show-collection-date" ${adminSettingsState.showCollectionDate ? "checked" : ""}> Show collection date</label>
+          <label class="admin-settings-check"><input type="checkbox" id="admin-show-collection-time" ${adminSettingsState.showCollectionTime ? "checked" : ""}> Show collection time</label>
+        </fieldset>
+
+        <fieldset class="admin-settings-group">
+          <legend>Order History Columns</legend>
+          <p class="subtle">Choose the information columns shown throughout Order History.</p>
+          <div class="admin-settings-check-grid">
+            ${[
+              ["orderId", "Order ID"],
+              ["accessionNo", "Accession #"],
+              ["patientDetails", "Patient Details"],
+              ["provider", "Provider"],
+              ["orderSource", "Order Source"],
+              ["facilityName", "Facility Name"],
+              ["orderDate", "Order Date"],
+              ["amount", "Order Amount"],
+              ["due", "Due"],
+              ["status", "Status"],
+            ].map(([key, label]) => `<label class="admin-settings-check"><input type="checkbox" data-admin-history-column="${key}" ${(adminSettingsState.orderHistoryColumns || []).includes(key) ? "checked" : ""}> ${label}</label>`).join("")}
+          </div>
+          <button type="button" class="btn-ghost admin-settings-defaults" data-admin-column-defaults>Restore default columns</button>
+        </fieldset>
 
         <label class="admin-settings-field">
           <span>4-Digit Admin PIN</span>
@@ -16254,10 +16310,10 @@ function renderAdminSettings(options = {}) {
         </label>
 
         <div class="admin-settings-actions">
-          <button type="submit" class="btn-primary" data-admin-settings-save>Save Time Zone</button>
+          <button type="submit" class="btn-primary" data-admin-settings-save>Save Settings</button>
         </div>
         <p class="subtle admin-settings-status" data-admin-settings-status>
-          Saving updates both new server-generated accessions and all client-rendered dates/times that use the shared app timezone helpers.
+          Changes apply application-wide after saving.
         </p>
       </form>
     </section>
@@ -16266,6 +16322,9 @@ function renderAdminSettings(options = {}) {
   const form = document.getElementById("admin-settings-form");
   const timeZoneInput = document.getElementById("admin-timezone-input");
   const pinInput = document.getElementById("admin-timezone-pin");
+  const collectionDateInput = document.getElementById("admin-show-collection-date");
+  const collectionTimeInput = document.getElementById("admin-show-collection-time");
+  const columnInputs = Array.from(panelBody.querySelectorAll("[data-admin-history-column]"));
   const saveButton = panelBody.querySelector("[data-admin-settings-save]");
   const reloadButton = panelBody.querySelector("[data-admin-settings-refresh]");
   const statusNode = panelBody.querySelector("[data-admin-settings-status]");
@@ -16328,6 +16387,10 @@ function renderAdminSettings(options = {}) {
 
   syncSelectedTimePreview();
 
+  panelBody.querySelector("[data-admin-column-defaults]")?.addEventListener("click", () => {
+    columnInputs.forEach((input) => { input.checked = true; });
+  });
+
   reloadButton?.addEventListener("click", () => {
     adminSettingsReady = false;
     adminSettingsPromise = null;
@@ -16354,12 +16417,12 @@ function renderAdminSettings(options = {}) {
       await fetchCsrfToken().catch(() => {});
     }
 
-    const originalLabel = saveButton?.textContent || "Save Time Zone";
+    const originalLabel = saveButton?.textContent || "Save Settings";
     if (saveButton) {
       saveButton.disabled = true;
       saveButton.textContent = "Saving...";
     }
-    setStatus("Saving application time zone...", "info");
+    setStatus("Saving application settings...", "info");
 
     try {
       const payload = await requestJson("/api/admin/settings", {
@@ -16370,6 +16433,11 @@ function renderAdminSettings(options = {}) {
         },
         body: JSON.stringify({
           timeZone: requestedTimeZone,
+          showCollectionDate: Boolean(collectionDateInput?.checked),
+          showCollectionTime: Boolean(collectionTimeInput?.checked),
+          orderHistoryColumns: columnInputs
+            .filter((input) => input.checked)
+            .map((input) => input.getAttribute("data-admin-history-column")),
           pin,
         }),
       });
@@ -16382,9 +16450,9 @@ function renderAdminSettings(options = {}) {
       if (pinInput) pinInput.value = "";
       syncCurrentTimeSummary();
       syncSelectedTimePreview(adminSettingsState.timeZone);
-      setStatus(`Time zone updated to ${adminSettingsState.timeZone} (${getTimeZoneOffsetLabel(adminSettingsState.timeZone)}) across server and client formatting.`, "success");
+      setStatus("Application settings saved successfully.", "success");
     } catch (error) {
-      setStatus(error?.message || "Unable to update the application time zone.", "error");
+      setStatus(error?.message || "Unable to update the application settings.", "error");
     } finally {
       if (saveButton) {
         saveButton.disabled = false;

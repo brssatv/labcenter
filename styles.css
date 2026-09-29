@@ -7660,6 +7660,42 @@ body.modal-open {
   max-width: 720px;
 }
 
+.admin-settings-group {
+  border: 1px solid #dbe3ef;
+  border-radius: 12px;
+  padding: 18px;
+  margin: 0;
+}
+
+.admin-settings-group legend {
+  padding: 0 8px;
+  font-weight: 700;
+  color: #23344d;
+}
+
+.admin-settings-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 18px;
+  margin-top: 14px;
+}
+
+.admin-settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.admin-settings-check input {
+  width: 17px;
+  height: 17px;
+}
+
+.admin-settings-defaults {
+  margin-top: 14px;
+}
+
 .admin-settings-field {
   display: grid;
   gap: 8px;
