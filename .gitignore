@@ -6,6 +6,8 @@ node_modules/
 .server.err.log
 data/audit.log
 data/billers.json
+data/appointments.json
+.render/
 data/generated-reports/
 data/ocr-cache/
 data/sessions/

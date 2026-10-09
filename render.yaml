@@ -1,13 +1,16 @@
 services:
   - type: web
-    name: mindbodyheal-portal
+    name: labcenter-in-portal
     runtime: node
+    repo: https://github.com/brssatv/labcenter
+    branch: main
+    region: singapore
     plan: starter
     buildCommand: npm ci --omit=dev && bash scripts/install-render-chrome.sh
     startCommand: npm start
     healthCheckPath: /healthz
     domains:
-      - portal.mindbodyheal.co
+      - portal.labcenter.in
     disk:
       name: portal-data
       mountPath: /opt/render/project/src/runtime-data
@@ -15,6 +18,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: "22.16.0"
+      - key: APP_BASE_URL
+        value: https://portal.labcenter.in
       - key: DATA_DIR
         value: /opt/render/project/src/runtime-data
       - key: SESSION_DIR
@@ -22,7 +29,11 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: LABCENTER_TIME_ZONE
-        value: America/Vancouver
+        value: Asia/Kolkata
+      - key: LABCENTER_PUBLISH_EMAIL_MODE
+        value: disabled
+      - key: LABCENTER_PUBLISH_FAX_MODE
+        value: disabled
       - key: LABCENTER_ENABLE_REPORT_PDF
         value: "true"
       - key: LABCENTER_PDF_BROWSER

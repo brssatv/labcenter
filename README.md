@@ -1,5 +1,7 @@
 # LabCenter In Healthcare Marketplace Portal
 
+For the current India deployment at **portal.labcenter.in**, follow [DEPLOYMENT.md](DEPLOYMENT.md). The Render Blueprint targets `brssatv/labcenter`, Singapore, and Indian Standard Time. Older domain examples below describe the original deployment.
+
 This project now includes a server-backed login portal with security controls that are a practical foundation for HIPAA-oriented applications.
 
 ## What was added
