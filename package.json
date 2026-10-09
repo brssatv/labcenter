@@ -2,7 +2,7 @@
   "name": "labcenter-secure-portal",
   "version": "1.0.0",
   "private": true,
-  "description": "LabCenter secure login portal scaffold",
+  "description": "LabCenter In secure healthcare marketplace portal",
   "main": "electron-main.js",
   "scripts": {
     "start": "node server.js",
@@ -46,7 +46,7 @@
   },
   "build": {
     "appId": "com.innovexlab.labcenter",
-    "productName": "LabCenter",
+    "productName": "LabCenter In",
     "directories": {
       "output": "dist-desktop",
       "buildResources": "build-resources"
@@ -78,7 +78,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "LabCenter"
+      "shortcutName": "LabCenter In"
     }
   }
 }

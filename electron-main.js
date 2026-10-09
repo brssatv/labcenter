@@ -96,8 +96,8 @@ async function bootstrapDesktopApp() {
       await waitForServer(APP_URL);
     } catch (_error) {
       throw new Error(
-        `Port ${PORT} is already in use, but no LabCenter server responded on ${APP_URL}. ` +
-        "Stop the other process on that port or launch LabCenter after freeing it."
+        `Port ${PORT} is already in use, but no LabCenter In server responded on ${APP_URL}. ` +
+        "Stop the other process on that port or launch LabCenter In after freeing it."
       );
     }
   }
@@ -117,7 +117,7 @@ app.whenReady()
   })
   .catch((error) => {
     dialog.showErrorBox(
-      "LabCenter Desktop Launch Failed",
+      "LabCenter In Desktop Launch Failed",
       error?.message || "Unexpected error while starting the desktop application."
     );
     app.quit();

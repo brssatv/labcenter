@@ -1,29 +1,29 @@
 :root {
-  --bg-login: linear-gradient(180deg, #ffffff 0%, #f5faff 100%);
-  --bg-app: #eceff3;
-  --ink: #37424f;
-  --muted: #637283;
-  --border: #b8c3cf;
-  --field-bg: #f8fafc;
-  --panel: #eef2f6;
+  --bg-login: linear-gradient(135deg, #fffaf3 0%, #f8fbff 52%, #eef8f5 100%);
+  --bg-app: #f3f6f8;
+  --ink: #172b3a;
+  --muted: #607384;
+  --border: #d3dee5;
+  --field-bg: #fbfcfd;
+  --panel: #edf3f4;
   --warn: #b44343;
   --success: #2f9552;
-  --accent: #2468bf;
-  --dark-btn: #4b525c;
-  --auth-primary: #1877d2;
-  --auth-secondary: #1564b2;
-  --auth-accent: #8ebdf0;
-  --auth-bg-soft: #edf5fe;
+  --accent: #e87827;
+  --dark-btn: #17384c;
+  --auth-primary: #e87827;
+  --auth-secondary: #0b6572;
+  --auth-accent: #f6b26b;
+  --auth-bg-soft: #eef7f6;
   --auth-surface: rgba(255, 255, 255, 0.96);
-  --auth-line: #d2e3f7;
-  --auth-text: #1d2b38;
-  --auth-muted: #607286;
+  --auth-line: #d6e7e5;
+  --auth-text: #172b3a;
+  --auth-muted: #607384;
   --motion-fast: 160ms;
   --motion-base: 260ms;
   --motion-slow: 420ms;
   --ease-apple: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --focus-ring: 0 0 0 3px rgba(36, 104, 191, 0.2);
+  --focus-ring: 0 0 0 3px rgba(232, 120, 39, 0.22);
   --success-ring: 0 0 0 3px rgba(47, 149, 82, 0.18);
   --error-ring: 0 0 0 3px rgba(180, 67, 67, 0.16);
   --shadow-soft: 0 10px 24px rgba(28, 45, 68, 0.08);
@@ -502,7 +502,7 @@ html {
 
 body {
   margin: 0;
-  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-family: "Manrope", system-ui, sans-serif;
   color: var(--ink);
   background: var(--bg-login);
   min-height: 100vh;
@@ -936,7 +936,7 @@ h2,
 h3,
 h4 {
   margin: 8px 0;
-  font-family: "Source Sans 3", "Trebuchet MS", sans-serif;
+  font-family: "Manrope", system-ui, sans-serif;
   font-weight: 700;
   letter-spacing: 0;
 }
@@ -1291,6 +1291,50 @@ textarea:focus {
   grid-template-rows: auto 1fr;
   gap: 12px;
 }
+
+/* LabCenter In marketplace theme: contemporary Indian healthcare palette. */
+.gateway-card {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 24px;
+  background: linear-gradient(135deg, #0b6572 0%, #0f5369 58%, #17384c 100%);
+  box-shadow: 0 24px 50px rgba(23, 56, 76, 0.2);
+}
+
+.auth-card,
+.card,
+.session-card {
+  border-radius: 20px;
+}
+
+.auth-card {
+  box-shadow: 0 24px 60px rgba(23, 56, 76, 0.12);
+}
+
+.sidebar {
+  border-right-color: #d6e2e5;
+  background: linear-gradient(180deg, #ffffff 0%, #f3f8f8 100%);
+}
+
+.sidebar-brand-mark {
+  color: #e87827;
+}
+
+.appointments-card { padding: 24px; }
+.appointments-header { display: flex; justify-content: space-between; gap: 18px; align-items: start; margin-bottom: 22px; }
+.appointments-header h3 { margin-bottom: 4px; }
+.appointments-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 18px; margin-bottom: 18px; border: 1px solid #d6e7e5; border-radius: 18px; background: #f4faf9; }
+.appointments-form label { display: grid; gap: 6px; }
+.appointments-form label span { color: #315467; font-size: .78rem; font-weight: 700; }
+.appointments-form input, .appointments-form select { min-height: 42px; border: 1px solid #cbdcdf; border-radius: 10px; padding: 0 12px; background: #fff; color: var(--ink); font: inherit; }
+.appointments-form button { align-self: end; min-height: 42px; }
+.appointments-list { display: grid; gap: 10px; }
+.appointment-row { display: grid; grid-template-columns: 1.1fr 1.5fr .8fr auto; gap: 14px; align-items: center; padding: 15px 16px; border: 1px solid #dbe4e7; border-radius: 15px; background: #fff; }
+.appointment-row div { display: grid; gap: 4px; min-width: 0; }
+.appointment-row span { color: #607384; font-size: .86rem; }
+.appointment-status { width: fit-content; padding: 4px 8px; border-radius: 999px; background: #e6f4ee; color: #176044 !important; font-size: .72rem !important; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+.appointment-status-cancelled { background: #fbe9e7; color: #a34438 !important; }
+@media (max-width: 900px) { .appointments-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } .appointment-row { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .appointments-header { display: grid; } .appointments-form { grid-template-columns: 1fr; } .appointment-row { grid-template-columns: 1fr; } }
 
 .sidebar-header {
   display: grid;

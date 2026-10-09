@@ -12,6 +12,7 @@ const FileStore = require("session-file-store")(session);
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { registerAdminSettingsRoutes } = require("./server/features/admin-settings");
+const { registerAppointmentRoutes } = require("./server/features/appointments");
 const { registerAuthRoutes } = require("./server/features/authentication");
 const { normalizeAllFacilities, registerBillingManagementRoutes } = require("./server/features/billing-management");
 const { registerFacilityRoutes } = require("./server/features/facility-management");
@@ -61,6 +62,7 @@ const usersPath = path.join(dataDir, "users.json");
 const billersPath = path.join(dataDir, "billers.json");
 const facilityPath = path.join(dataDir, "facility.json");
 const auditPath = path.join(dataDir, "audit.log");
+const appointmentsPath = path.join(dataDir, "appointments.json");
 const zipCodesPath = path.join(sourceDataDir, "us-zips.json");
 const reportPdfRendererPath = path.join(__dirname, "scripts", "render-html-to-pdf.swift");
 const requisitionScanOcrPath = path.join(__dirname, "scripts", "ocr-helper.js");
@@ -3189,6 +3191,13 @@ registerAdminSettingsRoutes({
     auditLog,
     requireDoctorAuth,
   },
+});
+
+registerAppointmentRoutes({
+  app,
+  appointmentsPath,
+  auditLog,
+  requireDoctorAuth,
 });
 
 registerPortalWorkflowRoutes({

@@ -15,6 +15,11 @@ const views = [
     subtitle: "Manage facility information and provider context.",
   },
   {
+    key: "appointments",
+    title: "Appointments",
+    subtitle: "Schedule and manage doctor appointments for your hospital.",
+  },
+  {
     key: "billing",
     title: "Billing",
     subtitle: "Manage biller access to the dedicated billing portal.",
@@ -2003,12 +2008,12 @@ function setAuthMode(nextMode) {
   authBackBtn?.classList.toggle("hidden", authMode === "billing");
 
   if (authTitle) {
-    authTitle.textContent = authMode === "billing" ? "Sign in to Billing" : "Sign in to LabCenter";
+    authTitle.textContent = authMode === "billing" ? "Sign in to Billing" : "Sign in to LabCenter In";
   }
   if (authDescription) {
     authDescription.textContent =
       authMode === "billing"
-        ? "Continue with the billing credentials assigned by your LabCenter administrator."
+        ? "Continue with the billing credentials assigned by your LabCenter In administrator."
         : "Choose your workspace and continue with your assigned credentials.";
   }
 
@@ -2018,8 +2023,8 @@ function setAuthMode(nextMode) {
         ? "Billing access is isolated from the clinical and administrative workspace."
         : authMode === "doctor"
         ? adminUsesOidc
-          ? "Admins sign in through LabCenter Cloud ID to keep authentication centralized and secure."
-          : "Use your assigned LabCenter admin username and password to access the full workspace."
+          ? "Admins sign in through LabCenter In Cloud ID to keep authentication centralized and secure."
+          : "Use your assigned LabCenter In admin username and password to access the full workspace."
         : "Use your client portal username to review reports and order activity.";
   }
 
@@ -16859,6 +16864,69 @@ function renderBilling() {
   }
 }
 
+function renderAppointments() {
+  currentSearchInput = null;
+  panelBody.innerHTML = `
+    <section class="card appointments-card">
+      <div class="appointments-header">
+        <div><p class="badge">Hospital Owner Calendar</p><h3>Doctor Appointments</h3><p class="subtle">Create and manage consultations, follow-ups, walk-ins, and rescheduled visits.</p></div>
+        <button type="button" class="btn-primary" id="appointment-refresh">Refresh</button>
+      </div>
+      <form id="appointment-form" class="appointments-form">
+        <label><span>Patient name</span><input name="patientName" required placeholder="Patient name"></label>
+        <label><span>Mobile number</span><input name="patientPhone" inputmode="tel" placeholder="+91 98765 43210"></label>
+        <label><span>Doctor</span><input name="doctorName" required placeholder="Dr. Name"></label>
+        <label><span>Hospital / clinic location</span><input name="location" placeholder="Main hospital"></label>
+        <label><span>Date</span><input name="appointmentDate" type="date" required></label>
+        <label><span>Start time</span><input name="startTime" type="time" required></label>
+        <label><span>End time</span><input name="endTime" type="time" required></label>
+        <label><span>Appointment type</span><select name="type"><option>Consultation</option><option>Follow-up</option><option>Walk-in</option><option>Teleconsultation</option></select></label>
+        <label><span>Notes</span><input name="notes" placeholder="Optional notes"></label>
+        <button class="btn-primary" type="submit">Add appointment</button>
+      </form>
+      <p id="appointment-status" class="form-status" aria-live="polite"></p>
+      <div id="appointments-list" class="appointments-list"><p class="subtle">Loading appointments...</p></div>
+    </section>
+  `;
+
+  const list = document.getElementById("appointments-list");
+  const status = document.getElementById("appointment-status");
+  const form = document.getElementById("appointment-form");
+  const load = async () => {
+    const response = await fetch("/api/appointments");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to load appointments.");
+    const rows = Array.isArray(payload.appointments) ? payload.appointments : [];
+    list.innerHTML = rows.length ? rows.map((item) => `
+      <article class="appointment-row">
+        <div><strong>${escapeHtml(item.patientName)}</strong><span>${escapeHtml(item.patientPhone || "No mobile number")}</span></div>
+        <div><strong>${escapeHtml(item.appointmentDate)} · ${escapeHtml(item.startTime)}–${escapeHtml(item.endTime)}</strong><span>${escapeHtml(item.doctorName)} · ${escapeHtml(item.location || "Location not set")}</span></div>
+        <div><span class="appointment-status appointment-status-${String(item.status).toLowerCase()}">${escapeHtml(item.status)}</span><span>${escapeHtml(item.type)}</span></div>
+        <button type="button" class="btn-ghost appointment-cancel" data-appointment-id="${escapeHtml(item.id)}" ${item.status === "Cancelled" ? "disabled" : ""}>Cancel</button>
+      </article>`).join("") : '<p class="subtle">No appointments scheduled yet.</p>';
+    list.querySelectorAll(".appointment-cancel").forEach((button) => button.addEventListener("click", async () => {
+      if (!csrfToken) await fetchCsrfToken();
+      const response = await fetch(`/api/appointments/${encodeURIComponent(button.dataset.appointmentId)}`, { method: "PUT", headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken }, body: JSON.stringify({ status: "Cancelled" }) });
+      if (!response.ok) { const body = await response.json(); status.textContent = body.error || "Unable to cancel appointment."; status.className = "form-status error"; return; }
+      await load();
+    }));
+  };
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!csrfToken) await fetchCsrfToken();
+    const data = Object.fromEntries(new FormData(form).entries());
+    const response = await fetch("/api/appointments", { method: "POST", headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken }, body: JSON.stringify(data) });
+    const body = await response.json();
+    if (!response.ok) { status.textContent = body.error || "Unable to create appointment."; status.className = "form-status error"; return; }
+    status.textContent = "Appointment added.";
+    status.className = "form-status success";
+    form.reset();
+    await load();
+  });
+  document.getElementById("appointment-refresh")?.addEventListener("click", () => load().catch((error) => { status.textContent = error.message; status.className = "form-status error"; }));
+  load().catch((error) => { list.innerHTML = `<p class="form-status error">${escapeHtml(error.message)}</p>`; });
+}
+
 function renderView() {
   function animatePanelTransition() {
     panelBody.classList.remove("view-transition");
@@ -16936,6 +17004,10 @@ function renderView() {
       case "facility":
         panelBody.classList.add("full-bleed");
         renderFacility();
+        break;
+      case "appointments":
+        panelBody.classList.add("full-bleed");
+        renderAppointments();
         break;
       case "billing":
         panelBody.classList.add("full-bleed");
@@ -17095,7 +17167,7 @@ doctorSsoBtn?.addEventListener("click", () => {
   if (pendingAuth) return;
 
   pendingAuth = true;
-  loginError.textContent = "Redirecting to LabCenter Cloud ID...";
+  loginError.textContent = "Redirecting to LabCenter In Cloud ID...";
 
   ensureAuthConfigLoaded()
     .then(() => {
@@ -17103,7 +17175,7 @@ doctorSsoBtn?.addEventListener("click", () => {
     })
     .catch((error) => {
       pendingAuth = false;
-      loginError.textContent = error?.message || "Unable to continue to LabCenter Cloud ID.";
+      loginError.textContent = error?.message || "Unable to continue to LabCenter In Cloud ID.";
     });
 });
 

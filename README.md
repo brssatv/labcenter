@@ -1,4 +1,4 @@
-# LabCenter Clinical Portal (Secure Login Scaffold)
+# LabCenter In Healthcare Marketplace Portal
 
 This project now includes a server-backed login portal with security controls that are a practical foundation for HIPAA-oriented applications.
 
