@@ -670,6 +670,13 @@ async function queueSrfaxFax({
   }
 }
 
+function applyCurrentReportBranding(html) {
+  return html.replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, (header) => {
+    if (!/InnovexLab|10D2306552/i.test(header)) return header;
+    return '<header class="final-report-header" style="display:block;text-align:center;margin-bottom:4mm"><div><h1 style="color:#00316b">NAVSUN MEDICARE</h1><p>Modipara Samabalpur</p></div></header>';
+  });
+}
+
 function registerReportPublishingRoutes({ app, dependencies }) {
   const {
     requireAuthenticatedUser,
@@ -1017,7 +1024,7 @@ function registerReportPublishingRoutes({ app, dependencies }) {
       return res.status(401).json({ error: "Authentication required." });
     }
 
-    const html = String(req.body?.html || "");
+    const html = applyCurrentReportBranding(String(req.body?.html || ""));
     if (!html.trim()) {
       return res.status(400).json({ error: "Report HTML content is required." });
     }
@@ -1103,7 +1110,7 @@ function registerReportPublishingRoutes({ app, dependencies }) {
     }
 
     const orderId = String(req.body?.orderId || "").trim();
-    const html = String(req.body?.html || "");
+    const html = applyCurrentReportBranding(String(req.body?.html || ""));
     const oruMessage = String(req.body?.oruMessage || "").trim();
     const fileName = sanitizeReportPdfFileName(req.body?.fileName || `Order_${orderId || Date.now()}_Final_Report.pdf`);
     if (!orderId) {
