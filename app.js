@@ -10642,33 +10642,20 @@ function renderOrderHistory(initialTab = "all-orders") {
     const variant = String(options?.variant || "default").trim().toLowerCase();
     if (variant === "final-summary") {
       return `
-        <header class="final-report-header final-summary-header">
-          <img class="final-report-logo final-summary-logo" src="${escapeHtml(assetSources.finalHeaderLogoSrc || assetSources.logoSrc)}" alt="InnovexLab Logo">
+        <header class="final-report-header final-summary-header" style="display: block; text-align: center;">
           <div class="final-summary-brand">
-            <h1>InnovexLab</h1>
-            <p>Driving the Next Generation of Diagnostics</p>
-          </div>
-          <div class="final-report-lab-meta final-summary-meta">
-            <p>1135 NW 23rd Ave, Ste L</p>
-            <p>Gainesville, FL 32609</p>
-            <p>Phone number: (352) 328-3066</p>
-            <p>Lab Director: Dr. Maulik Shah, MD, PhD</p>
-            <p>CLIA #: 10D2306552</p>
+            <h1>NAVSUN MEDICARE</h1>
+            <p>Modipara Samabalpur</p>
           </div>
         </header>
         ${buildReportInfoGrid(context)}
       `;
     }
     return `
-      <header class="final-report-header">
-        <img class="final-report-logo" src="${escapeHtml(assetSources.logoSrc)}" alt="InnovexLab Logo">
+      <header class="final-report-header" style="grid-template-columns: 1fr;">
         <div class="final-report-lab-meta">
-          <h1>InnovexLab</h1>
-          <p>1135 NW 23rd Ave, Ste L</p>
-          <p>Gainesville, FL 32609</p>
-          <p>Phone number: (352) 328-3066</p>
-          <p>Lab Director: Dr. Maulik Shah, MD, PhD</p>
-          <p>CLIA #: 10D2306552</p>
+          <h1>NAVSUN MEDICARE</h1>
+          <p>Modipara Samabalpur</p>
         </div>
       </header>
       ${buildReportInfoGrid(context)}
@@ -11071,10 +11058,10 @@ function renderOrderHistory(initialTab = "all-orders") {
               <h4>Limitations</h4>
               <p>This assay may detect pathogens beyond those listed. Detection of pathogens with unknown clinical significance by the assay is considered experimental. Rare false-positive and false-negative results may occur.</p>
               <h4>Disclaimer</h4>
-              <p>This test was developed, and its performance characteristics were determined by InnovexLab. It has not been cleared or approved by the FDA. The laboratory is regulated under CLIA as qualified to perform high-complexity testing. This test is intended for clinical use and should not be considered investigational or for research purposes. Please note that the "% of Total Pathogen Load" may exclude certain minute pathogen values that are deemed not medically significant.</p>
+              <p>This test is intended for clinical use and should not be considered investigational or for research purposes. Please note that the "% of Total Pathogen Load" may exclude certain minute pathogen values that are deemed not medically significant.</p>
             </div>
             <h3 class="overview-title">Antibiotic Resistance Overview</h3>
-            <p class="overview-copy">The emergence of antibiotic resistance has led to the discovery of specific genetic mutations within a pathogen that allow it to resist the effects of antibiotics. InnovexLab identifies commonly associated resistant genes to guide providers in selecting the most effective and appropriate therapy to eradicate identified pathogens.</p>
+            <p class="overview-copy">The emergence of antibiotic resistance has led to the discovery of specific genetic mutations within a pathogen that allow it to resist the effects of antibiotics. The report identifies commonly associated resistant genes to guide providers in selecting the most effective and appropriate therapy to eradicate identified pathogens.</p>
             <table class="final-abr-table">
               <thead>
                 <tr>
@@ -11110,7 +11097,7 @@ function renderOrderHistory(initialTab = "all-orders") {
               <h4>Disadvantages or limitations</h4>
               <p>A microorganism may exhibit resistance to an antimicrobial agent in different ways that are not reported by our technology. It is possible to get false positives and false negatives on rare occasions.</p>
               <h4>Disclaimer</h4>
-              <p>This test was developed, and its performance characteristics were established by InnovexLab. It has not been cleared or approved by the FDA. The laboratory operates under CLIA and COLA regulations, certifying its qualification to perform high-complexity testing. The responsibility for determining the appropriate treatment plan for each patient rests with the ordering physician.</p>
+              <p>The responsibility for determining the appropriate treatment plan for each patient rests with the ordering physician.</p>
             </div>
             <p class="end-of-report">**END OF REPORT**</p>
           </div>
@@ -11540,7 +11527,7 @@ function renderOrderHistory(initialTab = "all-orders") {
               <h4>Limitations</h4>
               <p>This assay may detect pathogens beyond those listed. Detection of pathogens with unknown clinical significance by the assay is considered experimental. Rare false-positive and false-negative results may occur.</p>
               <h4>Disclaimer</h4>
-              <p>This test was developed, and its performance characteristics were determined by InnovexLab. It has not been cleared or approved by the FDA. The laboratory is regulated under CLIA as qualified to perform high-complexity testing. This test is intended for clinical use and should not be considered investigational or for research purposes. Please note that the "% of Total Pathogen Load" may exclude certain minute pathogen values that are deemed not medically significant.</p>
+              <p>This test is intended for clinical use and should not be considered investigational or for research purposes. Please note that the "% of Total Pathogen Load" may exclude certain minute pathogen values that are deemed not medically significant.</p>
             </div>
             <p class="summary-end-of-report">**END OF REPORT**</p>
             ${buildPageFooterMarkup(1, assetSources, summaryReportTotalPages)}
@@ -11894,7 +11881,7 @@ function renderOrderHistory(initialTab = "all-orders") {
             <h4>Limitations</h4>
             <p>This assay may detect pathogens beyond those listed. Detection of pathogens with unknown clinical significance by the assay is considered experimental. Rare false-positive and false-negative results may occur.</p>
             <h4>Disclaimer</h4>
-            <p>This test was developed, and its performance characteristics were determined by InnovexLab. It has not been cleared or approved by the FDA. The laboratory is regulated under CLIA as qualified to perform high-complexity testing. This test is intended for clinical use and should not be considered investigational or for research purposes. Please note that the "% of Total Pathogen Load" may exclude certain minute pathogen values that are deemed not medically significant.</p>
+            <p>This test is intended for clinical use and should not be considered investigational or for research purposes. Please note that the "% of Total Pathogen Load" may exclude certain minute pathogen values that are deemed not medically significant.</p>
           </div>
           <p class="summary-end-of-report">**END OF REPORT**</p>
           ${buildPageFooterMarkup(1, assetSources, summaryReportTotalPages)}
