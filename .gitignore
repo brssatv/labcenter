@@ -7,6 +7,7 @@ node_modules/
 data/audit.log
 data/billers.json
 data/appointments.json
+data/facility-backup-*.json
 .render/
 data/generated-reports/
 data/ocr-cache/
